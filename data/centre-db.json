@@ -1,0 +1,700 @@
+{
+  "users": [
+    {
+      "id": "inst-elena",
+      "name": "Dr. Elena Vance",
+      "email": "elena.vance@northbridge.edu",
+      "role": "instructor",
+      "department": "Software & Cloud Systems",
+      "passwordHash": "18ce0edbccf65dcdce361ff6bd8dc279:87d0a655d622458e7b471d6fef7a525098df41f7561467d499b4d54a35ddc6df3bc731b5b6391f0e6c10dc560e4e131ba938771a20145052977e85133ad08f1d"
+    },
+    {
+      "id": "inst-david",
+      "name": "Prof. David Okonkwo",
+      "email": "david.okonkwo@northbridge.edu",
+      "role": "instructor",
+      "department": "Data & Security Lab",
+      "passwordHash": "18ce0edbccf65dcdce361ff6bd8dc279:87d0a655d622458e7b471d6fef7a525098df41f7561467d499b4d54a35ddc6df3bc731b5b6391f0e6c10dc560e4e131ba938771a20145052977e85133ad08f1d"
+    },
+    {
+      "id": "stu-marcus",
+      "name": "Marcus Chen",
+      "email": "marcus.chen@student.northbridge.edu",
+      "role": "student",
+      "studentCode": "NTA-2026-041",
+      "passwordHash": "506d1375e4e8b1be092f003a9f768cd6:3d41974816816dd1710790095d39762a448b2c17fc36288691ee90714897c43c435365a48d13c775103eb4ba342913e4369d4330c95e322e9b13c0706fe019fe"
+    },
+    {
+      "id": "stu-priya",
+      "name": "Priya Patel",
+      "email": "priya.patel@student.northbridge.edu",
+      "role": "student",
+      "studentCode": "NTA-2026-042",
+      "passwordHash": "506d1375e4e8b1be092f003a9f768cd6:3d41974816816dd1710790095d39762a448b2c17fc36288691ee90714897c43c435365a48d13c775103eb4ba342913e4369d4330c95e322e9b13c0706fe019fe"
+    },
+    {
+      "id": "stu-liam",
+      "name": "Liam O'Connor",
+      "email": "liam.oconnor@student.northbridge.edu",
+      "role": "student",
+      "studentCode": "NTA-2026-043",
+      "passwordHash": "506d1375e4e8b1be092f003a9f768cd6:3d41974816816dd1710790095d39762a448b2c17fc36288691ee90714897c43c435365a48d13c775103eb4ba342913e4369d4330c95e322e9b13c0706fe019fe"
+    },
+    {
+      "id": "stu-sofia",
+      "name": "Sofia Alvarez",
+      "email": "sofia.alvarez@student.northbridge.edu",
+      "role": "student",
+      "studentCode": "NTA-2026-044",
+      "passwordHash": "506d1375e4e8b1be092f003a9f768cd6:3d41974816816dd1710790095d39762a448b2c17fc36288691ee90714897c43c435365a48d13c775103eb4ba342913e4369d4330c95e322e9b13c0706fe019fe"
+    },
+    {
+      "id": "stu-noah",
+      "name": "Noah Kim",
+      "email": "noah.kim@student.northbridge.edu",
+      "role": "student",
+      "studentCode": "NTA-2026-045",
+      "passwordHash": "506d1375e4e8b1be092f003a9f768cd6:3d41974816816dd1710790095d39762a448b2c17fc36288691ee90714897c43c435365a48d13c775103eb4ba342913e4369d4330c95e322e9b13c0706fe019fe"
+    },
+    {
+      "id": "stu-amara",
+      "name": "Amara Diallo",
+      "email": "amara.diallo@student.northbridge.edu",
+      "role": "student",
+      "studentCode": "NTA-2026-046",
+      "passwordHash": "506d1375e4e8b1be092f003a9f768cd6:3d41974816816dd1710790095d39762a448b2c17fc36288691ee90714897c43c435365a48d13c775103eb4ba342913e4369d4330c95e322e9b13c0706fe019fe"
+    }
+  ],
+  "courses": [
+    {
+      "id": "crs-ts",
+      "code": "CS-204",
+      "title": "Full-Stack TypeScript Engineering",
+      "track": "Software Engineering",
+      "instructorId": "inst-elena",
+      "instructorName": "Dr. Elena Vance",
+      "durationWeeks": 12,
+      "modules": [
+        {
+          "id": "ts-m1",
+          "code": "M1",
+          "title": "Type Systems & Generics",
+          "weight": 25,
+          "labHours": 12
+        },
+        {
+          "id": "ts-m2",
+          "code": "M2",
+          "title": "React Component Architecture",
+          "weight": 25,
+          "labHours": 14
+        },
+        {
+          "id": "ts-m3",
+          "code": "M3",
+          "title": "API Design & Authentication",
+          "weight": 25,
+          "labHours": 16
+        },
+        {
+          "id": "ts-m4",
+          "code": "M4",
+          "title": "Automated Testing & CI/CD",
+          "weight": 25,
+          "labHours": 14
+        }
+      ]
+    },
+    {
+      "id": "crs-cloud",
+      "code": "CL-310",
+      "title": "Cloud Infrastructure & DevOps",
+      "track": "Cloud & Systems",
+      "instructorId": "inst-elena",
+      "instructorName": "Dr. Elena Vance",
+      "durationWeeks": 10,
+      "modules": [
+        {
+          "id": "cl-m1",
+          "code": "M1",
+          "title": "Linux Networking & Containers",
+          "weight": 25,
+          "labHours": 12
+        },
+        {
+          "id": "cl-m2",
+          "code": "M2",
+          "title": "Kubernetes Orchestration",
+          "weight": 30,
+          "labHours": 16
+        },
+        {
+          "id": "cl-m3",
+          "code": "M3",
+          "title": "Terraform Infrastructure as Code",
+          "weight": 25,
+          "labHours": 14
+        },
+        {
+          "id": "cl-m4",
+          "code": "M4",
+          "title": "Observability & Incident Drills",
+          "weight": 20,
+          "labHours": 10
+        }
+      ]
+    },
+    {
+      "id": "crs-data",
+      "code": "DA-215",
+      "title": "Applied Python & Data Analytics",
+      "track": "Data Science",
+      "instructorId": "inst-david",
+      "instructorName": "Prof. David Okonkwo",
+      "durationWeeks": 10,
+      "modules": [
+        {
+          "id": "da-m1",
+          "code": "M1",
+          "title": "Python Data Pipelines",
+          "weight": 25,
+          "labHours": 12
+        },
+        {
+          "id": "da-m2",
+          "code": "M2",
+          "title": "SQL & Relational Modeling",
+          "weight": 25,
+          "labHours": 12
+        },
+        {
+          "id": "da-m3",
+          "code": "M3",
+          "title": "Statistical Inference & Pandas",
+          "weight": 25,
+          "labHours": 14
+        },
+        {
+          "id": "da-m4",
+          "code": "M4",
+          "title": "Interactive Forecasting Capstone",
+          "weight": 25,
+          "labHours": 16
+        }
+      ]
+    },
+    {
+      "id": "crs-sec",
+      "code": "CY-402",
+      "title": "Cybersecurity & Network Defense",
+      "track": "Security Operations",
+      "instructorId": "inst-david",
+      "instructorName": "Prof. David Okonkwo",
+      "durationWeeks": 8,
+      "modules": [
+        {
+          "id": "cy-m1",
+          "code": "M1",
+          "title": "Packet Analysis & Firewalls",
+          "weight": 25,
+          "labHours": 10
+        },
+        {
+          "id": "cy-m2",
+          "code": "M2",
+          "title": "Web Application Hardening",
+          "weight": 30,
+          "labHours": 14
+        },
+        {
+          "id": "cy-m3",
+          "code": "M3",
+          "title": "Identity & Zero-Trust Controls",
+          "weight": 25,
+          "labHours": 12
+        },
+        {
+          "id": "cy-m4",
+          "code": "M4",
+          "title": "Blue-Team Threat Response",
+          "weight": 20,
+          "labHours": 12
+        }
+      ]
+    }
+  ],
+  "enrollments": [
+    {
+      "id": "enr-7ab5c8c2",
+      "studentId": "stu-amara",
+      "courseId": "crs-ts",
+      "cohort": "Cohort A · Autumn",
+      "status": "Active",
+      "enrolledAt": "2026-11-13T13:33:49.977Z",
+      "completedModuleIds": []
+    },
+    {
+      "id": "enr-1",
+      "studentId": "stu-marcus",
+      "courseId": "crs-ts",
+      "cohort": "Cohort A · Autumn",
+      "status": "Active",
+      "enrolledAt": "2026-10-06T13:32:22.188Z",
+      "completedModuleIds": [
+        "ts-m1",
+        "ts-m2",
+        "ts-m3"
+      ]
+    },
+    {
+      "id": "enr-2",
+      "studentId": "stu-marcus",
+      "courseId": "crs-cloud",
+      "cohort": "Cohort A · Autumn",
+      "status": "Active",
+      "enrolledAt": "2026-10-19T13:32:22.189Z",
+      "completedModuleIds": [
+        "cl-m1",
+        "cl-m2"
+      ]
+    },
+    {
+      "id": "enr-3",
+      "studentId": "stu-priya",
+      "courseId": "crs-ts",
+      "cohort": "Cohort A · Autumn",
+      "status": "Active",
+      "enrolledAt": "2026-10-06T13:32:22.189Z",
+      "completedModuleIds": [
+        "ts-m1",
+        "ts-m2"
+      ]
+    },
+    {
+      "id": "enr-4",
+      "studentId": "stu-priya",
+      "courseId": "crs-data",
+      "cohort": "Cohort B · Autumn",
+      "status": "Completed",
+      "enrolledAt": "2026-08-30T13:32:22.189Z",
+      "completedModuleIds": [
+        "da-m1",
+        "da-m2",
+        "da-m3",
+        "da-m4"
+      ]
+    },
+    {
+      "id": "enr-5",
+      "studentId": "stu-liam",
+      "courseId": "crs-ts",
+      "cohort": "Cohort A · Autumn",
+      "status": "Active",
+      "enrolledAt": "2026-10-08T13:32:22.189Z",
+      "completedModuleIds": [
+        "ts-m1"
+      ]
+    },
+    {
+      "id": "enr-6",
+      "studentId": "stu-sofia",
+      "courseId": "crs-data",
+      "cohort": "Cohort B · Autumn",
+      "status": "Active",
+      "enrolledAt": "2026-10-14T13:32:22.189Z",
+      "completedModuleIds": [
+        "da-m1",
+        "da-m2",
+        "da-m3"
+      ]
+    },
+    {
+      "id": "enr-7",
+      "studentId": "stu-noah",
+      "courseId": "crs-sec",
+      "cohort": "Cohort A · Autumn",
+      "status": "Active",
+      "enrolledAt": "2026-10-24T13:32:22.189Z",
+      "completedModuleIds": [
+        "cy-m1",
+        "cy-m2"
+      ]
+    },
+    {
+      "id": "enr-8",
+      "studentId": "stu-amara",
+      "courseId": "crs-cloud",
+      "cohort": "Cohort A · Autumn",
+      "status": "Waitlisted",
+      "enrolledAt": "2026-11-08T13:32:22.189Z",
+      "completedModuleIds": []
+    }
+  ],
+  "sessions": [
+    {
+      "id": "ses-past-1",
+      "courseId": "crs-ts",
+      "cohort": "Cohort A · Autumn",
+      "title": "Session Auth & Cookie Security Lab",
+      "topic": "HMAC token verification, scrypt hashing, and RBAC route guards",
+      "room": "Lab 204",
+      "instructorName": "Dr. Elena Vance",
+      "startIso": "2026-11-11T13:32:22.189Z",
+      "endIso": "2026-11-11T15:32:22.189Z"
+    },
+    {
+      "id": "ses-past-2",
+      "courseId": "crs-cloud",
+      "cohort": "Cohort A · Autumn",
+      "title": "Kubernetes Ingress & Autoscaling",
+      "topic": "HorizontalPodAutoscaler and TLS termination policies",
+      "room": "Lab 301",
+      "instructorName": "Dr. Elena Vance",
+      "startIso": "2026-11-12T11:32:22.189Z",
+      "endIso": "2026-11-12T13:32:22.189Z"
+    },
+    {
+      "id": "ses-upcoming-1",
+      "courseId": "crs-ts",
+      "cohort": "Cohort A · Autumn",
+      "title": "Integration Testing & CI Pipelines",
+      "topic": "Node test runner, contract assertions, and deployment checks",
+      "room": "Lab 204",
+      "instructorName": "Dr. Elena Vance",
+      "startIso": "2026-11-13T19:32:22.189Z",
+      "endIso": "2026-11-13T21:32:22.189Z"
+    },
+    {
+      "id": "ses-upcoming-2",
+      "courseId": "crs-cloud",
+      "cohort": "Cohort A · Autumn",
+      "title": "Terraform State & Drift Remediation",
+      "topic": "Remote state locking and modular VPC definitions",
+      "room": "Lab 301",
+      "instructorName": "Dr. Elena Vance",
+      "startIso": "2026-11-14T07:32:22.189Z",
+      "endIso": "2026-11-14T09:32:22.189Z"
+    },
+    {
+      "id": "ses-upcoming-3",
+      "courseId": "crs-data",
+      "cohort": "Cohort B · Autumn",
+      "title": "Time-Series Forecasting Studio",
+      "topic": "Seasonal decomposition and rolling window validation",
+      "room": "Lab 108",
+      "instructorName": "Prof. David Okonkwo",
+      "startIso": "2026-11-14T01:32:22.189Z",
+      "endIso": "2026-11-14T03:32:22.189Z"
+    },
+    {
+      "id": "ses-upcoming-4",
+      "courseId": "crs-sec",
+      "cohort": "Cohort A · Autumn",
+      "title": "Zero-Trust Identity & Audit Lab",
+      "topic": "Least-privilege policy verification and log triage",
+      "room": "Security Range B",
+      "instructorName": "Prof. David Okonkwo",
+      "startIso": "2026-11-15T17:32:22.189Z",
+      "endIso": "2026-11-15T19:32:22.189Z"
+    }
+  ],
+  "attendance": [
+    {
+      "id": "att-1",
+      "sessionId": "ses-past-1",
+      "courseId": "crs-ts",
+      "studentId": "stu-marcus",
+      "status": "Present",
+      "note": "Completed lab verification early.",
+      "updatedAt": "2026-11-11T14:32:22.189Z",
+      "updatedBy": "Dr. Elena Vance"
+    },
+    {
+      "id": "att-2",
+      "sessionId": "ses-past-1",
+      "courseId": "crs-ts",
+      "studentId": "stu-priya",
+      "status": "Present",
+      "note": "",
+      "updatedAt": "2026-11-11T14:32:22.189Z",
+      "updatedBy": "Dr. Elena Vance"
+    },
+    {
+      "id": "att-3",
+      "sessionId": "ses-past-1",
+      "courseId": "crs-ts",
+      "studentId": "stu-liam",
+      "status": "Late",
+      "note": "Joined 18 minutes after lab briefing.",
+      "updatedAt": "2026-11-11T14:32:22.189Z",
+      "updatedBy": "Dr. Elena Vance"
+    },
+    {
+      "id": "att-4",
+      "sessionId": "ses-past-2",
+      "courseId": "crs-cloud",
+      "studentId": "stu-marcus",
+      "status": "Present",
+      "note": "",
+      "updatedAt": "2026-11-12T12:32:22.189Z",
+      "updatedBy": "Dr. Elena Vance"
+    },
+    {
+      "id": "att-618e834b",
+      "sessionId": "ses-upcoming-4",
+      "courseId": "crs-sec",
+      "studentId": "stu-noah",
+      "status": "Present",
+      "note": "",
+      "updatedAt": "2026-11-13T13:34:10.009Z",
+      "updatedBy": "Dr. Elena Vance"
+    }
+  ],
+  "grades": [
+    {
+      "id": "grd-1",
+      "studentId": "stu-marcus",
+      "courseId": "crs-ts",
+      "moduleId": "ts-m1",
+      "score": 94,
+      "feedback": "Clear mastery of discriminated unions and mapped types.",
+      "gradedAt": "2026-10-20T13:32:22.189Z",
+      "gradedBy": "Dr. Elena Vance"
+    },
+    {
+      "id": "grd-2",
+      "studentId": "stu-marcus",
+      "courseId": "crs-ts",
+      "moduleId": "ts-m2",
+      "score": 91,
+      "feedback": "Well-structured component composition and clean state flows.",
+      "gradedAt": "2026-10-30T13:32:22.189Z",
+      "gradedBy": "Dr. Elena Vance"
+    },
+    {
+      "id": "grd-3",
+      "studentId": "stu-marcus",
+      "courseId": "crs-ts",
+      "moduleId": "ts-m3",
+      "score": 89,
+      "feedback": "Solid RBAC middleware; remember edge-case expiry assertions.",
+      "gradedAt": "2026-11-10T13:32:22.189Z",
+      "gradedBy": "Dr. Elena Vance"
+    },
+    {
+      "id": "grd-4",
+      "studentId": "stu-marcus",
+      "courseId": "crs-cloud",
+      "moduleId": "cl-m1",
+      "score": 92,
+      "feedback": "Efficient multi-stage container builds.",
+      "gradedAt": "2026-11-03T13:32:22.189Z",
+      "gradedBy": "Dr. Elena Vance"
+    },
+    {
+      "id": "grd-5",
+      "studentId": "stu-priya",
+      "courseId": "crs-ts",
+      "moduleId": "ts-m1",
+      "score": 88,
+      "feedback": "Good strict type coverage across shared contracts.",
+      "gradedAt": "2026-10-20T13:32:22.189Z",
+      "gradedBy": "Dr. Elena Vance"
+    },
+    {
+      "id": "grd-6",
+      "studentId": "stu-priya",
+      "courseId": "crs-ts",
+      "moduleId": "ts-m2",
+      "score": 90,
+      "feedback": "Accessible form controls and clean error recovery.",
+      "gradedAt": "2026-10-30T13:32:22.189Z",
+      "gradedBy": "Dr. Elena Vance"
+    },
+    {
+      "id": "grd-7",
+      "studentId": "stu-priya",
+      "courseId": "crs-data",
+      "moduleId": "da-m1",
+      "score": 95,
+      "feedback": "Outstanding ETL pipeline reliability.",
+      "gradedAt": "2026-09-29T13:32:22.189Z",
+      "gradedBy": "Prof. David Okonkwo"
+    },
+    {
+      "id": "grd-8",
+      "studentId": "stu-priya",
+      "courseId": "crs-data",
+      "moduleId": "da-m2",
+      "score": 93,
+      "feedback": "Optimal indexing and normalized schema.",
+      "gradedAt": "2026-10-09T13:32:22.189Z",
+      "gradedBy": "Prof. David Okonkwo"
+    },
+    {
+      "id": "grd-9",
+      "studentId": "stu-liam",
+      "courseId": "crs-ts",
+      "moduleId": "ts-m1",
+      "score": 72,
+      "feedback": "Review conditional types and narrow null checks before M2.",
+      "gradedAt": "2026-10-22T13:32:22.189Z",
+      "gradedBy": "Dr. Elena Vance"
+    },
+    {
+      "id": "grd-10",
+      "studentId": "stu-sofia",
+      "courseId": "crs-data",
+      "moduleId": "da-m1",
+      "score": 87,
+      "feedback": "Clean vectorization and documentation.",
+      "gradedAt": "2026-10-28T13:32:22.189Z",
+      "gradedBy": "Prof. David Okonkwo"
+    },
+    {
+      "id": "grd-11",
+      "studentId": "stu-noah",
+      "courseId": "crs-sec",
+      "moduleId": "cy-m1",
+      "score": 91,
+      "feedback": "Thorough pcap inspection and rule authoring.",
+      "gradedAt": "2026-11-04T13:32:22.189Z",
+      "gradedBy": "Prof. David Okonkwo"
+    }
+  ],
+  "remarks": [
+    {
+      "id": "rem-1",
+      "studentId": "stu-marcus",
+      "courseId": "crs-ts",
+      "summary": "Marcus demonstrates consistent technical precision in TypeScript architecture and security labs. Ready for the M4 CI/CD capstone.",
+      "updatedAt": "2026-11-11T13:32:22.189Z",
+      "updatedBy": "Dr. Elena Vance"
+    },
+    {
+      "id": "rem-2",
+      "studentId": "stu-liam",
+      "courseId": "crs-ts",
+      "summary": "Liam should attend Thursday open lab hours to reinforce module M2 React state patterns and improve punctuality.",
+      "updatedAt": "2026-11-11T13:32:22.189Z",
+      "updatedBy": "Dr. Elena Vance"
+    }
+  ],
+  "notifications": [
+    {
+      "id": "not-628792f6",
+      "userId": "stu-noah",
+      "kind": "attendance",
+      "title": "Attendance Update · CY-402",
+      "message": "You were marked Present for \"Zero-Trust Identity & Audit Lab\" in Security Range B.",
+      "relatedCourseId": "crs-sec",
+      "relatedSessionId": "ses-upcoming-4",
+      "read": false,
+      "createdAt": "2026-11-13T13:34:10.009Z"
+    },
+    {
+      "userId": "stu-amara",
+      "kind": "reminder",
+      "title": "Session Reminder · CS-204",
+      "message": "\"Integration Testing & CI Pipelines\" starts in ~6h (Nov 13, 7:32 PM) in Lab 204 with Dr. Elena Vance.",
+      "relatedCourseId": "crs-ts",
+      "relatedSessionId": "ses-upcoming-1",
+      "dedupeKey": "reminder:ses-upcoming-1:stu-amara",
+      "read": false,
+      "createdAt": "2026-11-13T13:33:49.978Z",
+      "id": "not-6c1f6d9d"
+    },
+    {
+      "id": "not-52e4522c",
+      "userId": "stu-amara",
+      "kind": "enrollment",
+      "title": "Enrollment Confirmed · CS-204",
+      "message": "You were enrolled in Full-Stack TypeScript Engineering (Cohort A · Autumn) with status Active.",
+      "relatedCourseId": "crs-ts",
+      "read": false,
+      "createdAt": "2026-11-13T13:33:49.977Z"
+    },
+    {
+      "id": "not-seed-1",
+      "userId": "stu-marcus",
+      "kind": "attendance",
+      "title": "Attendance Update · CS-204",
+      "message": "You were marked Present for \"Session Auth & Cookie Security Lab\" in Lab 204. Note: Completed lab verification early.",
+      "relatedCourseId": "crs-ts",
+      "relatedSessionId": "ses-past-1",
+      "read": false,
+      "createdAt": "2026-11-11T14:32:22.189Z"
+    },
+    {
+      "id": "not-seed-2",
+      "userId": "stu-liam",
+      "kind": "attendance",
+      "title": "Attendance Update · CS-204",
+      "message": "You were marked Late for \"Session Auth & Cookie Security Lab\" in Lab 204. Note: Joined 18 minutes after lab briefing.",
+      "relatedCourseId": "crs-ts",
+      "relatedSessionId": "ses-past-1",
+      "read": false,
+      "createdAt": "2026-11-11T14:32:22.189Z"
+    },
+    {
+      "userId": "stu-marcus",
+      "kind": "reminder",
+      "title": "Session Reminder · CS-204",
+      "message": "\"Integration Testing & CI Pipelines\" starts in ~6h (Nov 13, 7:32 PM) in Lab 204 with Dr. Elena Vance.",
+      "relatedCourseId": "crs-ts",
+      "relatedSessionId": "ses-upcoming-1",
+      "dedupeKey": "reminder:ses-upcoming-1:stu-marcus",
+      "read": false,
+      "createdAt": "2026-11-13T13:32:22.189Z",
+      "id": "not-7b1979d9"
+    },
+    {
+      "userId": "stu-priya",
+      "kind": "reminder",
+      "title": "Session Reminder · CS-204",
+      "message": "\"Integration Testing & CI Pipelines\" starts in ~6h (Nov 13, 7:32 PM) in Lab 204 with Dr. Elena Vance.",
+      "relatedCourseId": "crs-ts",
+      "relatedSessionId": "ses-upcoming-1",
+      "dedupeKey": "reminder:ses-upcoming-1:stu-priya",
+      "read": false,
+      "createdAt": "2026-11-13T13:32:22.189Z",
+      "id": "not-c5667867"
+    },
+    {
+      "userId": "stu-liam",
+      "kind": "reminder",
+      "title": "Session Reminder · CS-204",
+      "message": "\"Integration Testing & CI Pipelines\" starts in ~6h (Nov 13, 7:32 PM) in Lab 204 with Dr. Elena Vance.",
+      "relatedCourseId": "crs-ts",
+      "relatedSessionId": "ses-upcoming-1",
+      "dedupeKey": "reminder:ses-upcoming-1:stu-liam",
+      "read": false,
+      "createdAt": "2026-11-13T13:32:22.189Z",
+      "id": "not-546bf9c1"
+    },
+    {
+      "userId": "stu-marcus",
+      "kind": "reminder",
+      "title": "Session Reminder · CL-310",
+      "message": "\"Terraform State & Drift Remediation\" starts in ~18h (Nov 14, 7:32 AM) in Lab 301 with Dr. Elena Vance.",
+      "relatedCourseId": "crs-cloud",
+      "relatedSessionId": "ses-upcoming-2",
+      "dedupeKey": "reminder:ses-upcoming-2:stu-marcus",
+      "read": false,
+      "createdAt": "2026-11-13T13:32:22.189Z",
+      "id": "not-6de47a5e"
+    },
+    {
+      "userId": "stu-sofia",
+      "kind": "reminder",
+      "title": "Session Reminder · DA-215",
+      "message": "\"Time-Series Forecasting Studio\" starts in ~12h (Nov 14, 1:32 AM) in Lab 108 with Prof. David Okonkwo.",
+      "relatedCourseId": "crs-data",
+      "relatedSessionId": "ses-upcoming-3",
+      "dedupeKey": "reminder:ses-upcoming-3:stu-sofia",
+      "read": false,
+      "createdAt": "2026-11-13T13:32:22.189Z",
+      "id": "not-1c458bcc"
+    }
+  ]
+}
