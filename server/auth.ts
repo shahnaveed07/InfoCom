@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { UserRole } from '../src/shared/types';
+import type { UserRole } from '../src/shared/types.ts';
 
 export const SESSION_COOKIE_NAME = 'nta_session';
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
@@ -34,7 +34,8 @@ export function hashPassword(password: string): string {
   return `${salt}:${derived}`;
 }
 
-export function verifyPassword(password: string, storedHash: string): boolean {
+export function verifyPassword(password: string, storedHash: string | null | undefined): boolean {
+  if (!storedHash) return false;
   const parts = storedHash.split(':');
   if (parts.length !== 2) return false;
   const [salt, keyHex] = parts;

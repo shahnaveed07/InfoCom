@@ -1,17 +1,21 @@
 import React, { useMemo, useState } from 'react';
 import {
+  Award,
   Bell,
   CalendarClock,
   Check,
   CheckCheck,
   CheckCircle2,
   Clock,
+  CreditCard,
   FileText,
   MapPin,
 } from 'lucide-react';
 import {
   calculateLetterGrade,
   computeStudentProgressReport,
+  formatCents,
+  toCents,
 } from '../shared/academic';
 import type { DashboardPayload } from '../shared/types';
 import type { NavSection } from './Sidebar';
@@ -63,6 +67,10 @@ export function StudentDashboard({
     .filter((n) => (notifFilter === 'unread' ? !n.read : true));
 
   const unreadCount = data.notifications.filter((n) => !n.read).length;
+  const outstandingCents = data.invoices
+    .filter((i) => i.status !== 'Voided' && !i.isArchived)
+    .reduce((sum, i) => sum + Math.max(0, toCents(i.amountDue) - toCents(i.amountPaid)), 0);
+  const activeCertCount = data.certificates.filter((c) => c.status === 'Issued').length;
 
   return (
     <div className="space-y-6">
@@ -114,6 +122,47 @@ export function StudentDashboard({
           </div>
         </div>
       </section>
+
+      {/* Quick Portal Strip: Tuition Balance & Verified Certificates */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="bg-white border border-slate-200 rounded-xl px-5 py-4 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3 min-w-0">
+            <CreditCard className="w-5 h-5 text-blue-700 shrink-0" />
+            <div className="min-w-0">
+              <div className="text-xs font-medium text-slate-500">Outstanding Tuition Balance</div>
+              <div className="font-mono text-base font-semibold text-slate-900 tabular-nums mt-0.5">
+                {formatCents(outstandingCents)}
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => onNavigate('finance')}
+            className="px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg cursor-pointer whitespace-nowrap shrink-0"
+          >
+            Fees & Receipts
+          </button>
+        </div>
+
+        <div className="bg-white border border-slate-200 rounded-xl px-5 py-4 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3 min-w-0">
+            <Award className="w-5 h-5 text-emerald-700 shrink-0" />
+            <div className="min-w-0">
+              <div className="text-xs font-medium text-slate-500">Issued Certificates</div>
+              <div className="font-mono text-base font-semibold text-slate-900 tabular-nums mt-0.5">
+                {activeCertCount} verified credential{activeCertCount === 1 ? '' : 's'}
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => onNavigate('certificates')}
+            className="px-3 py-1.5 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer whitespace-nowrap shrink-0"
+          >
+            View Credentials
+          </button>
+        </div>
+      </div>
 
       {/* Main Split: Grades & Course Progress + Upcoming Schedules & Automated Notifications */}
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">

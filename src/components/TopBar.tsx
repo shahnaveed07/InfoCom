@@ -16,12 +16,19 @@ interface TopBarProps {
 }
 
 const SECTION_TITLES: Record<NavSection, string> = {
-  overview: 'Centre Overview',
+  overview: 'Academy Overview',
+  admissions: 'Admissions Pipeline',
+  users: 'Students & Staff Directory',
+  catalog: 'Courses & Cohort Batches',
   enrollments: 'Enrollment Management',
   courses: 'Course & Module Tracking',
   attendance: 'Attendance & Automated Alerts',
-  reports: 'Progress Reports',
-  schedules: 'Class Schedules',
+  schedules: 'Class Timetable & Scheduling',
+  finance: 'Fees, Payments & Receipts',
+  documents: 'Document Vault',
+  certificates: 'Certificates & Verification',
+  reports: 'Academic Progress Reports',
+  audit: 'System Audit Logs',
   'student-home': 'Student Dashboard',
   'student-report': 'My Progress Report',
 };
@@ -34,6 +41,13 @@ export function TopBar({
   onJumpToNotifications,
   primaryAction,
 }: TopBarProps) {
+  const portalLabel =
+    user.role === 'admin'
+      ? 'Administration Portal'
+      : user.role === 'instructor'
+        ? 'Instructor Portal'
+        : 'Student Portal';
+
   return (
     <header className="no-print bg-white border-b border-slate-200 px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4 shrink-0">
       <div className="flex items-center gap-3 min-w-0">
@@ -47,7 +61,7 @@ export function TopBar({
         </button>
         <div className="flex items-center gap-2 text-sm min-w-0">
           <span className="text-slate-400 hidden sm:inline whitespace-nowrap">
-            {user.role === 'instructor' ? 'Instructor Portal' : 'Student Portal'}
+            {portalLabel}
           </span>
           <span className="text-slate-300 hidden sm:inline" aria-hidden="true">
             /

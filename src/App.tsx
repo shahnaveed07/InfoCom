@@ -1,14 +1,22 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { AuthView } from './components/AuthView';
+import { AdminOverview } from './components/AdminOverview';
+import { AdmissionsView } from './components/AdmissionsView';
 import { AttendanceAlertsView } from './components/AttendanceAlertsView';
+import { AuditLogsView } from './components/AuditLogsView';
+import { AuthView } from './components/AuthView';
+import { CertificatesView } from './components/CertificatesView';
+import { CoursesCohortsView } from './components/CoursesCohortsView';
 import { CourseTrackingView } from './components/CourseTrackingView';
+import { DocumentsView } from './components/DocumentsView';
 import { EnrollmentsView } from './components/EnrollmentsView';
+import { FinanceView } from './components/FinanceView';
 import { InstructorOverview } from './components/InstructorOverview';
 import { ProgressReportView } from './components/ProgressReportView';
 import { SchedulesView } from './components/SchedulesView';
 import { Sidebar, type NavSection } from './components/Sidebar';
 import { StudentDashboard } from './components/StudentDashboard';
 import { TopBar } from './components/TopBar';
+import { UsersManagementView } from './components/UsersManagementView';
 import type { DashboardPayload, UserPublic } from './shared/types';
 import { api } from './utils/api';
 
@@ -26,7 +34,7 @@ export default function App() {
       const data = await api.getDashboard();
       setDashboard(data);
       setActiveSection(
-        loggedInUser.role === 'instructor' ? 'overview' : 'student-home'
+        loggedInUser.role === 'student' ? 'student-home' : 'overview'
       );
     } catch (err) {
       setLoadError(
@@ -41,8 +49,13 @@ export default function App() {
       try {
         const res = await api.getMe();
         if (!active) return;
-        setUser(res.user);
-        await loadWorkspace(res.user);
+        if (res.user) {
+          setUser(res.user);
+          await loadWorkspace(res.user);
+        } else {
+          setUser(null);
+          setDashboard(null);
+        }
       } catch {
         if (active) {
           setUser(null);
@@ -85,34 +98,29 @@ export default function App() {
   }
 
   const unreadCount = dashboard
-    ? dashboard.notifications.filter((n) =>
-        user.role === 'student' ? !n.read : !n.read
-      ).length
+    ? dashboard.notifications.filter((n) => !n.read).length
     : 0;
 
-  const isInstructor = user.role === 'instructor';
+  const isAdmin = user.role === 'admin';
+  const isStaff = user.role === 'admin' || user.role === 'instructor';
 
-  const topPrimaryAction = isInstructor
+  const topPrimaryAction = isAdmin
     ? activeSection === 'overview'
-      ? {
-          label: 'Manage Enrollments',
-          onClick: () => setActiveSection('enrollments'),
-        }
-      : activeSection === 'enrollments'
+      ? { label: 'Admissions Queue', onClick: () => setActiveSection('admissions') }
+      : activeSection === 'finance'
         ? undefined
-        : {
-            label: 'Progress Reports',
-            onClick: () => setActiveSection('reports'),
-          }
-    : activeSection === 'student-home'
-      ? {
-          label: 'View Progress Report',
-          onClick: () => setActiveSection('student-report'),
-        }
-      : {
-          label: 'Back to Dashboard',
-          onClick: () => setActiveSection('student-home'),
-        };
+        : { label: 'Fees & Receipts', onClick: () => setActiveSection('finance') }
+    : isStaff
+      ? activeSection === 'overview'
+        ? { label: 'Manage Enrollments', onClick: () => setActiveSection('enrollments') }
+        : activeSection === 'enrollments' || activeSection === 'reports'
+          ? undefined
+          : { label: 'Progress Reports', onClick: () => setActiveSection('reports') }
+      : activeSection === 'student-home'
+        ? { label: 'View Progress Report', onClick: () => setActiveSection('student-report') }
+        : activeSection === 'student-report'
+          ? undefined
+          : { label: 'Back to Dashboard', onClick: () => setActiveSection('student-home') };
 
   return (
     <div className="min-h-screen bg-slate-50 flex">
@@ -133,7 +141,7 @@ export default function App() {
           unreadCount={unreadCount}
           onOpenMobileNav={() => setMobileNavOpen(true)}
           onJumpToNotifications={() => {
-            if (isInstructor) {
+            if (isStaff) {
               setActiveSection('attendance');
             } else {
               setActiveSection('student-home');
@@ -171,15 +179,59 @@ export default function App() {
               </div>
               <div className="h-64 bg-white border border-slate-200 rounded-xl animate-pulse" />
             </div>
-          ) : isInstructor ? (
+          ) : (
             <>
-              {activeSection === 'overview' && (
-                <InstructorOverview
+              {activeSection === 'overview' && isAdmin && (
+                <AdminOverview data={dashboard} onNavigate={setActiveSection} />
+              )}
+
+              {activeSection === 'overview' && !isAdmin && isStaff && (
+                <InstructorOverview data={dashboard} onNavigate={setActiveSection} />
+              )}
+
+              {activeSection === 'admissions' && isAdmin && (
+                <AdmissionsView
                   data={dashboard}
-                  onNavigate={setActiveSection}
+                  onCreateAdmission={async (payload) => {
+                    const res = await api.createAdmission(payload);
+                    setDashboard(res.dashboard);
+                  }}
+                  onUpdateAdmission={async (id, payload) => {
+                    const res = await api.updateAdmission(id, payload);
+                    setDashboard(res.dashboard);
+                  }}
                 />
               )}
-              {activeSection === 'enrollments' && (
+
+              {activeSection === 'users' && isAdmin && (
+                <UsersManagementView
+                  data={dashboard}
+                  onCreateUser={async (payload) => {
+                    const res = await api.createUser(payload);
+                    setDashboard(res.dashboard);
+                  }}
+                  onUpdateUser={async (userId, payload) => {
+                    const res = await api.updateUser(userId, payload);
+                    setDashboard(res.dashboard);
+                  }}
+                />
+              )}
+
+              {activeSection === 'catalog' && isStaff && (
+                <CoursesCohortsView
+                  data={dashboard}
+                  onCreateCourse={async (payload) => {
+                    const res = await api.createCourse(payload);
+                    setDashboard(res.dashboard);
+                  }}
+                  onCreateCohort={async (payload) => {
+                    const res = await api.createCohort(payload);
+                    setDashboard(res.dashboard);
+                  }}
+                />
+              )}
+
+              {activeSection === 'enrollments' && isStaff && (
                 <EnrollmentsView
                   data={dashboard}
                   onCreateEnrollment={async (payload) => {
@@ -192,7 +244,8 @@ export default function App() {
                   }}
                 />
               )}
-              {activeSection === 'courses' && (
+
+              {activeSection === 'courses' && isStaff && (
                 <CourseTrackingView
                   data={dashboard}
                   onToggleModule={async (payload) => {
@@ -205,7 +258,8 @@ export default function App() {
                   }}
                 />
               )}
-              {activeSection === 'attendance' && (
+
+              {activeSection === 'attendance' && isStaff && (
                 <AttendanceAlertsView
                   data={dashboard}
                   onMarkAttendance={async (payload) => {
@@ -219,7 +273,8 @@ export default function App() {
                   }}
                 />
               )}
-              {activeSection === 'reports' && (
+
+              {activeSection === 'reports' && isStaff && (
                 <ProgressReportView
                   data={dashboard}
                   isInstructor
@@ -229,21 +284,100 @@ export default function App() {
                   }}
                 />
               )}
+
               {activeSection === 'schedules' && (
                 <SchedulesView
                   data={dashboard}
-                  isInstructor
-                  onCreateSession={async (payload) => {
-                    const res = await api.createSession(payload);
+                  isInstructor={isStaff}
+                  onCreateSession={
+                    isStaff
+                      ? async (payload) => {
+                          const res = await api.createSession(payload);
+                          setDashboard(res.dashboard);
+                          return res.remindersCreatedCount;
+                        }
+                      : undefined
+                  }
+                />
+              )}
+
+              {activeSection === 'finance' && (isAdmin || user.role === 'student') && (
+                <FinanceView
+                  data={dashboard}
+                  isAdmin={isAdmin}
+                  onCreateInvoice={
+                    isAdmin
+                      ? async (payload) => {
+                          const res = await api.createInvoice(payload);
+                          setDashboard(res.dashboard);
+                        }
+                      : undefined
+                  }
+                  onRecordPayment={
+                    isAdmin
+                      ? async (invoiceId, payload) => {
+                          const res = await api.recordPayment(invoiceId, payload);
+                          setDashboard(res.dashboard);
+                        }
+                      : undefined
+                  }
+                  onVoidInvoice={
+                    isAdmin
+                      ? async (invoiceId) => {
+                          const res = await api.voidInvoice(invoiceId);
+                          setDashboard(res.dashboard);
+                        }
+                      : undefined
+                  }
+                />
+              )}
+
+              {activeSection === 'documents' && (
+                <DocumentsView
+                  data={dashboard}
+                  onUploadDocument={async (payload) => {
+                    const res = await api.uploadDocument(payload);
                     setDashboard(res.dashboard);
-                    return res.remindersCreatedCount;
+                  }}
+                  onArchiveDocument={async (docId) => {
+                    const res = await api.archiveDocument(docId);
+                    setDashboard(res.dashboard);
                   }}
                 />
               )}
-            </>
-          ) : (
-            <>
-              {activeSection === 'student-home' && (
+
+              {activeSection === 'certificates' && (
+                <CertificatesView
+                  data={dashboard}
+                  onIssueCertificate={
+                    isStaff
+                      ? async (payload) => {
+                          const res = await api.issueCertificate(payload);
+                          setDashboard(res.dashboard);
+                          return res.certificateCode;
+                        }
+                      : undefined
+                  }
+                  onRevokeCertificate={
+                    isAdmin
+                      ? async (certId, reason) => {
+                          const res = await api.revokeCertificate(certId, reason);
+                          setDashboard(res.dashboard);
+                        }
+                      : undefined
+                  }
+                  onVerifyCertificate={async (codeOrHash) => {
+                    const res = await api.verifyCertificate(codeOrHash);
+                    return res.certificate;
+                  }}
+                />
+              )}
+
+              {activeSection === 'audit' && isAdmin && (
+                <AuditLogsView data={dashboard} />
+              )}
+
+              {activeSection === 'student-home' && user.role === 'student' && (
                 <StudentDashboard
                   data={dashboard}
                   onMarkNotificationRead={async (id) => {
@@ -257,11 +391,9 @@ export default function App() {
                   onNavigate={setActiveSection}
                 />
               )}
-              {activeSection === 'student-report' && (
+
+              {activeSection === 'student-report' && user.role === 'student' && (
                 <ProgressReportView data={dashboard} isInstructor={false} />
-              )}
-              {activeSection === 'schedules' && (
-                <SchedulesView data={dashboard} isInstructor={false} />
               )}
             </>
           )}

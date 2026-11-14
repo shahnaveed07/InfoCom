@@ -1,12 +1,17 @@
 import type {
+  AdmissionApplication,
   AttendanceRecord,
+  CertificateRecord,
   ClassSession,
   Course,
   Enrollment,
+  FeeInvoice,
+  InvoiceStatus,
   ModuleGrade,
   NotificationItem,
   ProgressRemark,
   UserPublic,
+  AcademyAnalytics,
 } from './types';
 
 export interface AttendanceStats {
@@ -94,7 +99,6 @@ export function calculateAttendanceStats(records: AttendanceRecord[]): Attendanc
     else if (r.status === 'Late') late += 1;
     else if (r.status === 'Absent') absent += 1;
   }
-  // Present counts 100%, Late counts 75% toward attendance rate
   const rate = Math.round(((present + late * 0.75) / total) * 100);
   return { total, present, late, absent, rate };
 }
@@ -276,6 +280,7 @@ export function findUpcomingSessionsNeedingReminders(params: {
   const generated: Array<Omit<NotificationItem, 'id'>> = [];
 
   for (const session of params.sessions) {
+    if (session.status === 'Cancelled') continue;
     const startMs = Date.parse(session.startIso);
     if (Number.isNaN(startMs)) continue;
     const diffMs = startMs - params.nowMs;
@@ -323,7 +328,7 @@ export function findUpcomingSessionsNeedingReminders(params: {
 
 export function formatReportAsText(report: StudentProgressReport): string {
   const lines: string[] = [
-    'NORTHBRIDGE TECH ACADEMY — OFFICIAL STUDENT PROGRESS REPORT',
+    'INFOCOM ACADEMY MANAGEMENT SYSTEM — OFFICIAL STUDENT PROGRESS REPORT',
     `Generated: ${new Date(report.generatedAtIso).toLocaleString('en-US')}`,
     '====================================================================',
     `Student Name:       ${report.student.name}`,
@@ -356,4 +361,124 @@ export function formatReportAsText(report: StudentProgressReport): string {
   }
 
   return lines.join('\n');
+}
+
+// --- Decimal-safe financial arithmetic (integer cents) ---
+
+export function toCents(amount: string | number): number {
+  const str = typeof amount === 'number' ? amount.toFixed(2) : String(amount).trim();
+  if (!/^-?\d+(\.\d{1,2})?$/.test(str)) {
+    throw new Error(`Invalid monetary amount: ${amount}`);
+  }
+  const negative = str.startsWith('-');
+  const unsigned = negative ? str.slice(1) : str;
+  const [wholePart, fracPart = ''] = unsigned.split('.');
+  const cents = Number(wholePart) * 100 + Number(fracPart.padEnd(2, '0'));
+  return negative ? -cents : cents;
+}
+
+export function fromCents(cents: number): string {
+  const negative = cents < 0;
+  const abs = Math.abs(Math.round(cents));
+  const whole = Math.floor(abs / 100);
+  const frac = String(abs % 100).padStart(2, '0');
+  return `${negative ? '-' : ''}${whole}.${frac}`;
+}
+
+export function formatCents(cents: number, currency = 'USD'): string {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency,
+  }).format(cents / 100);
+}
+
+export function formatMoney(amount: string | number, currency = 'USD'): string {
+  return formatCents(toCents(amount), currency);
+}
+
+export function computeInvoiceStatus(
+  amountDue: string | number,
+  amountPaid: string | number
+): Exclude<InvoiceStatus, 'Voided'> {
+  const due = toCents(amountDue);
+  const paid = toCents(amountPaid);
+  if (paid <= 0) return 'Unpaid';
+  if (paid >= due) return 'Paid';
+  return 'Partial';
+}
+
+export function computeCertificateEligibility(params: {
+  enrollmentStatus: Enrollment['status'];
+  completionPct: number;
+  weightedScore: number | null;
+  attendanceRate: number;
+}): { eligible: boolean; reasons: string[] } {
+  const reasons: string[] = [];
+  if (params.enrollmentStatus === 'Dropped' || params.enrollmentStatus === 'Waitlisted') {
+    reasons.push(`Enrollment status is ${params.enrollmentStatus}.`);
+  }
+  if (params.completionPct < 100 && params.enrollmentStatus !== 'Completed') {
+    reasons.push(`Module completion is ${params.completionPct}% (100% required).`);
+  }
+  if (params.weightedScore === null || params.weightedScore < 70) {
+    reasons.push(
+      params.weightedScore === null
+        ? 'Graded assessments are incomplete.'
+        : `Weighted score is ${params.weightedScore}% (minimum 70% required).`
+    );
+  }
+  if (params.attendanceRate < 75) {
+    reasons.push(`Attendance rate is ${params.attendanceRate}% (minimum 75% required).`);
+  }
+  return { eligible: reasons.length === 0, reasons };
+}
+
+export function computeAcademyAnalytics(params: {
+  users: UserPublic[];
+  admissions: AdmissionApplication[];
+  enrollments: Enrollment[];
+  invoices: FeeInvoice[];
+  certificates: CertificateRecord[];
+  attendance: AttendanceRecord[];
+}): AcademyAnalytics {
+  const activeUsers = params.users.filter((u) => u.status !== 'archived');
+  const totalStudents = activeUsers.filter((u) => u.role === 'student').length;
+  const totalInstructors = activeUsers.filter((u) => u.role === 'instructor').length;
+  const activeEnrollments = params.enrollments.filter((e) => e.status === 'Active').length;
+  const completedEnrollments = params.enrollments.filter((e) => e.status === 'Completed').length;
+  const pendingAdmissions = params.admissions.filter(
+    (a) => a.status === 'Submitted' || a.status === 'Under Review'
+  ).length;
+
+  let totalBilledCents = 0;
+  let totalCollectedCents = 0;
+  for (const inv of params.invoices) {
+    if (inv.status === 'Voided' || inv.isArchived) continue;
+    totalBilledCents += toCents(inv.amountDue);
+    totalCollectedCents += Math.min(toCents(inv.amountDue), toCents(inv.amountPaid));
+  }
+  const outstandingCents = Math.max(0, totalBilledCents - totalCollectedCents);
+  const collectionRatePct =
+    totalBilledCents > 0
+      ? Math.round((totalCollectedCents / totalBilledCents) * 100)
+      : 100;
+
+  const certificatesIssued = params.certificates.filter(
+    (c) => c.status === 'Issued'
+  ).length;
+  const meanAttendanceRate = calculateAttendanceStats(params.attendance).rate;
+
+  return {
+    totalStudents,
+    totalInstructors,
+    activeEnrollments,
+    completedEnrollments,
+    pendingAdmissions,
+    totalBilledCents,
+    totalCollectedCents,
+    outstandingCents,
+    collectionRatePct,
+    certificatesIssued,
+    meanAttendanceRate,
+  };
 }

@@ -22,6 +22,7 @@ interface EnrollmentsViewProps {
     courseId: string;
     cohort: string;
     status: 'Active' | 'Waitlisted';
+    issueTuitionInvoice?: boolean;
   }) => Promise<void>;
   onUpdateStatus: (enrollmentId: string, status: EnrollmentStatus) => Promise<void>;
 }
@@ -37,8 +38,11 @@ export function EnrollmentsView({
 
   const [studentId, setStudentId] = useState(data.students[0]?.id ?? '');
   const [courseId, setCourseId] = useState(data.courses[0]?.id ?? '');
-  const [cohort, setCohort] = useState('Cohort A · Autumn');
+  const [cohort, setCohort] = useState(
+    data.cohorts[0]?.name ?? 'Cohort A · Autumn'
+  );
   const [newStatus, setNewStatus] = useState<'Active' | 'Waitlisted'>('Active');
+  const [issueTuitionInvoice, setIssueTuitionInvoice] = useState(true);
   const [formError, setFormError] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
@@ -68,6 +72,7 @@ export function EnrollmentsView({
         courseId,
         cohort: cohort.trim(),
         status: newStatus,
+        issueTuitionInvoice,
       });
       setModalOpen(false);
     } catch (err) {
@@ -381,6 +386,20 @@ export function EnrollmentsView({
                     <option value="Cohort A · Autumn">Cohort A · Autumn</option>
                     <option value="Cohort B · Autumn">Cohort B · Autumn</option>
                     <option value="Cohort C · Winter">Cohort C · Winter</option>
+                    {data.cohorts
+                      .filter(
+                        (c) =>
+                          ![
+                            'Cohort A · Autumn',
+                            'Cohort B · Autumn',
+                            'Cohort C · Winter',
+                          ].includes(c.name)
+                      )
+                      .map((c) => (
+                        <option key={c.id} value={c.name}>
+                          {c.name}
+                        </option>
+                      ))}
                   </select>
                 </div>
 
@@ -404,6 +423,16 @@ export function EnrollmentsView({
                   </select>
                 </div>
               </div>
+
+              <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer pt-1">
+                <input
+                  type="checkbox"
+                  checked={issueTuitionInvoice}
+                  onChange={(e) => setIssueTuitionInvoice(e.target.checked)}
+                  className="rounded border-slate-300 text-blue-700 focus:ring-blue-600"
+                />
+                <span>Automatically issue course tuition fee invoice</span>
+              </label>
 
               <div className="pt-2 flex items-center justify-end gap-2.5">
                 <button

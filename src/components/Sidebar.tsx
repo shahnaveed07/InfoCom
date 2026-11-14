@@ -1,13 +1,20 @@
 import React from 'react';
 import {
+  Award,
   Bell,
   BookOpen,
   CalendarClock,
   ClipboardCheck,
+  CreditCard,
   FileText,
+  FolderOpen,
   GraduationCap,
+  Layers,
   LayoutDashboard,
   LogOut,
+  ScrollText,
+  ShieldCheck,
+  UserCheck,
   Users,
   X,
 } from 'lucide-react';
@@ -15,11 +22,18 @@ import type { UserPublic } from '../shared/types';
 
 export type NavSection =
   | 'overview'
+  | 'admissions'
+  | 'users'
+  | 'catalog'
   | 'enrollments'
   | 'courses'
   | 'attendance'
-  | 'reports'
   | 'schedules'
+  | 'finance'
+  | 'documents'
+  | 'certificates'
+  | 'reports'
+  | 'audit'
   | 'student-home'
   | 'student-report';
 
@@ -33,6 +47,13 @@ interface SidebarProps {
   onCloseMobile: () => void;
 }
 
+type NavItem = {
+  id: NavSection;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  badge?: number;
+};
+
 export function Sidebar({
   user,
   activeSection,
@@ -42,25 +63,35 @@ export function Sidebar({
   mobileOpen,
   onCloseMobile,
 }: SidebarProps) {
-  const instructorItems: Array<{
-    id: NavSection;
-    label: string;
-    icon: React.ComponentType<{ className?: string }>;
-  }> = [
-    { id: 'overview', label: 'Overview', icon: LayoutDashboard },
+  const adminItems: NavItem[] = [
+    { id: 'overview', label: 'Academy Analytics', icon: LayoutDashboard },
+    { id: 'admissions', label: 'Admissions', icon: UserCheck },
+    { id: 'users', label: 'Students & Staff', icon: ShieldCheck },
+    { id: 'catalog', label: 'Courses & Cohorts', icon: Layers },
     { id: 'enrollments', label: 'Enrollments', icon: Users },
-    { id: 'courses', label: 'Course Tracking', icon: BookOpen },
+    { id: 'courses', label: 'Grading & Modules', icon: BookOpen },
     { id: 'attendance', label: 'Attendance & Alerts', icon: ClipboardCheck },
+    { id: 'schedules', label: 'Timetable', icon: CalendarClock },
+    { id: 'finance', label: 'Fees & Receipts', icon: CreditCard },
+    { id: 'documents', label: 'Document Vault', icon: FolderOpen },
+    { id: 'certificates', label: 'Certificates', icon: Award },
     { id: 'reports', label: 'Progress Reports', icon: FileText },
-    { id: 'schedules', label: 'Class Schedules', icon: CalendarClock },
+    { id: 'audit', label: 'Audit Logs', icon: ScrollText },
   ];
 
-  const studentItems: Array<{
-    id: NavSection;
-    label: string;
-    icon: React.ComponentType<{ className?: string }>;
-    badge?: number;
-  }> = [
+  const instructorItems: NavItem[] = [
+    { id: 'overview', label: 'Overview', icon: LayoutDashboard },
+    { id: 'enrollments', label: 'Enrollments', icon: Users },
+    { id: 'catalog', label: 'Courses & Cohorts', icon: Layers },
+    { id: 'courses', label: 'Course Tracking', icon: BookOpen },
+    { id: 'attendance', label: 'Attendance & Alerts', icon: ClipboardCheck },
+    { id: 'schedules', label: 'Class Schedules', icon: CalendarClock },
+    { id: 'certificates', label: 'Certificates', icon: Award },
+    { id: 'documents', label: 'Course Documents', icon: FolderOpen },
+    { id: 'reports', label: 'Progress Reports', icon: FileText },
+  ];
+
+  const studentItems: NavItem[] = [
     {
       id: 'student-home',
       label: 'Student Dashboard',
@@ -69,18 +100,38 @@ export function Sidebar({
     },
     { id: 'student-report', label: 'My Progress Report', icon: FileText },
     { id: 'schedules', label: 'Upcoming Schedules', icon: CalendarClock },
+    { id: 'finance', label: 'Fees & Receipts', icon: CreditCard },
+    { id: 'certificates', label: 'My Certificates', icon: Award },
+    { id: 'documents', label: 'Documents & Syllabi', icon: FolderOpen },
   ];
 
-  const items = user.role === 'instructor' ? instructorItems : studentItems;
+  const items =
+    user.role === 'admin'
+      ? adminItems
+      : user.role === 'instructor'
+        ? instructorItems
+        : studentItems;
+
+  const roleLabel =
+    user.role === 'admin'
+      ? 'Administrator'
+      : user.role === 'instructor'
+        ? 'Instructor'
+        : 'Student';
 
   const content = (
     <div className="h-full flex flex-col bg-white border-r border-slate-200 w-64">
-      <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between gap-2">
+      <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between gap-2 shrink-0">
         <div className="flex items-center gap-2.5 min-w-0">
           <GraduationCap className="w-5 h-5 text-blue-700 shrink-0" />
-          <span className="font-display text-sm font-semibold text-slate-900 truncate">
-            Northbridge Academy
-          </span>
+          <div className="min-w-0">
+            <span className="font-display text-sm font-semibold text-slate-900 truncate block">
+              InfoCom AMS
+            </span>
+            <span className="text-[11px] text-slate-500 truncate block">
+              Northbridge Academy
+            </span>
+          </div>
         </div>
         <button
           type="button"
@@ -92,7 +143,7 @@ export function Sidebar({
         </button>
       </div>
 
-      <nav aria-label="Primary navigation" className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
+      <nav aria-label="Primary navigation" className="flex-1 px-3 py-3 space-y-0.5 overflow-y-auto">
         {items.map((item) => {
           const Icon = item.icon;
           const active = activeSection === item.id;
@@ -105,7 +156,7 @@ export function Sidebar({
                 onCloseMobile();
               }}
               aria-current={active ? 'page' : undefined}
-              className={`w-full flex items-center justify-between gap-2.5 px-3 py-2.5 text-sm font-medium rounded-lg transition-colors cursor-pointer ${
+              className={`w-full flex items-center justify-between gap-2.5 px-3 py-2 text-[13px] font-medium rounded-lg transition-colors cursor-pointer ${
                 active
                   ? 'bg-blue-50 text-blue-800'
                   : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
@@ -119,7 +170,7 @@ export function Sidebar({
                 />
                 <span className="truncate whitespace-nowrap">{item.label}</span>
               </span>
-              {'badge' in item && typeof item.badge === 'number' && (
+              {typeof item.badge === 'number' && (
                 <span className="inline-flex items-center gap-1 text-xs font-mono tabular-nums font-semibold text-blue-700">
                   <Bell className="w-3 h-3" />
                   {item.badge}
@@ -130,12 +181,13 @@ export function Sidebar({
         })}
       </nav>
 
-      <div className="p-4 border-t border-slate-200 bg-slate-50/70">
+      <div className="p-4 border-t border-slate-200 bg-slate-50/70 shrink-0">
         <div className="min-w-0">
           <p className="text-sm font-medium text-slate-900 truncate">{user.name}</p>
           <p className="text-xs text-slate-500 truncate mt-0.5">
-            {user.role === 'instructor' ? 'Instructor' : 'Student'}
+            {roleLabel}
             {user.studentCode ? ` · ${user.studentCode}` : ''}
+            {user.staffCode ? ` · ${user.staffCode}` : ''}
           </p>
         </div>
         <button
@@ -152,10 +204,10 @@ export function Sidebar({
 
   return (
     <>
-      {/* Desktop persistent sidebar */}
-      <aside className="hidden lg:block shrink-0 no-print">{content}</aside>
+      <aside className="hidden lg:block h-screen sticky top-0 shrink-0 no-print">
+        {content}
+      </aside>
 
-      {/* Mobile slide-over sidebar */}
       {mobileOpen && (
         <div className="fixed inset-0 z-50 lg:hidden flex no-print">
           <div

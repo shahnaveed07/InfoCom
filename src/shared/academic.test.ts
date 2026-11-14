@@ -6,10 +6,22 @@ import {
   calculateCourseCompletion,
   calculateLetterGrade,
   calculateWeightedAverage,
+  computeAcademyAnalytics,
+  computeCertificateEligibility,
+  computeInvoiceStatus,
   computeStudentProgressReport,
   findUpcomingSessionsNeedingReminders,
+  formatCents,
+  formatMoney,
   formatReportAsText,
+  fromCents,
+  toCents,
 } from './academic';
+import {
+  createInvoiceSchema,
+  issueCertificateSchema,
+  recordPaymentSchema,
+} from './validation';
 import type {
   AttendanceRecord,
   ClassSession,
@@ -25,6 +37,7 @@ const sampleStudent: UserPublic = {
   name: 'Marcus Chen',
   email: 'marcus.chen@student.northbridge.edu',
   role: 'student',
+  status: 'active',
   studentCode: 'NTA-2026-041',
 };
 
@@ -36,6 +49,7 @@ const sampleCourse: Course = {
   instructorId: 'inst-1',
   instructorName: 'Dr. Elena Vance',
   durationWeeks: 12,
+  tuitionFee: '1450.00',
   modules: [
     { id: 'm1', code: 'M1', title: 'TypeScript Type Systems', weight: 25, labHours: 12 },
     { id: 'm2', code: 'M2', title: 'React Architecture & State', weight: 25, labHours: 14 },
@@ -178,7 +192,7 @@ test('findUpcomingSessionsNeedingReminders creates deduplicated 24h reminders on
       topic: 'Session cookies and RBAC',
       room: 'Lab 204',
       instructorName: 'Dr. Elena Vance',
-      startIso: '2026-11-13T18:00:00Z', // 8h ahead -> should trigger
+      startIso: '2026-11-13T18:00:00Z',
       endIso: '2026-11-13T20:00:00Z',
     },
     {
@@ -189,7 +203,7 @@ test('findUpcomingSessionsNeedingReminders creates deduplicated 24h reminders on
       topic: 'CI/CD',
       room: 'Lab 204',
       instructorName: 'Dr. Elena Vance',
-      startIso: '2026-11-20T18:00:00Z', // 7 days ahead -> should NOT trigger
+      startIso: '2026-11-20T18:00:00Z',
       endIso: '2026-11-20T20:00:00Z',
     },
   ];
@@ -269,4 +283,134 @@ test('buildAttendanceNotification formats clear status message', () => {
   assert.match(notif.title, /CS-204/);
   assert.match(notif.message, /marked Late/);
   assert.match(notif.message, /Arrived 15 mins/);
+});
+
+test('decimal-safe financial helpers avoid float drift and compute invoice statuses', () => {
+  assert.equal(toCents('1450.50'), 145050);
+  assert.equal(toCents('0.10') + toCents('0.20'), 30);
+  assert.equal(fromCents(toCents('0.10') + toCents('0.20')), '0.30');
+  assert.equal(formatCents(145000), '$1,450.00');
+  assert.equal(formatMoney('1450.00'), '$1,450.00');
+
+  assert.equal(computeInvoiceStatus('1450.00', '0.00'), 'Unpaid');
+  assert.equal(computeInvoiceStatus('1450.00', '500.00'), 'Partial');
+  assert.equal(computeInvoiceStatus('1450.00', '1450.00'), 'Paid');
+});
+
+test('computeCertificateEligibility enforces completion, passing score, and attendance rules', () => {
+  const ineligible = computeCertificateEligibility({
+    enrollmentStatus: 'Active',
+    completionPct: 75,
+    weightedScore: 68,
+    attendanceRate: 70,
+  });
+  assert.equal(ineligible.eligible, false);
+  assert.equal(ineligible.reasons.length, 3);
+
+  const eligible = computeCertificateEligibility({
+    enrollmentStatus: 'Completed',
+    completionPct: 100,
+    weightedScore: 94,
+    attendanceRate: 100,
+  });
+  assert.equal(eligible.eligible, true);
+  assert.equal(eligible.reasons.length, 0);
+});
+
+test('computeAcademyAnalytics excludes archived/voided invoices and aggregates metrics', () => {
+  const analytics = computeAcademyAnalytics({
+    users: [
+      sampleStudent,
+      {
+        id: 'inst-1',
+        name: 'Dr. Elena Vance',
+        email: 'elena.vance@northbridge.edu',
+        role: 'instructor',
+        status: 'active',
+      },
+    ],
+    admissions: [
+      {
+        id: 'adm-1',
+        applicantName: 'Jane Doe',
+        applicantEmail: 'jane@example.com',
+        phone: '',
+        targetCourseId: 'crs-ts',
+        preferredCohort: 'Cohort A',
+        status: 'Submitted',
+        notes: '',
+        submittedAt: '2026-11-12T10:00:00Z',
+      },
+    ],
+    enrollments: [
+      {
+        id: 'e1',
+        studentId: 'stu-1',
+        courseId: 'crs-ts',
+        cohort: 'Cohort A',
+        status: 'Active',
+        enrolledAt: '2026-11-01T00:00:00Z',
+        completedModuleIds: [],
+      },
+    ],
+    invoices: [
+      {
+        id: 'inv-1',
+        invoiceNumber: 'INV-001',
+        studentId: 'stu-1',
+        courseId: 'crs-ts',
+        description: 'Tuition',
+        amountDue: '1000.00',
+        amountPaid: '400.00',
+        currency: 'USD',
+        status: 'Partial',
+        dueDate: '2026-12-01T00:00:00Z',
+        isArchived: false,
+        createdAt: '2026-11-01T00:00:00Z',
+      },
+      {
+        id: 'inv-void',
+        invoiceNumber: 'INV-002',
+        studentId: 'stu-1',
+        courseId: 'crs-ts',
+        description: 'Voided',
+        amountDue: '500.00',
+        amountPaid: '0.00',
+        currency: 'USD',
+        status: 'Voided',
+        dueDate: '2026-12-01T00:00:00Z',
+        isArchived: false,
+        createdAt: '2026-11-01T00:00:00Z',
+      },
+    ],
+    certificates: [],
+    attendance: [],
+  });
+
+  assert.equal(analytics.totalStudents, 1);
+  assert.equal(analytics.totalInstructors, 1);
+  assert.equal(analytics.pendingAdmissions, 1);
+  assert.equal(analytics.totalBilledCents, 100000);
+  assert.equal(analytics.totalCollectedCents, 40000);
+  assert.equal(analytics.outstandingCents, 60000);
+  assert.equal(analytics.collectionRatePct, 40);
+});
+
+test('Zod validation schemas reject negative payments and invalid payloads', () => {
+  assert.equal(recordPaymentSchema.safeParse({ amount: '-50.00', method: 'Card' }).success, false);
+  assert.equal(recordPaymentSchema.safeParse({ amount: '250.00', method: 'Card' }).success, true);
+  assert.equal(
+    createInvoiceSchema.safeParse({
+      studentId: 'stu-1',
+      courseId: 'crs-ts',
+      description: 'Tuition',
+      amountDue: '0.00',
+      dueDate: '2026-12-01T00:00:00Z',
+    }).success,
+    false
+  );
+  assert.equal(
+    issueCertificateSchema.safeParse({ studentId: 'stu-1', courseId: '' }).success,
+    false
+  );
 });
