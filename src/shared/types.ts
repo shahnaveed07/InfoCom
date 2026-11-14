@@ -2,7 +2,13 @@ export type UserRole = 'admin' | 'instructor' | 'student';
 
 export type UserAccountStatus = 'active' | 'inactive' | 'suspended' | 'archived';
 
-export type EnrollmentStatus = 'Active' | 'Completed' | 'Waitlisted' | 'Dropped';
+export type EnrollmentStatus =
+  | 'Active'
+  | 'Waitlisted'
+  | 'Completed'
+  | 'Cancelled'
+  | 'Withdrawn'
+  | 'Dropped';
 
 export type AttendanceStatus = 'Present' | 'Late' | 'Absent';
 
@@ -16,11 +22,27 @@ export type NotificationKind =
   | 'admission';
 
 export type AdmissionStatus =
+  | 'Draft'
   | 'Submitted'
   | 'Under Review'
-  | 'Accepted'
+  | 'Documents Required'
+  | 'Approved'
   | 'Rejected'
+  | 'Withdrawn'
+  | 'Accepted'
   | 'Enrolled';
+
+export type AdmissionDocumentStatus =
+  | 'Pending'
+  | 'Verified'
+  | 'Replacement Required'
+  | 'Rejected';
+
+export type PortalActivationPolicy =
+  | 'immediate'
+  | 'on_approval'
+  | 'manual_activation'
+  | 'after_first_payment';
 
 export type CohortStatus = 'Planned' | 'Active' | 'Completed' | 'Archived';
 
@@ -106,19 +128,99 @@ export interface Cohort {
   status: CohortStatus;
 }
 
+export interface FeePlanSummary {
+  id: string;
+  code: string;
+  name: string;
+  description: string;
+  installmentCount: number;
+  currency: string;
+  isActive: boolean;
+}
+
+export interface AdmissionStatusHistoryEntry {
+  id: string;
+  applicationId: string;
+  previousStatus: string | null;
+  newStatus: string;
+  reason: string;
+  actorUserId?: string | null;
+  actorName: string;
+  actorRole: string;
+  changedAt: string;
+}
+
+export interface AdmissionDocumentRecord {
+  id: string;
+  applicationId: string;
+  fileAssetId: string;
+  documentType: string;
+  title: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  verifiedStatus: AdmissionDocumentStatus;
+  verificationRemarks: string;
+  verifiedByUserId?: string | null;
+  verifiedByName?: string | null;
+  verifiedAt?: string | null;
+  isLatest: boolean;
+  createdAt: string;
+}
+
 export interface AdmissionApplication {
   id: string;
+  applicationNumber?: string | null;
   applicantName: string;
   applicantEmail: string;
   phone: string;
+  dateOfBirth?: string | null;
+  gender?: string;
+  nationality?: string;
+  address?: string;
+  city?: string;
+  postalCode?: string;
+  guardianName?: string;
+  guardianRelationship?: string;
+  guardianPhone?: string;
+  guardianEmail?: string;
+  previousQualification?: string;
+  previousInstitution?: string;
+  graduationYear?: string;
+  previousScore?: string;
   targetCourseId: string;
+  targetBatchId?: string | null;
+  allocatedBatchId?: string | null;
+  feePlanId?: string | null;
   preferredCohort: string;
   status: AdmissionStatus;
   notes: string;
+  applicantRemarks?: string;
+  reviewRemarks?: string;
+  rejectionReason?: string;
   reviewedByUserId?: string | null;
   convertedUserId?: string | null;
+  portalActivated?: boolean;
+  portalActivatedAt?: string | null;
   submittedAt: string;
+  draftSavedAt?: string | null;
   reviewedAt?: string | null;
+  approvedAt?: string | null;
+  updatedAt?: string | null;
+  documentsCount?: number;
+  verifiedDocumentsCount?: number;
+  documents?: AdmissionDocumentRecord[];
+  statusHistory?: AdmissionStatusHistoryEntry[];
+}
+
+export interface AdmissionDetailPayload {
+  application: AdmissionApplication;
+  documents: AdmissionDocumentRecord[];
+  statusHistory: AdmissionStatusHistoryEntry[];
+  eligibleBatches: Array<Cohort & { enrolledCount: number; seatsRemaining: number }>;
+  feePlans: FeePlanSummary[];
+  linkedStudent: UserPublic | null;
+  portalActivationPolicy: PortalActivationPolicy;
 }
 
 export interface Enrollment {
@@ -139,8 +241,11 @@ export interface EnrollmentHistoryEntry {
   newStatus: string;
   previousBatchId: string | null;
   newBatchId: string | null;
+  previousBatchName?: string | null;
+  newBatchName?: string | null;
   reason: string;
   changedByUserId: string | null;
+  changedByName?: string | null;
   changedAt: string;
 }
 
@@ -388,6 +493,7 @@ export interface AcademySettingsPayload {
     certificateMinCompletionPct: number;
     certificateMinScore: number;
     certificateMinAttendancePct: number;
+    portalActivationPolicy: PortalActivationPolicy;
   };
   certificateTemplate: CertificateTemplateInfo | null;
   academicYears: AcademicYear[];
@@ -547,6 +653,7 @@ export interface DashboardPayload {
   classrooms?: Classroom[];
   academicYears?: AcademicYear[];
   academicTerms?: AcademicTerm[];
+  feePlans?: FeePlanSummary[];
   courses: Course[];
   cohorts: Cohort[];
   users: UserPublic[];

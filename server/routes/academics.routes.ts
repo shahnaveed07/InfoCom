@@ -2,6 +2,11 @@ import crypto from 'node:crypto';
 import { Router, type Response } from 'express';
 import { z } from 'zod';
 import {
+  isInactiveEnrollmentStatus,
+  isValidEnrollmentTransition,
+} from '../../src/shared/academic.ts';
+import type { EnrollmentStatus } from '../../src/shared/types.ts';
+import {
   createCohortSchema,
   createCourseSchema,
   createEnrollmentSchema,
@@ -452,6 +457,10 @@ academicsRouter.patch('/enrollments/:id', ...staffGuard, async (req: Authenticat
 
     const existing = await prisma.enrollment.findUnique({
       where: { id: req.params.id },
+      include: {
+        course: { select: { code: true, title: true } },
+        student: { select: { email: true } },
+      },
     });
     if (!existing) {
       res.status(404).json({ error: 'Enrollment not found.' });
@@ -466,10 +475,22 @@ academicsRouter.patch('/enrollments/:id', ...staffGuard, async (req: Authenticat
       }
     }
 
+    const currentStatus = existing.status as EnrollmentStatus;
+    const nextStatus = parsed.data.status;
+    if (!isValidEnrollmentTransition(currentStatus, nextStatus)) {
+      res.status(400).json({
+        error: `Cannot transition enrollment from "${currentStatus}" to "${nextStatus}".`,
+      });
+      return;
+    }
+
+    const reasonText =
+      parsed.data.reason?.trim() || `Status updated by ${req.authUser!.name}`;
+
     await prisma.$transaction(async (tx) => {
       await tx.enrollment.update({
         where: { id: existing.id },
-        data: { status: parsed.data.status },
+        data: { status: nextStatus },
       });
 
       await tx.enrollmentHistory.create({
@@ -477,13 +498,38 @@ academicsRouter.patch('/enrollments/:id', ...staffGuard, async (req: Authenticat
           id: `eh-${crypto.randomUUID().slice(0, 8)}`,
           enrollmentId: existing.id,
           previousStatus: existing.status,
-          newStatus: parsed.data.status,
+          newStatus: nextStatus,
           previousBatchId: existing.cohortId,
           newBatchId: existing.cohortId,
-          reason: `Status updated by ${req.authUser!.name}`,
+          reason: reasonText,
           changedByUserId: req.authUser!.id,
         },
       });
+
+      if (nextStatus !== currentStatus) {
+        const notif = await tx.notification.create({
+          data: {
+            id: `not-${crypto.randomUUID().slice(0, 8)}`,
+            userId: existing.studentId,
+            kind: 'enrollment',
+            title: `Enrollment ${nextStatus} · ${existing.course.code}`,
+            message: `Your enrollment in ${existing.course.title} (${existing.cohort}) changed from ${currentStatus} to ${nextStatus}. ${reasonText}`,
+            relatedCourseId: existing.courseId,
+            read: false,
+          },
+        });
+
+        await tx.deliveryLog.create({
+          data: {
+            id: `del-${crypto.randomUUID().slice(0, 8)}`,
+            notificationId: notif.id,
+            userId: existing.studentId,
+            channel: 'in_app',
+            recipient: existing.student.email,
+            status: 'Delivered',
+          },
+        });
+      }
     });
 
     await recordAuditLog({
@@ -491,7 +537,7 @@ academicsRouter.patch('/enrollments/:id', ...staffGuard, async (req: Authenticat
       action: 'ENROLLMENT_STATUS_UPDATED',
       entityType: 'enrollment',
       entityId: existing.id,
-      summary: `Updated enrollment ${existing.id} status from ${existing.status} to ${parsed.data.status}.`,
+      summary: `Updated enrollment ${existing.id} status from ${existing.status} to ${nextStatus}.`,
     });
 
     const dashboard = await getUserDashboardById(req.authUser!.id);
@@ -531,8 +577,8 @@ academicsRouter.put('/progress/module-completion', ...staffGuard, async (req: Au
         return;
       }
     }
-    if (enr.status === 'Dropped') {
-      res.status(400).json({ error: 'Cannot update module completion for a dropped enrollment.' });
+    if (isInactiveEnrollmentStatus(enr.status)) {
+      res.status(400).json({ error: `Cannot update module completion for a ${enr.status.toLowerCase()} enrollment.` });
       return;
     }
 

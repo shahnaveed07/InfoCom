@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "tsx --test src/shared/academic.test.ts src/shared/validation.test.ts server/auth.test.ts server/db/config.test.ts server/security.integration.test.ts server/phase4.integration.test.ts",
+    "test": "tsx --test src/shared/academic.test.ts src/shared/validation.test.ts server/auth.test.ts server/db/config.test.ts server/security.integration.test.ts server/phase4.integration.test.ts server/phase5.integration.test.ts",
     "admin:bootstrap": "tsx scripts/bootstrap-admin.ts",
     "db:generate": "tsx scripts/prisma-run.ts generate",
     "db:migrate:deploy": "tsx scripts/prisma-run.ts migrate deploy",

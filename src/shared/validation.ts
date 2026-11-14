@@ -49,19 +49,159 @@ export const updateUserSchema = z.object({
   phone: z.string().trim().max(40).optional(),
 });
 
-export const createAdmissionSchema = z.object({
-  applicantName: z.string().trim().min(2, 'Applicant name is required.').max(120),
-  applicantEmail: z.string().trim().email('Valid applicant email is required.'),
-  phone: z.string().trim().max(40).optional().default(''),
-  targetCourseId: z.string().trim().min(1, 'Target course is required.'),
-  preferredCohort: z.string().trim().min(2, 'Preferred cohort is required.').max(120),
-  notes: z.string().trim().max(1000).optional().default(''),
+export const admissionAttachmentSchema = z.object({
+  documentType: z.string().trim().min(2).max(80).default('ID Verification'),
+  title: z.string().trim().min(2).max(160),
+  category: z
+    .enum(['ID Verification', 'Transcript', 'Syllabus', 'Assignment', 'Receipt', 'Other'])
+    .default('ID Verification'),
+  fileName: z.string().trim().min(1).max(255),
+  mimeType: z.string().trim().min(1).max(120),
+  contentBase64: z.string().min(4).max(3_000_000, 'File exceeds 2MB decoded upload limit.'),
 });
 
+export const createAdmissionSchema = z
+  .object({
+    applicantName: z.string().trim().max(120).optional().default(''),
+    applicantEmail: z.string().trim().max(160).optional().default(''),
+    phone: z.string().trim().max(40).optional().default(''),
+    dateOfBirth: z.string().trim().max(40).optional().nullable(),
+    gender: z.string().trim().max(40).optional().default(''),
+    nationality: z.string().trim().max(80).optional().default(''),
+    address: z.string().trim().max(400).optional().default(''),
+    city: z.string().trim().max(100).optional().default(''),
+    postalCode: z.string().trim().max(32).optional().default(''),
+    guardianName: z.string().trim().max(120).optional().default(''),
+    guardianRelationship: z.string().trim().max(60).optional().default(''),
+    guardianPhone: z.string().trim().max(40).optional().default(''),
+    guardianEmail: z.string().trim().max(160).optional().default(''),
+    previousQualification: z.string().trim().max(160).optional().default(''),
+    previousInstitution: z.string().trim().max(160).optional().default(''),
+    graduationYear: z.string().trim().max(16).optional().default(''),
+    previousScore: z.string().trim().max(40).optional().default(''),
+    targetCourseId: z.string().trim().min(1, 'Target course is required.'),
+    targetBatchId: z.string().trim().optional().nullable(),
+    feePlanId: z.string().trim().optional().nullable(),
+    preferredCohort: z.string().trim().max(120).optional().default(''),
+    status: z.enum(['Draft', 'Submitted']).optional().default('Submitted'),
+    notes: z.string().trim().max(1000).optional().default(''),
+    applicantRemarks: z.string().trim().max(1000).optional().default(''),
+    documents: z.array(admissionAttachmentSchema).max(6).optional().default([]),
+  })
+  .superRefine((data, ctx) => {
+    if (data.status === 'Draft') {
+      if (data.applicantName.length < 2 && !data.applicantEmail) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['applicantName'],
+          message: 'Provide at least applicant name or email to save a draft.',
+        });
+      }
+      if (data.applicantEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.applicantEmail)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['applicantEmail'],
+          message: 'Valid applicant email is required.',
+        });
+      }
+      if (data.guardianEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.guardianEmail)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['guardianEmail'],
+          message: 'Valid guardian email is required.',
+        });
+      }
+      return;
+    }
+
+    if (data.applicantName.length < 2) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['applicantName'],
+        message: 'Applicant name is required.',
+      });
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.applicantEmail)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['applicantEmail'],
+        message: 'Valid applicant email is required.',
+      });
+    }
+    if (data.guardianEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.guardianEmail)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['guardianEmail'],
+        message: 'Valid guardian email is required.',
+      });
+    }
+    if (!data.preferredCohort && !data.targetBatchId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['preferredCohort'],
+        message: 'Preferred cohort or batch is required.',
+      });
+    }
+  });
+
 export const updateAdmissionSchema = z.object({
-  status: z.enum(['Submitted', 'Under Review', 'Accepted', 'Rejected', 'Enrolled']),
+  applicantName: z.string().trim().min(2).max(120).optional(),
+  applicantEmail: z.string().trim().email('Valid applicant email is required.').optional(),
+  phone: z.string().trim().max(40).optional(),
+  dateOfBirth: z.string().trim().max(40).optional().nullable(),
+  gender: z.string().trim().max(40).optional(),
+  nationality: z.string().trim().max(80).optional(),
+  address: z.string().trim().max(400).optional(),
+  city: z.string().trim().max(100).optional(),
+  postalCode: z.string().trim().max(32).optional(),
+  guardianName: z.string().trim().max(120).optional(),
+  guardianRelationship: z.string().trim().max(60).optional(),
+  guardianPhone: z.string().trim().max(40).optional(),
+  guardianEmail: z.string().trim().email('Valid guardian email is required.').or(z.literal('')).optional(),
+  previousQualification: z.string().trim().max(160).optional(),
+  previousInstitution: z.string().trim().max(160).optional(),
+  graduationYear: z.string().trim().max(16).optional(),
+  previousScore: z.string().trim().max(40).optional(),
+  targetCourseId: z.string().trim().min(1).optional(),
+  targetBatchId: z.string().trim().optional().nullable(),
+  feePlanId: z.string().trim().optional().nullable(),
+  preferredCohort: z.string().trim().max(120).optional(),
+  status: z
+    .enum([
+      'Draft',
+      'Submitted',
+      'Under Review',
+      'Documents Required',
+      'Approved',
+      'Rejected',
+      'Withdrawn',
+      'Accepted',
+      'Enrolled',
+    ])
+    .optional(),
   notes: z.string().trim().max(1000).optional(),
+  applicantRemarks: z.string().trim().max(1000).optional(),
+  reviewRemarks: z.string().trim().max(1000).optional(),
+  rejectionReason: z.string().trim().max(1000).optional(),
+  reason: z.string().trim().max(500).optional(),
   convertToEnrollment: z.boolean().optional(),
+  waitlistIfFull: z.boolean().optional(),
+});
+
+export const approveAdmissionSchema = z.object({
+  targetCourseId: z.string().trim().min(1).optional(),
+  targetBatchId: z.string().trim().min(1, 'Target batch allocation is required.'),
+  feePlanId: z.string().trim().optional().nullable(),
+  waitlistIfFull: z.boolean().optional().default(false),
+  reviewRemarks: z.string().trim().max(1000).optional().default(''),
+  issueInvoice: z.boolean().optional().default(true),
+});
+
+export const uploadAdmissionDocumentSchema = admissionAttachmentSchema;
+
+export const verifyAdmissionDocumentSchema = z.object({
+  status: z.enum(['Verified', 'Replacement Required', 'Rejected']),
+  verificationRemarks: z.string().trim().max(500).optional().default(''),
 });
 
 export const createCourseSchema = z.object({
@@ -136,7 +276,15 @@ export const createEnrollmentSchema = z.object({
 });
 
 export const updateEnrollmentStatusSchema = z.object({
-  status: z.enum(['Active', 'Completed', 'Waitlisted', 'Dropped']),
+  status: z.enum([
+    'Active',
+    'Waitlisted',
+    'Completed',
+    'Cancelled',
+    'Withdrawn',
+    'Dropped',
+  ]),
+  reason: z.string().trim().max(500).optional().default(''),
 });
 
 export const toggleModuleSchema = z.object({
@@ -317,6 +465,14 @@ export const transferEnrollmentSchema = z.object({
   reason: z.string().trim().min(3, 'Transfer reason is required.').max(300),
 });
 
+export const courseTransferSchema = z.object({
+  toCourseId: z.string().trim().min(1, 'Destination course is required.'),
+  toBatchId: z.string().trim().min(1, 'Destination batch is required.'),
+  reason: z.string().trim().min(3, 'Course transfer reason is required.').max(300),
+  status: z.enum(['Active', 'Waitlisted']).optional().default('Active'),
+  issueTuitionInvoice: z.boolean().optional().default(true),
+});
+
 export const academicYearSchema = z.object({
   code: z.string().trim().min(2).max(32),
   name: z.string().trim().min(2).max(120),
@@ -373,6 +529,10 @@ export const updateAcademySettingsSchema = z.object({
     certificateMinCompletionPct: z.coerce.number().int().min(1).max(100),
     certificateMinScore: z.coerce.number().int().min(1).max(100),
     certificateMinAttendancePct: z.coerce.number().int().min(1).max(100),
+    portalActivationPolicy: z
+      .enum(['immediate', 'on_approval', 'manual_activation', 'after_first_payment'])
+      .optional()
+      .default('on_approval'),
   }),
   certificateTemplate: z
     .object({

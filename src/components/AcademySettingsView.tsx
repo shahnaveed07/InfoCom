@@ -13,7 +13,11 @@ import {
   Trash2,
 } from 'lucide-react';
 import { formatInvoiceNumber } from '../shared/academic';
-import type { AcademySettingsPayload, DashboardPayload } from '../shared/types';
+import type {
+  AcademySettingsPayload,
+  DashboardPayload,
+  PortalActivationPolicy,
+} from '../shared/types';
 import { api } from '../utils/api';
 
 interface AcademySettingsViewProps {
@@ -67,6 +71,8 @@ export function AcademySettingsView({
   const [certificateMinCompletionPct, setCertificateMinCompletionPct] = useState('100');
   const [certificateMinScore, setCertificateMinScore] = useState('70');
   const [certificateMinAttendancePct, setCertificateMinAttendancePct] = useState('75');
+  const [portalActivationPolicy, setPortalActivationPolicy] =
+    useState<PortalActivationPolicy>('on_approval');
 
   // Certificate template state
   const [tmplName, setTmplName] = useState('Standard Completion Credential');
@@ -117,6 +123,7 @@ export function AcademySettingsView({
     setCertificateMinCompletionPct(String(p.policies.certificateMinCompletionPct));
     setCertificateMinScore(String(p.policies.certificateMinScore));
     setCertificateMinAttendancePct(String(p.policies.certificateMinAttendancePct));
+    setPortalActivationPolicy(p.policies.portalActivationPolicy ?? 'on_approval');
 
     if (p.certificateTemplate) {
       setTmplName(p.certificateTemplate.name);
@@ -199,6 +206,7 @@ export function AcademySettingsView({
           certificateMinCompletionPct: Number(certificateMinCompletionPct) || 100,
           certificateMinScore: Number(certificateMinScore) || 70,
           certificateMinAttendancePct: Number(certificateMinAttendancePct) || 75,
+          portalActivationPolicy,
         },
         certificateTemplate: {
           name: tmplName.trim(),
@@ -883,6 +891,38 @@ export function AcademySettingsView({
                     onChange={(e) => setReminderWindowHours(e.target.value)}
                     className="w-full px-3 py-2 text-sm font-mono border border-slate-300 rounded-lg"
                   />
+                </div>
+                <div className="sm:col-span-2 lg:col-span-3 pt-4 border-t border-slate-200">
+                  <label
+                    htmlFor="pol-portal-activation"
+                    className="block text-xs font-medium text-slate-700 mb-1"
+                  >
+                    Admission Portal Activation Policy
+                  </label>
+                  <select
+                    id="pol-portal-activation"
+                    value={portalActivationPolicy}
+                    onChange={(e) =>
+                      setPortalActivationPolicy(e.target.value as PortalActivationPolicy)
+                    }
+                    className="w-full max-w-md px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg text-slate-900"
+                  >
+                    <option value="on_approval">
+                      On Admission Approval (Standard)
+                    </option>
+                    <option value="immediate">
+                      Immediate Activation upon Approval
+                    </option>
+                    <option value="manual_activation">
+                      Manual Admin Activation Required
+                    </option>
+                    <option value="after_first_payment">
+                      Activate Automatically After First Payment
+                    </option>
+                  </select>
+                  <p className="mt-1.5 text-xs text-slate-500">
+                    Controls whether newly admitted students gain active portal login status immediately on approval, only after recording their first tuition payment, or via explicit administrator activation.
+                  </p>
                 </div>
               </div>
             )}

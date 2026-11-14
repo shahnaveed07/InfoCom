@@ -2,13 +2,11 @@ import crypto from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
 import { toCents } from '../../src/shared/academic.ts';
 import {
-  createAdmissionSchema,
   createInvoiceSchema,
   createUserSchema,
   issueCertificateSchema,
   recordPaymentSchema,
   revokeCertificateSchema,
-  updateAdmissionSchema,
   updateUserSchema,
   uploadDocumentSchema,
 } from '../../src/shared/validation.ts';
@@ -33,7 +31,6 @@ import {
   requireRoles,
   type AuthenticatedRequest,
 } from '../middleware/auth.ts';
-import { createRateLimiter } from '../middleware/security.ts';
 import {
   listAuditLogsPaginated,
   listNotificationsPaginated,
@@ -48,13 +45,6 @@ import {
 
 export const adminOpsRouter = Router();
 
-const publicAdmissionLimiter = createRateLimiter({
-  windowMs: 15 * 60 * 1000,
-  maxRequests: 10,
-  keyPrefix: 'public-admission',
-  message: 'Too many admission submissions from this network. Please wait before submitting again.',
-});
-
 // Public certificate verification endpoint
 adminOpsRouter.get('/certificates/verify/:code', async (req: Request, res: Response) => {
   try {
@@ -67,50 +57,6 @@ adminOpsRouter.get('/certificates/verify/:code', async (req: Request, res: Respo
   } catch (err) {
     console.error('GET /api/certificates/verify/:code error:', err);
     res.status(500).json({ error: 'Unable to verify certificate right now.' });
-  }
-});
-
-// Public admission application submission
-adminOpsRouter.post('/admissions/public', publicAdmissionLimiter, async (req: Request, res: Response) => {
-  try {
-    const parsed = createAdmissionSchema.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid admission details.' });
-      return;
-    }
-    const input = parsed.data;
-    const course = await prisma.course.findUnique({ where: { id: input.targetCourseId } });
-    if (!course) {
-      res.status(400).json({ error: 'Selected target course was not found.' });
-      return;
-    }
-
-    const admissionId = `adm-${crypto.randomUUID().slice(0, 8)}`;
-    await prisma.admissionApplication.create({
-      data: {
-        id: admissionId,
-        applicantName: input.applicantName,
-        applicantEmail: input.applicantEmail.toLowerCase(),
-        phone: input.phone,
-        targetCourseId: course.id,
-        preferredCohort: input.preferredCohort,
-        status: 'Submitted',
-        notes: input.notes,
-      },
-    });
-
-    await recordAuditLog({
-      actor: { email: input.applicantEmail.toLowerCase(), role: 'applicant' },
-      action: 'ADMISSION_SUBMITTED',
-      entityType: 'admission',
-      entityId: admissionId,
-      summary: `Public admission application submitted by ${input.applicantName} for ${course.code}.`,
-    });
-
-    res.status(201).json({ admissionId });
-  } catch (err) {
-    console.error('POST /api/admissions/public error:', err);
-    res.status(500).json({ error: 'Failed to submit admission application.' });
   }
 });
 
@@ -378,291 +324,6 @@ adminOpsRouter.patch(
     } catch (err) {
       console.error('PATCH /api/users/:id error:', err);
       res.status(500).json({ error: 'Failed to update user account.' });
-    }
-  }
-);
-
-// Admissions management (Admin)
-adminOpsRouter.get(
-  '/admissions',
-  requireAuth,
-  requireRoles('admin'),
-  async (req: AuthenticatedRequest, res: Response) => {
-    try {
-      const dashboard = await getUserDashboardById(req.authUser!.id);
-      res.json({ admissions: dashboard.admissions });
-    } catch (err) {
-      console.error('GET /api/admissions error:', err);
-      res.status(500).json({ error: 'Failed to load admissions.' });
-    }
-  }
-);
-
-adminOpsRouter.post(
-  '/admissions',
-  requireAuth,
-  requireRoles('admin'),
-  async (req: AuthenticatedRequest, res: Response) => {
-    try {
-      const parsed = createAdmissionSchema.safeParse(req.body);
-      if (!parsed.success) {
-        res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid admission details.' });
-        return;
-      }
-      const input = parsed.data;
-      const course = await prisma.course.findUnique({ where: { id: input.targetCourseId } });
-      if (!course) {
-        res.status(400).json({ error: 'Selected course does not exist.' });
-        return;
-      }
-
-      const admissionId = `adm-${crypto.randomUUID().slice(0, 8)}`;
-      await prisma.admissionApplication.create({
-        data: {
-          id: admissionId,
-          applicantName: input.applicantName,
-          applicantEmail: input.applicantEmail.toLowerCase(),
-          phone: input.phone,
-          targetCourseId: course.id,
-          preferredCohort: input.preferredCohort,
-          status: 'Submitted',
-          notes: input.notes,
-        },
-      });
-
-      await recordAuditLog({
-        actor: req.authUser!,
-        action: 'ADMISSION_CREATED',
-        entityType: 'admission',
-        entityId: admissionId,
-        summary: `Logged admission application for ${input.applicantName} (${course.code}).`,
-      });
-
-      const dashboard = await getUserDashboardById(req.authUser!.id);
-      res.status(201).json({ admissionId, dashboard });
-    } catch (err) {
-      console.error('POST /api/admissions error:', err);
-      res.status(500).json({ error: 'Failed to record admission application.' });
-    }
-  }
-);
-
-adminOpsRouter.patch(
-  '/admissions/:id',
-  requireAuth,
-  requireRoles('admin'),
-  async (req: AuthenticatedRequest, res: Response) => {
-    try {
-      const parsed = updateAdmissionSchema.safeParse(req.body);
-      if (!parsed.success) {
-        res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid admission update.' });
-        return;
-      }
-
-      const admission = await prisma.admissionApplication.findUnique({
-        where: { id: req.params.id },
-      });
-      if (!admission) {
-        res.status(404).json({ error: 'Admission application not found.' });
-        return;
-      }
-
-      const input = parsed.data;
-      const shouldConvert = Boolean(input.convertToEnrollment) && !admission.convertedUserId;
-
-      await prisma.$transaction(async (tx) => {
-        if (shouldConvert) {
-          const course = await tx.course.findUnique({
-            where: { id: admission.targetCourseId },
-            include: { instructor: true },
-          });
-          if (!course) {
-            throw new Error('Target course not found for admission conversion.');
-          }
-
-          const existingUser = await tx.user.findUnique({
-            where: { email: admission.applicantEmail.toLowerCase() },
-          });
-
-          let studentId = existingUser?.id;
-          const studentEmail = admission.applicantEmail.toLowerCase();
-          if (!studentId) {
-            studentId = `stu-${crypto.randomUUID().slice(0, 8)}`;
-            const studentCode = await generateUniqueStudentCode(tx);
-            const tempSecret = crypto.randomBytes(12).toString('base64url');
-            const tempHash = await hashPassword(tempSecret);
-            await tx.user.create({
-              data: {
-                id: studentId,
-                name: admission.applicantName,
-                email: studentEmail,
-                role: 'student',
-                status: 'active',
-                studentCode,
-                phone: admission.phone || null,
-                passwordHash: tempHash,
-                mustChangePassword: true,
-              },
-            });
-
-            const roleRow = await tx.role.findUnique({ where: { code: 'student' } });
-            if (roleRow) {
-              await tx.userRole.upsert({
-                where: { userId_roleId: { userId: studentId, roleId: roleRow.id } },
-                update: {},
-                create: {
-                  id: `ur-${studentId}-student`,
-                  userId: studentId,
-                  roleId: roleRow.id,
-                },
-              });
-            }
-
-            await tx.studentProfile.create({
-              data: {
-                id: `sp-${studentId}`,
-                userId: studentId,
-                studentCode,
-              },
-            });
-          }
-
-          const activeEnr = await tx.enrollment.findFirst({
-            where: {
-              studentId,
-              courseId: course.id,
-              status: { not: 'Dropped' },
-            },
-          });
-
-          let enrollmentId = activeEnr?.id;
-          if (!activeEnr) {
-            const matchedBatch = await tx.batch.findFirst({
-              where: { courseId: course.id, name: admission.preferredCohort },
-            });
-            enrollmentId = `enr-${crypto.randomUUID().slice(0, 8)}`;
-            await tx.enrollment.create({
-              data: {
-                id: enrollmentId,
-                studentId,
-                courseId: course.id,
-                cohortId: matchedBatch?.id ?? null,
-                cohort: admission.preferredCohort,
-                status: 'Active',
-                completedModuleIds: [],
-                tuitionSnapshot: course.tuitionFee,
-                batchNameSnapshot: admission.preferredCohort,
-                instructorNameSnapshot: course.instructor?.name ?? null,
-              },
-            });
-            await tx.enrollmentHistory.create({
-              data: {
-                id: `eh-${crypto.randomUUID().slice(0, 8)}`,
-                enrollmentId,
-                previousStatus: null,
-                newStatus: 'Active',
-                newBatchId: matchedBatch?.id ?? null,
-                reason: `Converted from admission ${admission.id}`,
-                changedByUserId: req.authUser!.id,
-              },
-            });
-          }
-
-          if (toCents(course.tuitionFee.toString()) > 0) {
-            const invId = `inv-${crypto.randomUUID().slice(0, 8)}`;
-            const invDesc = `${course.code} ${course.title} Tuition (${admission.preferredCohort})`;
-            const invNum = await generateNextInvoiceNumber(tx);
-            await tx.invoice.create({
-              data: {
-                id: invId,
-                invoiceNumber: invNum,
-                studentId,
-                enrollmentId: enrollmentId ?? null,
-                courseId: course.id,
-                description: invDesc,
-                subtotal: course.tuitionFee,
-                amountDue: course.tuitionFee,
-                amountPaid: '0.00',
-                currency: 'USD',
-                status: 'Unpaid',
-                dueDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
-                issuedByUserId: req.authUser!.id,
-              },
-            });
-            await tx.invoiceItem.create({
-              data: {
-                id: `item-${crypto.randomUUID().slice(0, 8)}`,
-                invoiceId: invId,
-                itemType: 'Tuition',
-                description: invDesc,
-                quantity: 1,
-                unitPrice: course.tuitionFee,
-                lineTotal: course.tuitionFee,
-              },
-            });
-          }
-
-          const notif = await tx.notification.create({
-            data: {
-              id: `not-${crypto.randomUUID().slice(0, 8)}`,
-              userId: studentId,
-              kind: 'admission',
-              title: `Admission Accepted · ${course.code}`,
-              message: `Your admission to ${course.title} (${admission.preferredCohort}) is confirmed and tuition invoice has been issued.`,
-              relatedCourseId: course.id,
-              read: false,
-            },
-          });
-
-          await tx.deliveryLog.create({
-            data: {
-              id: `del-${crypto.randomUUID().slice(0, 8)}`,
-              notificationId: notif.id,
-              userId: studentId,
-              channel: 'in_app',
-              recipient: studentEmail,
-              status: 'Delivered',
-            },
-          });
-
-          await tx.admissionApplication.update({
-            where: { id: admission.id },
-            data: {
-              status: 'Enrolled',
-              notes: input.notes ?? admission.notes,
-              reviewedByUserId: req.authUser!.id,
-              convertedUserId: studentId,
-              reviewedAt: new Date(),
-            },
-          });
-        } else {
-          await tx.admissionApplication.update({
-            where: { id: admission.id },
-            data: {
-              status: input.status,
-              notes: input.notes ?? admission.notes,
-              reviewedByUserId: req.authUser!.id,
-              reviewedAt: new Date(),
-            },
-          });
-        }
-      });
-
-      await recordAuditLog({
-        actor: req.authUser!,
-        action: shouldConvert ? 'ADMISSION_CONVERTED' : 'ADMISSION_REVIEWED',
-        entityType: 'admission',
-        entityId: admission.id,
-        summary: shouldConvert
-          ? `Accepted and enrolled applicant ${admission.applicantName} with tuition invoice.`
-          : `Updated admission ${admission.id} status to ${input.status}.`,
-      });
-
-      const dashboard = await getUserDashboardById(req.authUser!.id);
-      res.json({ dashboard });
-    } catch (err) {
-      console.error('PATCH /api/admissions/:id error:', err);
-      res.status(500).json({ error: 'Failed to update admission application.' });
     }
   }
 );

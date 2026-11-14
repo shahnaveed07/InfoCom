@@ -15,7 +15,12 @@ import {
   UserCheck,
   Users,
 } from 'lucide-react';
-import { formatCents, formatMoney, toCents } from '../shared/academic';
+import {
+  formatCents,
+  formatMoney,
+  isInactiveEnrollmentStatus,
+  toCents,
+} from '../shared/academic';
 import type {
   AdminAnalyticsDetail,
   AnalyticsPreset,
@@ -823,7 +828,7 @@ export function AdminOverview({ data, onNavigate }: AdminOverviewProps) {
               <tbody className="divide-y divide-slate-200 text-sm">
                 {data.courses.map((course) => {
                   const activeCount = data.enrollments.filter(
-                    (e) => e.courseId === course.id && e.status !== 'Dropped'
+                    (e) => e.courseId === course.id && !isInactiveEnrollmentStatus(e.status)
                   ).length;
                   const courseInvoices = data.invoices.filter(
                     (inv) =>

@@ -10,6 +10,7 @@ import {
 import {
   calculateAttendanceStats,
   calculateCourseCompletion,
+  isInactiveEnrollmentStatus,
 } from '../shared/academic';
 import type { DashboardPayload } from '../shared/types';
 import type { NavSection } from './Sidebar';
@@ -139,7 +140,7 @@ export function InstructorOverview({ data, onNavigate }: InstructorOverviewProps
               <tbody className="divide-y divide-slate-200 text-sm">
                 {data.courses.map((course) => {
                   const courseEnr = data.enrollments.filter(
-                    (e) => e.courseId === course.id && e.status !== 'Dropped'
+                    (e) => e.courseId === course.id && !isInactiveEnrollmentStatus(e.status)
                   );
                   const courseCompletion =
                     courseEnr.length > 0

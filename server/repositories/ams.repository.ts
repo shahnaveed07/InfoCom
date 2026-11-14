@@ -307,7 +307,7 @@ export async function listStudentsPaginated(params: PaginationParams & {
           enrollments: {
             some: {
               courseId: params.courseId,
-              status: { not: 'Dropped' },
+              status: { notIn: ['Dropped', 'Cancelled', 'Withdrawn'] },
             },
           },
         }

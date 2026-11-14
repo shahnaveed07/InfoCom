@@ -15,6 +15,7 @@ import {
   calculateLetterGrade,
   computeStudentProgressReport,
   formatCents,
+  isInactiveEnrollmentStatus,
   toCents,
 } from '../shared/academic';
 import type { DashboardPayload } from '../shared/types';
@@ -56,7 +57,7 @@ export function StudentDashboard({
         (e) =>
           e.courseId === s.courseId &&
           e.cohort === s.cohort &&
-          e.status !== 'Dropped'
+          !isInactiveEnrollmentStatus(e.status)
       );
       return activeCohort && Date.parse(s.startIso) >= nowMs;
     })

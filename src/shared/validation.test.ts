@@ -7,10 +7,15 @@ import {
   toCents,
 } from './academic.ts';
 import {
+  approveAdmissionSchema,
+  courseTransferSchema,
+  createAdmissionSchema,
   createCourseSchema,
   createInvoiceSchema,
   recordPaymentSchema,
   registerSchema,
+  updateEnrollmentStatusSchema,
+  verifyAdmissionDocumentSchema,
 } from './validation.ts';
 
 test('toCents and fromCents handle decimal currency safely without float drift', () => {
@@ -78,3 +83,60 @@ test('Zod schemas reject invalid registration, invoice, payment, and course inpu
   });
   assert.equal(crsGood.success, true);
 });
+
+test('Phase 5 admission draft/submit, verification, approval, and course transfer schemas', () => {
+  // Incomplete draft is valid as long as name or email + targetCourseId are provided
+  assert.equal(
+    createAdmissionSchema.safeParse({
+      status: 'Draft',
+      applicantName: 'Aarav',
+      targetCourseId: 'crs-1',
+    }).success,
+    true
+  );
+
+  // Submitting without email or cohort fails
+  assert.equal(
+    createAdmissionSchema.safeParse({
+      status: 'Submitted',
+      applicantName: 'Aarav',
+      targetCourseId: 'crs-1',
+    }).success,
+    false
+  );
+
+  assert.equal(
+    verifyAdmissionDocumentSchema.safeParse({
+      status: 'Replacement Required',
+      verificationRemarks: 'Blurry ID scan',
+    }).success,
+    true
+  );
+
+  assert.equal(
+    approveAdmissionSchema.safeParse({
+      targetBatchId: 'bat-1',
+      feePlanId: 'fp-1',
+      waitlistIfFull: true,
+    }).success,
+    true
+  );
+
+  assert.equal(
+    courseTransferSchema.safeParse({
+      toCourseId: 'crs-2',
+      toBatchId: 'bat-2',
+      reason: 'Switching track to Cloud Engineering',
+    }).success,
+    true
+  );
+
+  assert.equal(
+    updateEnrollmentStatusSchema.safeParse({
+      status: 'Cancelled',
+      reason: 'Applicant deferred to next quarter',
+    }).success,
+    true
+  );
+});
+

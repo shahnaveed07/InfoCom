@@ -14,12 +14,17 @@ import {
   findUpcomingSessionsNeedingReminders,
   formatInvoiceNumber,
   fromCents,
+  isInactiveEnrollmentStatus,
+  isPendingAdmissionStatus,
   resolveAnalyticsDateWindow,
+  shouldActivatePortalOnPayment,
   toCents,
 } from '../src/shared/academic.ts';
 import type {
   AcademySettingsPayload,
   AdminAnalyticsDetail,
+  AdmissionApplication,
+  AdmissionStatus,
   AnalyticsPreset,
   AttendanceStatus,
   CertificateRecord,
@@ -27,11 +32,13 @@ import type {
   DashboardPayload,
   DocumentRecord,
   EnrollmentStatus,
+  FeePlanSummary,
   InstructorDetailPayload,
   InstructorDirectoryRow,
   InstructorPermissionKey,
   NotificationItem,
   PaymentMethod,
+  PortalActivationPolicy,
   StudentDetailPayload,
   UserPublic,
   UserRole,
@@ -113,6 +120,38 @@ export async function generateUniqueReceiptNumber(db: PrismaDbClient = prisma): 
     if (!exists) return candidate;
   }
   return `RCPT-${year}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+}
+
+export async function generateUniqueApplicationNumber(db: PrismaDbClient = prisma): Promise<string> {
+  const year = new Date().getUTCFullYear();
+  for (let i = 0; i < 12; i += 1) {
+    const candidate = `ADM-${year}-${crypto.randomInt(1000, 9999)}`;
+    const exists = await db.admissionApplication.findUnique({
+      where: { applicationNumber: candidate },
+      select: { id: true },
+    });
+    if (!exists) return candidate;
+  }
+  return `ADM-${year}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+}
+
+export async function getPortalActivationPolicy(
+  db: PrismaDbClient = prisma
+): Promise<PortalActivationPolicy> {
+  const row = await db.academySetting.findFirst({
+    where: { key: 'admission.portal_activation_policy' },
+    select: { value: true },
+  });
+  const val = row?.value;
+  if (
+    val === 'immediate' ||
+    val === 'on_approval' ||
+    val === 'manual_activation' ||
+    val === 'after_first_payment'
+  ) {
+    return val;
+  }
+  return 'on_approval';
 }
 
 export function toPublicUser(u: PrismaUser): UserPublic {
@@ -544,11 +583,13 @@ export async function buildDashboardForUser(userRow: PrismaUser): Promise<Dashbo
       allClassrooms,
       allAcademicYears,
       allAcademicTerms,
+      allFeePlans,
       allUsers,
       allCourses,
       allModules,
       allCohorts,
       allAdmissions,
+      allAdmissionDocs,
       allEnrollments,
       allSessions,
       allAttendance,
@@ -566,11 +607,13 @@ export async function buildDashboardForUser(userRow: PrismaUser): Promise<Dashbo
       prisma.classroom.findMany({ orderBy: { code: 'asc' } }),
       prisma.academicYear.findMany({ orderBy: { startDate: 'desc' } }),
       prisma.academicTerm.findMany({ orderBy: { startDate: 'desc' } }),
+      prisma.feePlan.findMany({ where: { isActive: true }, orderBy: { code: 'asc' } }),
       prisma.user.findMany(),
       prisma.course.findMany(),
       prisma.courseModule.findMany({ orderBy: { sortOrder: 'asc' } }),
       prisma.batch.findMany(),
       prisma.admissionApplication.findMany({ orderBy: { submittedAt: 'desc' } }),
+      prisma.admissionDocument.findMany(),
       prisma.enrollment.findMany({ orderBy: { enrolledAt: 'desc' } }),
       prisma.classSession.findMany(),
       prisma.attendance.findMany(),
@@ -804,14 +847,14 @@ export async function buildDashboardForUser(userRow: PrismaUser): Promise<Dashbo
 
     const mappedDocs: DocumentRecord[] = allDocs.map((d) => ({
       id: d.id,
-      ownerUserId: d.ownerUserId,
+      ownerUserId: d.ownerUserId ?? '',
       courseId: d.courseId,
       title: d.title,
       category: d.category as DocumentRecord['category'],
       fileName: d.fileName,
       mimeType: d.mimeType,
       sizeBytes: d.sizeBytes,
-      uploadedByUserId: d.uploadedByUserId,
+      uploadedByUserId: d.uploadedByUserId ?? '',
       isArchived: d.isArchived,
       createdAt: d.createdAt.toISOString(),
     }));
@@ -851,19 +894,60 @@ export async function buildDashboardForUser(userRow: PrismaUser): Promise<Dashbo
     const publicUsers = allUsers.map(toPublicUser);
     const studentsList = publicUsers.filter((u) => u.role === 'student');
 
-    const mappedAdmissions = allAdmissions.map((a) => ({
-      id: a.id,
-      applicantName: a.applicantName,
-      applicantEmail: a.applicantEmail,
-      phone: a.phone,
-      targetCourseId: a.targetCourseId,
-      preferredCohort: a.preferredCohort,
-      status: a.status as 'Submitted' | 'Under Review' | 'Accepted' | 'Rejected' | 'Enrolled',
-      notes: a.notes,
-      reviewedByUserId: a.reviewedByUserId,
-      convertedUserId: a.convertedUserId,
-      submittedAt: a.submittedAt.toISOString(),
-      reviewedAt: a.reviewedAt ? a.reviewedAt.toISOString() : null,
+    const mappedAdmissions: AdmissionApplication[] = allAdmissions.map((a) => {
+      const appDocs = allAdmissionDocs.filter((ad) => ad.applicationId === a.id);
+      return {
+        id: a.id,
+        applicationNumber: a.applicationNumber,
+        applicantName: a.applicantName,
+        applicantEmail: a.applicantEmail,
+        phone: a.phone,
+        dateOfBirth: a.dateOfBirth ? a.dateOfBirth.toISOString().slice(0, 10) : null,
+        gender: a.gender,
+        nationality: a.nationality,
+        address: a.address,
+        city: a.city,
+        postalCode: a.postalCode,
+        guardianName: a.guardianName,
+        guardianRelationship: a.guardianRelationship,
+        guardianPhone: a.guardianPhone,
+        guardianEmail: a.guardianEmail,
+        previousQualification: a.previousQualification,
+        previousInstitution: a.previousInstitution,
+        graduationYear: a.graduationYear,
+        previousScore: a.previousScore,
+        targetCourseId: a.targetCourseId,
+        targetBatchId: a.targetBatchId,
+        allocatedBatchId: a.allocatedBatchId,
+        feePlanId: a.feePlanId,
+        preferredCohort: a.preferredCohort,
+        status: a.status as AdmissionStatus,
+        notes: a.notes,
+        applicantRemarks: a.applicantRemarks,
+        reviewRemarks: a.reviewRemarks,
+        rejectionReason: a.rejectionReason,
+        reviewedByUserId: a.reviewedByUserId,
+        convertedUserId: a.convertedUserId,
+        portalActivated: a.portalActivated,
+        portalActivatedAt: a.portalActivatedAt ? a.portalActivatedAt.toISOString() : null,
+        submittedAt: a.submittedAt.toISOString(),
+        draftSavedAt: a.draftSavedAt ? a.draftSavedAt.toISOString() : null,
+        reviewedAt: a.reviewedAt ? a.reviewedAt.toISOString() : null,
+        approvedAt: a.approvedAt ? a.approvedAt.toISOString() : null,
+        updatedAt: a.updatedAt.toISOString(),
+        documentsCount: appDocs.length,
+        verifiedDocumentsCount: appDocs.filter((ad) => ad.verifiedStatus === 'Verified').length,
+      };
+    });
+
+    const mappedFeePlans: FeePlanSummary[] = allFeePlans.map((fp) => ({
+      id: fp.id,
+      code: fp.code,
+      name: fp.name,
+      description: fp.description,
+      installmentCount: fp.installmentCount,
+      currency: fp.currency,
+      isActive: fp.isActive,
     }));
 
     const analytics = computeAcademyAnalytics({
@@ -883,6 +967,7 @@ export async function buildDashboardForUser(userRow: PrismaUser): Promise<Dashbo
         classrooms: mappedClassrooms,
         academicYears: mappedYears,
         academicTerms: mappedTerms,
+        feePlans: mappedFeePlans,
         courses: mappedCourses,
         cohorts: mappedCohorts,
         users: publicUsers,
@@ -926,7 +1011,9 @@ export async function buildDashboardForUser(userRow: PrismaUser): Promise<Dashbo
           (e.cohortId ? scope.batchIds.has(e.cohortId) : false)
       );
       const scopedStudentIds = new Set(
-        scopedEnrollments.filter((e) => e.status !== 'Dropped').map((e) => e.studentId)
+        scopedEnrollments
+          .filter((e) => !isInactiveEnrollmentStatus(e.status))
+          .map((e) => e.studentId)
       );
       const scopedStudents = studentsList.filter((s) => scopedStudentIds.has(s.id));
       const scopedSessions = mappedSessions.filter(
@@ -952,7 +1039,7 @@ export async function buildDashboardForUser(userRow: PrismaUser): Promise<Dashbo
           (d.ownerUserId === publicUser.id ||
             d.uploadedByUserId === publicUser.id ||
             (d.courseId ? scope.courseIds.has(d.courseId) : false) ||
-            scopedStudentIds.has(d.ownerUserId))
+            (d.ownerUserId ? scopedStudentIds.has(d.ownerUserId) : false))
       );
       const scopedNotifs = mappedNotifs.filter(
         (n) =>
@@ -1096,7 +1183,7 @@ export async function createEnrollmentWithOptionalInvoice(params: {
       where: {
         studentId: params.studentId,
         courseId: params.courseId,
-        status: { not: 'Dropped' },
+        status: { notIn: ['Dropped', 'Cancelled', 'Withdrawn'] },
       },
     });
 
@@ -1324,12 +1411,72 @@ export async function recordInvoicePayment(params: {
         },
       });
 
+      let portalAutoActivated = false;
+      const activationPolicy = await getPortalActivationPolicy(tx);
+      if (shouldActivatePortalOnPayment(activationPolicy)) {
+        const studentRow = await tx.user.findUnique({
+          where: { id: invoice.studentId },
+          select: { id: true, status: true, email: true },
+        });
+        if (studentRow && studentRow.status === 'inactive') {
+          const pendingAdmission = await tx.admissionApplication.findFirst({
+            where: {
+              convertedUserId: studentRow.id,
+              status: { in: ['Approved', 'Enrolled', 'Accepted'] },
+              portalActivated: false,
+            },
+          });
+          if (pendingAdmission) {
+            const now = new Date();
+            await tx.user.update({
+              where: { id: studentRow.id },
+              data: { status: 'active' },
+            });
+            await tx.admissionApplication.updateMany({
+              where: {
+                convertedUserId: studentRow.id,
+                portalActivated: false,
+              },
+              data: {
+                portalActivated: true,
+                portalActivatedAt: now,
+              },
+            });
+            const actNotif = await tx.notification.create({
+              data: {
+                id: `not-${crypto.randomUUID().slice(0, 8)}`,
+                userId: studentRow.id,
+                kind: 'admission',
+                title: 'Student Portal Activated',
+                message: `Your student portal access is now active following payment receipt ${receiptNumber}.`,
+                relatedCourseId: invoice.courseId,
+                read: false,
+              },
+            });
+            await tx.deliveryLog.create({
+              data: {
+                id: `del-${crypto.randomUUID().slice(0, 8)}`,
+                notificationId: actNotif.id,
+                userId: studentRow.id,
+                applicationId: pendingAdmission.id,
+                channel: 'in_app',
+                recipient: studentRow.email,
+                status: 'Delivered',
+              },
+            });
+            portalAutoActivated = true;
+          }
+        }
+      }
+
       return {
         ok: true as const,
         paymentId,
         receiptNumber,
         newStatus,
         invoiceNumber: invoice.invoiceNumber,
+        portalAutoActivated,
+        studentId: invoice.studentId,
       };
     });
 
@@ -1341,6 +1488,15 @@ export async function recordInvoicePayment(params: {
         entityId: result.paymentId,
         summary: `Recorded $${params.amount} payment (${result.receiptNumber}) on ${result.invoiceNumber} -> ${result.newStatus}.`,
       });
+      if (result.portalAutoActivated) {
+        await recordAuditLog({
+          actor: params.actor,
+          action: 'PORTAL_AUTO_ACTIVATED_ON_PAYMENT',
+          entityType: 'user',
+          entityId: result.studentId,
+          summary: `Automatically activated student portal access after payment ${result.receiptNumber} per academy policy.`,
+        });
+      }
     }
     return result;
   } catch (err) {
@@ -1380,7 +1536,7 @@ export async function issueVerifiedCertificate(params: {
       where: {
         studentId: student.id,
         courseId: course.id,
-        status: { not: 'Dropped' },
+        status: { notIn: ['Dropped', 'Cancelled', 'Withdrawn'] },
       },
     });
 
@@ -1792,10 +1948,9 @@ export async function getActiveDocumentContent(
       const inAssignedCourse = doc.courseId
         ? await canInstructorAccessCourse(requester.id, doc.courseId)
         : false;
-      const isAuthorizedStudent = await canInstructorAccessStudent(
-        requester.id,
-        doc.ownerUserId
-      );
+      const isAuthorizedStudent = doc.ownerUserId
+        ? await canInstructorAccessStudent(requester.id, doc.ownerUserId)
+        : false;
       if (!isOwnerOrUploader && !inAssignedCourse && !isAuthorizedStudent) {
         return 'FORBIDDEN' as const;
       }
@@ -1862,9 +2017,7 @@ export async function computeAdminAnalyticsSummary(params: {
   const activeInstructors = users.filter(
     (u) => u.role === 'instructor' && u.status === 'active'
   ).length;
-  const admissionsPending = admissions.filter(
-    (a) => a.status === 'Submitted' || a.status === 'Under Review' || a.status === 'Accepted'
-  ).length;
+  const admissionsPending = admissions.filter((a) => isPendingAdmissionStatus(a.status)).length;
   const activeCourses = courses.filter((c) => !c.isArchived).length;
   const totalBatches = batches.filter((b) => b.status !== 'Archived').length;
 
@@ -2181,14 +2334,14 @@ export async function getStudentDetail(studentId: string): Promise<StudentDetail
     enrollmentHistory: historyList,
     documents: documents.map((d) => ({
       id: d.id,
-      ownerUserId: d.ownerUserId,
+      ownerUserId: d.ownerUserId ?? '',
       courseId: d.courseId,
       title: d.title,
       category: d.category as DocumentRecord['category'],
       fileName: d.fileName,
       mimeType: d.mimeType,
       sizeBytes: d.sizeBytes,
-      uploadedByUserId: d.uploadedByUserId,
+      uploadedByUserId: d.uploadedByUserId ?? '',
       isArchived: d.isArchived,
       createdAt: d.createdAt.toISOString(),
     })),
@@ -2258,7 +2411,7 @@ export async function listInstructorsWithMetrics(): Promise<InstructorDirectoryR
       prisma.course.findMany(),
       prisma.batch.findMany(),
       prisma.instructorAssignment.findMany({ where: { isActive: true } }),
-      prisma.enrollment.findMany({ where: { status: { not: 'Dropped' } } }),
+      prisma.enrollment.findMany({ where: { status: { notIn: ['Dropped', 'Cancelled', 'Withdrawn'] } } }),
       prisma.classSession.findMany(),
       prisma.attendance.findMany(),
       prisma.grade.findMany(),
@@ -2403,7 +2556,7 @@ export async function getInstructorDetail(
       orderBy: { startIso: 'desc' },
       take: 40,
     }),
-    prisma.enrollment.findMany({ where: { status: { not: 'Dropped' } } }),
+    prisma.enrollment.findMany({ where: { status: { notIn: ['Dropped', 'Cancelled', 'Withdrawn'] } } }),
     prisma.department.findMany(),
     prisma.classroom.findMany(),
   ]);
@@ -2545,6 +2698,18 @@ export async function getAcademySettingsPayload(): Promise<AcademySettingsPayloa
       certificateMinCompletionPct: num('certificate.min_completion_pct', 100),
       certificateMinScore: num('certificate.min_weighted_score', 60),
       certificateMinAttendancePct: num('certificate.min_attendance_pct', 75),
+      portalActivationPolicy: (() => {
+        const val = map.get('admission.portal_activation_policy');
+        if (
+          val === 'immediate' ||
+          val === 'on_approval' ||
+          val === 'manual_activation' ||
+          val === 'after_first_payment'
+        ) {
+          return val;
+        }
+        return 'on_approval';
+      })(),
     },
     certificateTemplate: certTemplate
       ? {

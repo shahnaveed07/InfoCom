@@ -11,7 +11,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { formatMoney } from '../shared/academic';
+import { formatMoney, isInactiveEnrollmentStatus } from '../shared/academic';
 import type { CohortStatus, Course, DashboardPayload, Department } from '../shared/types';
 import { api } from '../utils/api';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -622,7 +622,7 @@ export function CoursesCohortsView({
                   (e) =>
                     e.courseId === coh.courseId &&
                     (e.cohortId === coh.id || e.cohort === coh.name) &&
-                    e.status !== 'Dropped'
+                    !isInactiveEnrollmentStatus(e.status)
                 ).length;
                 return (
                   <tr key={coh.id} className="hover:bg-slate-50/70">

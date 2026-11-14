@@ -8,6 +8,7 @@ import {
 import { academicsRouter } from './routes/academics.routes.ts';
 import { adminMasterRouter } from './routes/admin-master.routes.ts';
 import { adminOpsRouter } from './routes/admin-ops.routes.ts';
+import { admissionsRouter } from './routes/admissions.routes.ts';
 import { authRouter } from './routes/auth.routes.ts';
 
 export function createApiApp(): express.Express {
@@ -19,6 +20,7 @@ export function createApiApp(): express.Express {
 
   app.use('/api', csrfOriginGuard);
   app.use('/api', authRouter);
+  app.use('/api', admissionsRouter);
   app.use('/api', academicsRouter);
   app.use('/api', adminOpsRouter);
   app.use('/api', adminMasterRouter);

@@ -190,7 +190,7 @@ export async function getInstructorScope(instructorId: string): Promise<Instruct
   if (courseIdList.length > 0 || batchIdList.length > 0) {
     const enrollments = await prisma.enrollment.findMany({
       where: {
-        status: { not: 'Dropped' },
+        status: { notIn: ['Dropped', 'Cancelled', 'Withdrawn'] },
         OR: [
           ...(courseIdList.length > 0 ? [{ courseId: { in: courseIdList } }] : []),
           ...(batchIdList.length > 0 ? [{ cohortId: { in: batchIdList } }] : []),
@@ -248,7 +248,7 @@ export async function canAccessCourse(
     where: {
       studentId: actor.id,
       courseId,
-      status: { not: 'Dropped' },
+      status: { notIn: ['Dropped', 'Cancelled', 'Withdrawn'] },
     },
     select: { id: true },
   });

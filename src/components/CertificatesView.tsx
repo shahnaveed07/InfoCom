@@ -14,6 +14,7 @@ import {
   calculateCourseCompletion,
   calculateWeightedAverage,
   computeCertificateEligibility,
+  isInactiveEnrollmentStatus,
 } from '../shared/academic';
 import type { CertificateRecord, DashboardPayload } from '../shared/types';
 import type { VerifiedCertificateInfo } from '../utils/api';
@@ -53,7 +54,7 @@ export function CertificatesView({
   const candidateRows = useMemo(() => {
     if (!isStaff) return [];
     return data.enrollments
-      .filter((e) => e.status !== 'Dropped')
+      .filter((e) => !isInactiveEnrollmentStatus(e.status))
       .map((enr) => {
         const student = data.students.find((s) => s.id === enr.studentId);
         const course = data.courses.find((c) => c.id === enr.courseId);

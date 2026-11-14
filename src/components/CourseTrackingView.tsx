@@ -10,6 +10,7 @@ import {
   calculateCourseCompletion,
   calculateLetterGrade,
   calculateWeightedAverage,
+  isInactiveEnrollmentStatus,
 } from '../shared/academic';
 import type { CourseModule, DashboardPayload } from '../shared/types';
 
@@ -60,7 +61,7 @@ export function CourseTrackingView({
   }
 
   const courseEnrollments = data.enrollments.filter(
-    (e) => e.courseId === course.id && e.status !== 'Dropped'
+    (e) => e.courseId === course.id && !isInactiveEnrollmentStatus(e.status)
   );
 
   function openGradeEditor(

@@ -2,10 +2,15 @@ import crypto from 'node:crypto';
 import { Router, type Response } from 'express';
 import type { AnalyticsPreset } from '../../src/shared/types.ts';
 import {
+  isTerminalEnrollmentStatus,
+  toCents,
+} from '../../src/shared/academic.ts';
+import {
   academicTermSchema,
   academicYearSchema,
   assignInstructorCoursesSchema,
   assignStudentToCohortSchema,
+  courseTransferSchema,
   createClassroomSchema,
   createDepartmentSchema,
   createInstructorSchema,
@@ -25,6 +30,7 @@ import {
 import {
   computeAdminAnalyticsSummary,
   createEnrollmentWithOptionalInvoice,
+  generateNextInvoiceNumber,
   generateUniqueStaffCode,
   generateUniqueStudentCode,
   getAcademySettingsPayload,
@@ -1154,7 +1160,7 @@ adminMasterRouter.post('/cohorts/:cohortId/assign-student', ...adminGuard, async
       where: {
         courseId: batch.courseId,
         OR: [{ cohortId: batch.id }, { cohort: batch.name }],
-        status: { not: 'Dropped' },
+        status: { notIn: ['Dropped', 'Cancelled', 'Withdrawn'] },
       },
     });
     if (parsed.data.status === 'Active' && activeInBatch >= batch.capacity) {
@@ -1203,8 +1209,8 @@ adminMasterRouter.post('/enrollments/:enrollmentId/transfer', ...adminGuard, asy
       res.status(404).json({ error: 'Enrollment record not found.' });
       return;
     }
-    if (enrollment.status === 'Dropped') {
-      res.status(400).json({ error: 'Cannot transfer a dropped enrollment.' });
+    if (isTerminalEnrollmentStatus(enrollment.status)) {
+      res.status(400).json({ error: `Cannot transfer a ${enrollment.status.toLowerCase()} enrollment.` });
       return;
     }
 
@@ -1231,7 +1237,7 @@ adminMasterRouter.post('/enrollments/:enrollmentId/transfer', ...adminGuard, asy
       where: {
         courseId: targetBatch.courseId,
         OR: [{ cohortId: targetBatch.id }, { cohort: targetBatch.name }],
-        status: { not: 'Dropped' },
+        status: { notIn: ['Dropped', 'Cancelled', 'Withdrawn'] },
       },
     });
     if (targetCount >= targetBatch.capacity) {
@@ -1310,6 +1316,292 @@ adminMasterRouter.post('/enrollments/:enrollmentId/transfer', ...adminGuard, asy
   }
 });
 
+adminMasterRouter.post('/enrollments/:enrollmentId/course-transfer', ...adminGuard, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const parsed = courseTransferSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid course transfer request.' });
+      return;
+    }
+
+    const { toCourseId, toBatchId, reason, status, issueTuitionInvoice } = parsed.data;
+    const enrollment = await prisma.enrollment.findUnique({
+      where: { id: req.params.enrollmentId },
+      include: { student: true, course: true },
+    });
+    if (!enrollment) {
+      res.status(404).json({ error: 'Enrollment record not found.' });
+      return;
+    }
+    if (isTerminalEnrollmentStatus(enrollment.status)) {
+      res.status(400).json({
+        error: `Cannot perform course transfer on a ${enrollment.status.toLowerCase()} enrollment.`,
+      });
+      return;
+    }
+    if (toCourseId === enrollment.courseId) {
+      res.status(400).json({
+        error: 'Destination course matches current course. Use batch transfer instead.',
+      });
+      return;
+    }
+
+    const [targetCourse, targetBatch] = await Promise.all([
+      prisma.course.findUnique({
+        where: { id: toCourseId },
+        include: { instructor: true },
+      }),
+      prisma.batch.findUnique({
+        where: { id: toBatchId },
+        include: { instructor: true },
+      }),
+    ]);
+
+    if (!targetCourse) {
+      res.status(404).json({ error: 'Destination course not found.' });
+      return;
+    }
+    if (!targetBatch || targetBatch.courseId !== targetCourse.id) {
+      res.status(400).json({
+        error: 'Destination batch does not exist or does not belong to the destination course.',
+      });
+      return;
+    }
+
+    const existingTargetEnrollment = await prisma.enrollment.findFirst({
+      where: {
+        studentId: enrollment.studentId,
+        courseId: targetCourse.id,
+        status: { notIn: ['Dropped', 'Cancelled', 'Withdrawn'] },
+      },
+    });
+    if (existingTargetEnrollment) {
+      res.status(409).json({
+        error: `${enrollment.student.name} already has a ${existingTargetEnrollment.status.toLowerCase()} enrollment in ${targetCourse.code}.`,
+      });
+      return;
+    }
+
+    const targetCount = await prisma.enrollment.count({
+      where: {
+        courseId: targetBatch.courseId,
+        OR: [{ cohortId: targetBatch.id }, { cohort: targetBatch.name }],
+        status: { notIn: ['Dropped', 'Cancelled', 'Withdrawn'] },
+      },
+    });
+    if (status === 'Active' && targetCount >= targetBatch.capacity) {
+      res.status(409).json({
+        error: `Destination batch ${targetBatch.name} is full (${targetCount}/${targetBatch.capacity}).`,
+      });
+      return;
+    }
+
+    const newEnrollmentId = `enr-${crypto.randomUUID().slice(0, 8)}`;
+
+    await prisma.$transaction(async (tx) => {
+      await tx.enrollment.update({
+        where: { id: enrollment.id },
+        data: { status: 'Withdrawn' },
+      });
+
+      await tx.enrollmentHistory.create({
+        data: {
+          id: `eh-${crypto.randomUUID().slice(0, 8)}`,
+          enrollmentId: enrollment.id,
+          previousStatus: enrollment.status,
+          newStatus: 'Withdrawn',
+          previousBatchId: enrollment.cohortId,
+          newBatchId: targetBatch.id,
+          reason: `Transferred out to ${targetCourse.code} (${targetBatch.name}): ${reason}`,
+          changedByUserId: req.authUser!.id,
+        },
+      });
+
+      await tx.enrollment.create({
+        data: {
+          id: newEnrollmentId,
+          studentId: enrollment.studentId,
+          courseId: targetCourse.id,
+          cohortId: targetBatch.id,
+          cohort: targetBatch.name,
+          status,
+          completedModuleIds: [],
+          tuitionSnapshot: targetCourse.tuitionFee,
+          batchNameSnapshot: targetBatch.name,
+          instructorNameSnapshot:
+            targetBatch.instructor?.name ?? targetCourse.instructor?.name ?? null,
+        },
+      });
+
+      await tx.enrollmentHistory.create({
+        data: {
+          id: `eh-${crypto.randomUUID().slice(0, 8)}`,
+          enrollmentId: newEnrollmentId,
+          previousStatus: enrollment.status,
+          newStatus: status,
+          previousBatchId: enrollment.cohortId,
+          newBatchId: targetBatch.id,
+          reason: `Course transfer from ${enrollment.course.code} (${enrollment.cohort}) to ${targetCourse.code} (${targetBatch.name}): ${reason}`,
+          changedByUserId: req.authUser!.id,
+        },
+      });
+
+      if (issueTuitionInvoice && toCents(targetCourse.tuitionFee.toString()) > 0) {
+        const feeStruct = await tx.feeStructure.findFirst({
+          where: { courseId: targetCourse.id, isActive: true },
+        });
+        const invId = `inv-${crypto.randomUUID().slice(0, 8)}`;
+        const invNum = await generateNextInvoiceNumber(tx);
+        const desc = `${targetCourse.code} ${targetCourse.title} Tuition (${targetBatch.name} · Course Transfer)`;
+
+        await tx.invoice.create({
+          data: {
+            id: invId,
+            invoiceNumber: invNum,
+            studentId: enrollment.studentId,
+            enrollmentId: newEnrollmentId,
+            courseId: targetCourse.id,
+            feeStructureId: feeStruct?.id ?? null,
+            description: desc,
+            subtotal: targetCourse.tuitionFee,
+            amountDue: targetCourse.tuitionFee,
+            amountPaid: '0.00',
+            currency: 'USD',
+            status: 'Unpaid',
+            dueDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+            issuedByUserId: req.authUser!.id,
+          },
+        });
+
+        await tx.invoiceItem.create({
+          data: {
+            id: `item-${crypto.randomUUID().slice(0, 8)}`,
+            invoiceId: invId,
+            itemType: 'Tuition',
+            description: desc,
+            quantity: 1,
+            unitPrice: targetCourse.tuitionFee,
+            lineTotal: targetCourse.tuitionFee,
+          },
+        });
+      }
+
+      const notif = await tx.notification.create({
+        data: {
+          id: `not-${crypto.randomUUID().slice(0, 8)}`,
+          userId: enrollment.studentId,
+          kind: 'enrollment',
+          title: `Course Transfer · ${targetCourse.code}`,
+          message: `Your enrollment was transferred from ${enrollment.course.code} (${enrollment.cohort}) to ${targetCourse.title} (${targetBatch.name}). Reason: ${reason}`,
+          relatedCourseId: targetCourse.id,
+          read: false,
+        },
+      });
+
+      await tx.deliveryLog.create({
+        data: {
+          id: `del-${crypto.randomUUID().slice(0, 8)}`,
+          notificationId: notif.id,
+          userId: enrollment.studentId,
+          channel: 'in_app',
+          recipient: enrollment.student.email,
+          status: 'Delivered',
+        },
+      });
+    });
+
+    await recordAuditLog({
+      actor: req.authUser!,
+      action: 'COURSE_TRANSFERRED',
+      entityType: 'enrollment',
+      entityId: newEnrollmentId,
+      summary: `Transferred ${enrollment.student.name} from ${enrollment.course.code} (${enrollment.cohort}) to ${targetCourse.code} (${targetBatch.name}).`,
+      metadata: {
+        previousEnrollmentId: enrollment.id,
+        fromCourseId: enrollment.courseId,
+        toCourseId: targetCourse.id,
+        toBatchId: targetBatch.id,
+        reason,
+      },
+    });
+
+    const dashboard = await getUserDashboardById(req.authUser!.id);
+    res.json({ newEnrollmentId, enrollmentId: newEnrollmentId, dashboard });
+  } catch (err) {
+    console.error('POST /api/enrollments/:enrollmentId/course-transfer error:', err);
+    res.status(500).json({ error: 'Failed to transfer student course.' });
+  }
+});
+
+adminMasterRouter.get('/enrollments/:enrollmentId/history', requireAuth, requireRoles('admin', 'instructor'), async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const enrollment = await prisma.enrollment.findUnique({
+      where: { id: req.params.enrollmentId },
+      include: {
+        course: { select: { code: true, title: true } },
+        student: { select: { name: true, email: true, studentCode: true } },
+        history: { orderBy: { changedAt: 'desc' } },
+      },
+    });
+    if (!enrollment) {
+      res.status(404).json({ error: 'Enrollment not found.' });
+      return;
+    }
+
+    const batchIds = Array.from(
+      new Set(
+        enrollment.history
+          .flatMap((h) => [h.previousBatchId, h.newBatchId])
+          .filter((id): id is string => Boolean(id))
+      )
+    );
+    const userIds = Array.from(
+      new Set(
+        enrollment.history
+          .map((h) => h.changedByUserId)
+          .filter((id): id is string => Boolean(id))
+      )
+    );
+
+    const [batches, actors] = await Promise.all([
+      batchIds.length > 0
+        ? prisma.batch.findMany({ where: { id: { in: batchIds } }, select: { id: true, name: true } })
+        : [],
+      userIds.length > 0
+        ? prisma.user.findMany({ where: { id: { in: userIds } }, select: { id: true, name: true } })
+        : [],
+    ]);
+
+    const batchMap = new Map(batches.map((b) => [b.id, b.name]));
+    const actorMap = new Map(actors.map((u) => [u.id, u.name]));
+
+    res.json({
+      enrollmentId: enrollment.id,
+      courseCode: enrollment.course.code,
+      courseTitle: enrollment.course.title,
+      studentName: enrollment.student.name,
+      studentCode: enrollment.student.studentCode,
+      history: enrollment.history.map((h) => ({
+        id: h.id,
+        enrollmentId: h.enrollmentId,
+        previousStatus: h.previousStatus,
+        newStatus: h.newStatus,
+        previousBatchId: h.previousBatchId,
+        newBatchId: h.newBatchId,
+        previousBatchName: h.previousBatchId ? batchMap.get(h.previousBatchId) ?? h.previousBatchId : null,
+        newBatchName: h.newBatchId ? batchMap.get(h.newBatchId) ?? h.newBatchId : null,
+        reason: h.reason,
+        changedByUserId: h.changedByUserId,
+        changedByName: h.changedByUserId ? actorMap.get(h.changedByUserId) ?? 'Staff' : 'System',
+        changedAt: h.changedAt.toISOString(),
+      })),
+    });
+  } catch (err) {
+    console.error('GET /api/enrollments/:enrollmentId/history error:', err);
+    res.status(500).json({ error: 'Failed to load enrollment history.' });
+  }
+});
+
 // 6. Academy Settings, Academic Years & Academic Terms
 adminMasterRouter.get('/settings', ...adminGuard, async (_req: AuthenticatedRequest, res: Response) => {
   try {
@@ -1378,6 +1670,11 @@ adminMasterRouter.put('/settings', ...adminGuard, async (req: AuthenticatedReque
         { key: 'certificate.min_completion_pct', value: String(input.policies.certificateMinCompletionPct), valueType: 'number' },
         { key: 'certificate.min_weighted_score', value: String(input.policies.certificateMinScore), valueType: 'number' },
         { key: 'certificate.min_attendance_pct', value: String(input.policies.certificateMinAttendancePct), valueType: 'number' },
+        {
+          key: 'admission.portal_activation_policy',
+          value: input.policies.portalActivationPolicy || 'on_approval',
+          valueType: 'string',
+        },
       ];
 
       for (const p of pairs) {

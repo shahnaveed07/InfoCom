@@ -6,6 +6,7 @@ import {
   Send,
   XCircle,
 } from 'lucide-react';
+import { isInactiveEnrollmentStatus } from '../shared/academic';
 import type { AttendanceStatus, DashboardPayload } from '../shared/types';
 
 interface AttendanceAlertsViewProps {
@@ -46,7 +47,7 @@ export function AttendanceAlertsView({
         (e) =>
           e.courseId === selectedSession.courseId &&
           e.cohort === selectedSession.cohort &&
-          e.status !== 'Dropped'
+          !isInactiveEnrollmentStatus(e.status)
       )
     : [];
 

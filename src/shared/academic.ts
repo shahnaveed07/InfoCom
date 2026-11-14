@@ -1,18 +1,149 @@
 import type {
   AdmissionApplication,
+  AdmissionStatus,
   AttendanceRecord,
   CertificateRecord,
   ClassSession,
   Course,
   Enrollment,
+  EnrollmentStatus,
   FeeInvoice,
   InvoiceStatus,
   ModuleGrade,
   NotificationItem,
+  PortalActivationPolicy,
   ProgressRemark,
   UserPublic,
   AcademyAnalytics,
 } from './types';
+
+export const INACTIVE_ENROLLMENT_STATUSES: ReadonlyArray<EnrollmentStatus> = [
+  'Cancelled',
+  'Withdrawn',
+  'Dropped',
+];
+
+export const TERMINAL_ENROLLMENT_STATUSES: ReadonlyArray<EnrollmentStatus> = [
+  'Completed',
+  'Cancelled',
+  'Withdrawn',
+  'Dropped',
+];
+
+export const PENDING_ADMISSION_STATUSES: ReadonlyArray<AdmissionStatus> = [
+  'Submitted',
+  'Under Review',
+  'Documents Required',
+  'Accepted',
+];
+
+export function isInactiveEnrollmentStatus(status: string): boolean {
+  return (
+    status === 'Cancelled' ||
+    status === 'Withdrawn' ||
+    status === 'Dropped'
+  );
+}
+
+export function isTerminalEnrollmentStatus(status: string): boolean {
+  return status === 'Completed' || isInactiveEnrollmentStatus(status);
+}
+
+export function isSeatOccupyingEnrollmentStatus(status: string): boolean {
+  return status === 'Active' || status === 'Waitlisted';
+}
+
+export function isPendingAdmissionStatus(status: string): boolean {
+  return (
+    status === 'Submitted' ||
+    status === 'Under Review' ||
+    status === 'Documents Required' ||
+    status === 'Accepted'
+  );
+}
+
+export const VALID_ENROLLMENT_TRANSITIONS: Record<
+  EnrollmentStatus,
+  ReadonlyArray<EnrollmentStatus>
+> = {
+  Waitlisted: ['Active', 'Cancelled', 'Withdrawn', 'Dropped'],
+  Active: ['Completed', 'Waitlisted', 'Cancelled', 'Withdrawn', 'Dropped'],
+  Completed: [],
+  Cancelled: [],
+  Withdrawn: [],
+  Dropped: [],
+};
+
+export function getAllowedEnrollmentTransitions(
+  status: EnrollmentStatus
+): ReadonlyArray<EnrollmentStatus> {
+  return VALID_ENROLLMENT_TRANSITIONS[status] ?? [];
+}
+
+export function isValidEnrollmentTransition(
+  fromStatus: EnrollmentStatus,
+  toStatus: EnrollmentStatus
+): boolean {
+  if (fromStatus === toStatus) return true;
+  return getAllowedEnrollmentTransitions(fromStatus).includes(toStatus);
+}
+
+export const VALID_ADMISSION_TRANSITIONS: Record<
+  AdmissionStatus,
+  ReadonlyArray<AdmissionStatus>
+> = {
+  Draft: ['Submitted', 'Withdrawn'],
+  Submitted: [
+    'Under Review',
+    'Documents Required',
+    'Approved',
+    'Accepted',
+    'Rejected',
+    'Withdrawn',
+  ],
+  'Under Review': [
+    'Documents Required',
+    'Approved',
+    'Accepted',
+    'Rejected',
+    'Withdrawn',
+  ],
+  'Documents Required': [
+    'Under Review',
+    'Submitted',
+    'Approved',
+    'Accepted',
+    'Rejected',
+    'Withdrawn',
+  ],
+  Accepted: ['Approved', 'Enrolled', 'Rejected', 'Withdrawn'],
+  Approved: [],
+  Enrolled: [],
+  Rejected: [],
+  Withdrawn: [],
+};
+
+export function getAllowedAdmissionTransitions(
+  status: AdmissionStatus
+): ReadonlyArray<AdmissionStatus> {
+  return VALID_ADMISSION_TRANSITIONS[status] ?? [];
+}
+
+export function isValidAdmissionTransition(
+  fromStatus: AdmissionStatus,
+  toStatus: AdmissionStatus
+): boolean {
+  if (fromStatus === toStatus) return true;
+  return getAllowedAdmissionTransitions(fromStatus).includes(toStatus);
+}
+
+export function shouldActivatePortalOnApproval(policy: PortalActivationPolicy): boolean {
+  return policy === 'immediate' || policy === 'on_approval';
+}
+
+export function shouldActivatePortalOnPayment(policy: PortalActivationPolicy): boolean {
+  return policy === 'after_first_payment';
+}
 
 export interface AttendanceStats {
   total: number;
@@ -132,7 +263,7 @@ export function computeStudentProgressReport(params: {
   generatedAtIso: string;
 }): StudentProgressReport {
   const studentEnrollments = params.enrollments.filter(
-    (e) => e.studentId === params.student.id && e.status !== 'Dropped'
+    (e) => e.studentId === params.student.id && !isInactiveEnrollmentStatus(e.status)
   );
 
   const courseReports: CourseProgressReportItem[] = [];
@@ -414,7 +545,7 @@ export function computeCertificateEligibility(params: {
   attendanceRate: number;
 }): { eligible: boolean; reasons: string[] } {
   const reasons: string[] = [];
-  if (params.enrollmentStatus === 'Dropped' || params.enrollmentStatus === 'Waitlisted') {
+  if (isInactiveEnrollmentStatus(params.enrollmentStatus) || params.enrollmentStatus === 'Waitlisted') {
     reasons.push(`Enrollment status is ${params.enrollmentStatus}.`);
   }
   if (params.completionPct < 100 && params.enrollmentStatus !== 'Completed') {
@@ -446,8 +577,8 @@ export function computeAcademyAnalytics(params: {
   const totalInstructors = activeUsers.filter((u) => u.role === 'instructor').length;
   const activeEnrollments = params.enrollments.filter((e) => e.status === 'Active').length;
   const completedEnrollments = params.enrollments.filter((e) => e.status === 'Completed').length;
-  const pendingAdmissions = params.admissions.filter(
-    (a) => a.status === 'Submitted' || a.status === 'Under Review'
+  const pendingAdmissions = params.admissions.filter((a) =>
+    isPendingAdmissionStatus(a.status)
   ).length;
 
   let totalBilledCents = 0;
@@ -574,7 +705,7 @@ export function buildEnrollmentTrendSeries(params: {
   }
 
   for (const enr of params.enrollments) {
-    if (enr.status === 'Dropped') continue;
+    if (isInactiveEnrollmentStatus(enr.status)) continue;
     const d = new Date(enr.enrolledAt);
     if (Number.isNaN(d.getTime())) continue;
     const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
@@ -601,7 +732,7 @@ export function computeBatchMetrics(params: {
 }) {
   const batchEnrollments = params.enrollments.filter(
     (e) =>
-      e.status !== 'Dropped' &&
+      !isInactiveEnrollmentStatus(e.status) &&
       e.courseId === params.courseId &&
       (e.cohortId === params.batchId || e.cohort === params.batchName)
   );

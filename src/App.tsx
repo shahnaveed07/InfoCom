@@ -247,14 +247,7 @@ export default function App() {
               {activeSection === 'admissions' && isAdmin && (
                 <AdmissionsView
                   data={dashboard}
-                  onCreateAdmission={async (payload) => {
-                    const res = await api.createAdmission(payload);
-                    setDashboard(res.dashboard);
-                  }}
-                  onUpdateAdmission={async (id, payload) => {
-                    const res = await api.updateAdmission(id, payload);
-                    setDashboard(res.dashboard);
-                  }}
+                  onDashboardUpdate={setDashboard}
                 />
               )}
 
@@ -311,14 +304,7 @@ export default function App() {
               {activeSection === 'enrollments' && isStaff && (
                 <EnrollmentsView
                   data={dashboard}
-                  onCreateEnrollment={async (payload) => {
-                    const res = await api.createEnrollment(payload);
-                    setDashboard(res.dashboard);
-                  }}
-                  onUpdateStatus={async (id, status) => {
-                    const res = await api.updateEnrollmentStatus(id, status);
-                    setDashboard(res.dashboard);
-                  }}
+                  onDashboardUpdate={setDashboard}
                 />
               )}
 

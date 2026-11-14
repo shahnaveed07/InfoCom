@@ -396,6 +396,7 @@ model Batch {
   sessions              ClassSession[]
   assessments           Assessment[]
   admissions            AdmissionApplication[]
+  allocatedAdmissions   AdmissionApplication[] @relation("AdmissionAllocatedBatch")
   feeStructures         FeeStructure[]
 
   @@index([courseId, status])
@@ -590,39 +591,89 @@ model ProgressRemark {
 // ============================================================================
 
 model AdmissionApplication {
-  id               String    @id
-  applicantName    String    @map("applicant_name")
-  applicantEmail   String    @map("applicant_email")
-  phone            String    @default("")
-  targetCourseId   String    @map("target_course_id")
-  targetBatchId    String?   @map("target_batch_id")
-  preferredCohort  String    @map("preferred_cohort")
-  status           String    @default("Submitted") // 'Submitted' | 'Under Review' | 'Accepted' | 'Rejected' | 'Enrolled'
-  notes            String    @default("")
-  reviewedByUserId String?   @map("reviewed_by_user_id")
-  convertedUserId  String?   @map("converted_user_id")
-  submittedAt      DateTime  @default(now()) @map("submitted_at") @db.Timestamptz(6)
-  reviewedAt       DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  id                    String    @id
+  applicationNumber     String?   @unique @map("application_number")
+  applicantName         String    @map("applicant_name")
+  applicantEmail        String    @map("applicant_email")
+  phone                 String    @default("")
+  dateOfBirth           DateTime? @map("date_of_birth") @db.Timestamptz(6)
+  gender                String    @default("")
+  nationality           String    @default("")
+  address               String    @default("")
+  city                  String    @default("")
+  postalCode            String    @default("") @map("postal_code")
+  guardianName          String    @default("") @map("guardian_name")
+  guardianRelationship  String    @default("") @map("guardian_relationship")
+  guardianPhone         String    @default("") @map("guardian_phone")
+  guardianEmail         String    @default("") @map("guardian_email")
+  previousQualification String    @default("") @map("previous_qualification")
+  previousInstitution   String    @default("") @map("previous_institution")
+  graduationYear        String    @default("") @map("graduation_year")
+  previousScore         String    @default("") @map("previous_score")
+  targetCourseId        String    @map("target_course_id")
+  targetBatchId         String?   @map("target_batch_id")
+  allocatedBatchId      String?   @map("allocated_batch_id")
+  feePlanId             String?   @map("fee_plan_id")
+  preferredCohort       String    @map("preferred_cohort")
+  status                String    @default("Submitted") // 'Draft' | 'Submitted' | 'Under Review' | 'Documents Required' | 'Approved' | 'Rejected' | 'Withdrawn' | 'Accepted' | 'Enrolled'
+  notes                 String    @default("")
+  applicantRemarks      String    @default("") @map("applicant_remarks")
+  reviewRemarks         String    @default("") @map("review_remarks")
+  rejectionReason       String    @default("") @map("rejection_reason")
+  reviewedByUserId      String?   @map("reviewed_by_user_id")
+  convertedUserId       String?   @map("converted_user_id")
+  portalActivated       Boolean   @default(false) @map("portal_activated")
+  portalActivatedAt     DateTime? @map("portal_activated_at") @db.Timestamptz(6)
+  submittedAt           DateTime  @default(now()) @map("submitted_at") @db.Timestamptz(6)
+  draftSavedAt          DateTime? @map("draft_saved_at") @db.Timestamptz(6)
+  reviewedAt            DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  approvedAt            DateTime? @map("approved_at") @db.Timestamptz(6)
+  updatedAt             DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  targetCourse      Course              @relation(fields: [targetCourseId], references: [id], onDelete: Restrict)
-  targetBatch       Batch?              @relation(fields: [targetBatchId], references: [id], onDelete: SetNull)
-  reviewedBy        User?               @relation("AdmissionReviewer", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
-  convertedUser     User?               @relation("AdmissionConvertedUser", fields: [convertedUserId], references: [id], onDelete: SetNull)
+  targetCourse       Course                   @relation(fields: [targetCourseId], references: [id], onDelete: Restrict)
+  targetBatch        Batch?                   @relation(fields: [targetBatchId], references: [id], onDelete: SetNull)
+  allocatedBatch     Batch?                   @relation("AdmissionAllocatedBatch", fields: [allocatedBatchId], references: [id], onDelete: SetNull)
+  feePlan            FeePlan?                 @relation(fields: [feePlanId], references: [id], onDelete: SetNull)
+  reviewedBy         User?                    @relation("AdmissionReviewer", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
+  convertedUser      User?                    @relation("AdmissionConvertedUser", fields: [convertedUserId], references: [id], onDelete: SetNull)
   admissionDocuments AdmissionDocument[]
+  statusHistory      AdmissionStatusHistory[]
+  deliveryLogs       DeliveryLog[]
 
   @@index([status, submittedAt])
   @@index([applicantEmail])
   @@map("admissions")
 }
 
+model AdmissionStatusHistory {
+  id             String   @id
+  applicationId  String   @map("application_id")
+  previousStatus String?  @map("previous_status")
+  newStatus      String   @map("new_status")
+  reason         String   @default("")
+  actorUserId    String?  @map("actor_user_id")
+  actorName      String   @default("") @map("actor_name")
+  actorRole      String   @default("system") @map("actor_role")
+  changedAt      DateTime @default(now()) @map("changed_at") @db.Timestamptz(6)
+
+  application AdmissionApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId, changedAt])
+  @@map("admission_status_histories")
+}
+
 model AdmissionDocument {
-  id               String   @id
-  applicationId    String   @map("application_id")
-  fileAssetId      String   @map("file_asset_id")
-  documentType     String   @map("document_type")
-  verifiedStatus   String   @default("Pending") @map("verified_status") // 'Pending' | 'Verified' | 'Rejected'
-  verifiedByUserId String?  @map("verified_by_user_id")
-  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  id                  String    @id
+  applicationId       String    @map("application_id")
+  fileAssetId         String    @map("file_asset_id")
+  documentType        String    @map("document_type")
+  verifiedStatus      String    @default("Pending") @map("verified_status") // 'Pending' | 'Verified' | 'Replacement Required' | 'Rejected'
+  verificationRemarks String    @default("") @map("verification_remarks")
+  verifiedByUserId    String?   @map("verified_by_user_id")
+  verifiedByName      String?   @map("verified_by_name")
+  verifiedAt          DateTime? @map("verified_at") @db.Timestamptz(6)
+  isLatest            Boolean   @default(true) @map("is_latest")
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
 
   application AdmissionApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
   fileAsset   FileAsset            @relation(fields: [fileAssetId], references: [id], onDelete: Cascade)
@@ -646,6 +697,7 @@ model FeePlan {
   createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   feeStructures FeeStructure[]
+  admissions    AdmissionApplication[]
 
   @@map("fee_plans")
 }
@@ -908,7 +960,8 @@ model NotificationPreference {
 model DeliveryLog {
   id                String   @id
   notificationId    String?  @map("notification_id")
-  userId            String   @map("user_id")
+  userId            String?  @map("user_id")
+  applicationId     String?  @map("application_id")
   channel           String   @default("in_app")
   recipient         String
   status            String   @default("Delivered") // 'Queued' | 'Delivered' | 'Failed'
@@ -916,10 +969,12 @@ model DeliveryLog {
   errorMessage      String?  @map("error_message")
   sentAt            DateTime @default(now()) @map("sent_at") @db.Timestamptz(6)
 
-  notification Notification? @relation(fields: [notificationId], references: [id], onDelete: SetNull)
-  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  notification Notification?         @relation(fields: [notificationId], references: [id], onDelete: SetNull)
+  user         User?                 @relation(fields: [userId], references: [id], onDelete: SetNull)
+  application  AdmissionApplication? @relation(fields: [applicationId], references: [id], onDelete: SetNull)
 
   @@index([userId, sentAt])
+  @@index([applicationId, sentAt])
   @@index([notificationId])
   @@map("delivery_logs")
 }
@@ -930,7 +985,7 @@ model DeliveryLog {
 
 model FileAsset {
   id               String   @id
-  ownerUserId      String   @map("owner_user_id")
+  ownerUserId      String?  @map("owner_user_id")
   courseId         String?  @map("course_id")
   title            String
   category         String // 'ID Verification' | 'Transcript' | 'Syllabus' | 'Assignment' | 'Receipt' | 'Other'
@@ -940,13 +995,13 @@ model FileAsset {
   contentBase64    String   @map("content_base64")
   storageProvider  String   @default("postgres") @map("storage_provider")
   checksumSha256   String?  @map("checksum_sha256")
-  uploadedByUserId String   @map("uploaded_by_user_id")
+  uploadedByUserId String?  @map("uploaded_by_user_id")
   isArchived       Boolean  @default(false) @map("is_archived")
   createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  ownerUser          User                @relation("DocumentOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  ownerUser          User?               @relation("DocumentOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
   course             Course?             @relation(fields: [courseId], references: [id], onDelete: SetNull)
-  uploadedByUser     User                @relation("DocumentUploader", fields: [uploadedByUserId], references: [id], onDelete: Restrict)
+  uploadedByUser     User?               @relation("DocumentUploader", fields: [uploadedByUserId], references: [id], onDelete: SetNull)
   admissionDocuments AdmissionDocument[]
 
   @@index([ownerUserId, isArchived])

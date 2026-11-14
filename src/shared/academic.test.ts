@@ -19,7 +19,16 @@ import {
   formatMoney,
   formatReportAsText,
   fromCents,
+  getAllowedAdmissionTransitions,
+  getAllowedEnrollmentTransitions,
+  isInactiveEnrollmentStatus,
+  isPendingAdmissionStatus,
+  isTerminalEnrollmentStatus,
+  isValidAdmissionTransition,
+  isValidEnrollmentTransition,
   resolveAnalyticsDateWindow,
+  shouldActivatePortalOnApproval,
+  shouldActivatePortalOnPayment,
   toCents,
 } from './academic';
 import {
@@ -546,4 +555,39 @@ test('Phase 4 analytics helpers compute date windows, series, batch metrics, and
 
   assert.equal(formatInvoiceNumber('inf-2026', 7), 'INF-2026-0007');
 });
+
+test('Phase 5 admission & enrollment transitions, inactive status checks, and portal activation helpers', () => {
+  assert.equal(isInactiveEnrollmentStatus('Cancelled'), true);
+  assert.equal(isInactiveEnrollmentStatus('Withdrawn'), true);
+  assert.equal(isInactiveEnrollmentStatus('Dropped'), true);
+  assert.equal(isInactiveEnrollmentStatus('Completed'), false);
+  assert.equal(isTerminalEnrollmentStatus('Completed'), true);
+  assert.equal(isTerminalEnrollmentStatus('Active'), false);
+
+  assert.equal(isPendingAdmissionStatus('Draft'), false);
+  assert.equal(isPendingAdmissionStatus('Submitted'), true);
+  assert.equal(isPendingAdmissionStatus('Documents Required'), true);
+  assert.equal(isPendingAdmissionStatus('Approved'), false);
+
+  assert.equal(isValidAdmissionTransition('Draft', 'Submitted'), true);
+  assert.equal(isValidAdmissionTransition('Submitted', 'Documents Required'), true);
+  assert.equal(isValidAdmissionTransition('Documents Required', 'Under Review'), true);
+  assert.equal(isValidAdmissionTransition('Rejected', 'Approved'), false);
+  assert.deepEqual(getAllowedAdmissionTransitions('Approved'), []);
+
+  assert.equal(isValidEnrollmentTransition('Waitlisted', 'Active'), true);
+  assert.equal(isValidEnrollmentTransition('Active', 'Cancelled'), true);
+  assert.equal(isValidEnrollmentTransition('Active', 'Withdrawn'), true);
+  assert.equal(isValidEnrollmentTransition('Completed', 'Active'), false);
+  assert.equal(isValidEnrollmentTransition('Cancelled', 'Active'), false);
+  assert.deepEqual(getAllowedEnrollmentTransitions('Withdrawn'), []);
+
+  assert.equal(shouldActivatePortalOnApproval('immediate'), true);
+  assert.equal(shouldActivatePortalOnApproval('on_approval'), true);
+  assert.equal(shouldActivatePortalOnApproval('manual_activation'), false);
+  assert.equal(shouldActivatePortalOnApproval('after_first_payment'), false);
+  assert.equal(shouldActivatePortalOnPayment('after_first_payment'), true);
+  assert.equal(shouldActivatePortalOnPayment('on_approval'), false);
+});
+
 

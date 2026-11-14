@@ -78,6 +78,7 @@ async function main() {
       { key: 'certificate.min_weighted_score', value: '60', valueType: 'number' },
       { key: 'certificate.min_attendance_pct', value: '75', valueType: 'number' },
       { key: 'session.reminder_window_hours', value: '24', valueType: 'number' },
+      { key: 'admission.portal_activation_policy', value: 'on_approval', valueType: 'string' },
     ];
 
     for (const s of settings) {
@@ -175,6 +176,20 @@ async function main() {
         name: 'Standard Tuition Plan',
         description: 'Single or 2-installment tuition schedule.',
         installmentCount: 2,
+        currency: 'USD',
+        isActive: true,
+      },
+    });
+
+    await tx.feePlan.upsert({
+      where: { code: 'PLAN-FULL' },
+      update: { name: 'Full Upfront Tuition', isActive: true },
+      create: {
+        id: 'plan-full',
+        code: 'PLAN-FULL',
+        name: 'Full Upfront Tuition',
+        description: 'Single lump-sum tuition payment upon enrollment.',
+        installmentCount: 1,
         currency: 'USD',
         isActive: true,
       },

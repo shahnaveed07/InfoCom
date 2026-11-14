@@ -10,7 +10,7 @@ import {
   UserPlus,
   X,
 } from 'lucide-react';
-import { computeBatchMetrics } from '../shared/academic';
+import { computeBatchMetrics, isInactiveEnrollmentStatus } from '../shared/academic';
 import type {
   Classroom,
   Cohort,
@@ -127,7 +127,7 @@ export function BatchesManagementView({
       (e) =>
         e.courseId === batch.courseId &&
         (e.cohortId === batch.id || e.cohort === batch.name) &&
-        e.status !== 'Dropped'
+        !isInactiveEnrollmentStatus(e.status)
     );
     const otherBatches = data.cohorts.filter(
       (c) => c.courseId === batch.courseId && c.id !== batch.id
@@ -274,7 +274,7 @@ export function BatchesManagementView({
         (e) =>
           e.courseId === transferBatch.courseId &&
           (e.cohortId === transferBatch.id || e.cohort === transferBatch.name) &&
-          e.status !== 'Dropped'
+          !isInactiveEnrollmentStatus(e.status)
       )
     : [];
 

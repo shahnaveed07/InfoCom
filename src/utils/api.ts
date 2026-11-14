@@ -3,6 +3,8 @@ import type {
   AcademicTerm,
   AcademicYear,
   AdminAnalyticsDetail,
+  AdmissionDetailPayload,
+  AdmissionDocumentStatus,
   AdmissionStatus,
   AnalyticsPreset,
   AttendanceStatus,
@@ -11,7 +13,9 @@ import type {
   DashboardPayload,
   Department,
   DocumentCategory,
+  EnrollmentHistoryEntry,
   EnrollmentStatus,
+  FeePlanSummary,
   InstructorDetailPayload,
   InstructorDirectoryRow,
   InstructorPermissionKey,
@@ -138,34 +142,224 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
-  // Admissions
-  createAdmission: (payload: {
-    applicantName: string;
-    applicantEmail: string;
-    phone?: string;
-    targetCourseId: string;
-    preferredCohort: string;
-    notes?: string;
-  }) =>
-    requestJson<{ admissionId: string; dashboard: DashboardPayload }>(
-      '/api/admissions',
+  // Admissions (Phase 5)
+  fetchAdmissions: (params?: {
+    status?: string;
+    courseId?: string;
+    search?: string;
+  }) => {
+    const query = new URLSearchParams();
+    if (params?.status) query.set('status', params.status);
+    if (params?.courseId) query.set('courseId', params.courseId);
+    if (params?.search) query.set('search', params.search);
+    const qs = query.toString();
+    return requestJson<{
+      admissions: DashboardPayload['admissions'];
+      feePlans: FeePlanSummary[];
+      total: number;
+    }>(`/api/admissions${qs ? `?${qs}` : ''}`);
+  },
+
+  fetchAdmissionDetail: (id: string) =>
+    requestJson<AdmissionDetailPayload>(`/api/admissions/${id}`),
+
+  submitPublicAdmission: (payload: Record<string, unknown>) =>
+    requestJson<{ admissionId: string; applicationNumber: string; status: AdmissionStatus }>(
+      '/api/admissions/public',
       {
         method: 'POST',
         body: JSON.stringify(payload),
       }
     ),
 
+  createAdmission: (payload: {
+    applicantName?: string;
+    applicantEmail?: string;
+    phone?: string;
+    dateOfBirth?: string | null;
+    gender?: string;
+    nationality?: string;
+    address?: string;
+    city?: string;
+    postalCode?: string;
+    guardianName?: string;
+    guardianRelationship?: string;
+    guardianPhone?: string;
+    guardianEmail?: string;
+    previousQualification?: string;
+    previousInstitution?: string;
+    graduationYear?: string;
+    previousScore?: string;
+    targetCourseId: string;
+    targetBatchId?: string | null;
+    feePlanId?: string | null;
+    preferredCohort?: string;
+    status?: 'Draft' | 'Submitted';
+    notes?: string;
+    applicantRemarks?: string;
+    documents?: Array<{
+      documentType: string;
+      title: string;
+      category: DocumentCategory;
+      fileName: string;
+      mimeType: string;
+      contentBase64: string;
+    }>;
+  }) =>
+    requestJson<{
+      admissionId: string;
+      applicationNumber?: string;
+      status?: AdmissionStatus;
+      dashboard: DashboardPayload;
+    }>('/api/admissions', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
   updateAdmission: (
     id: string,
     payload: {
-      status: AdmissionStatus;
+      applicantName?: string;
+      applicantEmail?: string;
+      phone?: string;
+      dateOfBirth?: string | null;
+      gender?: string;
+      nationality?: string;
+      address?: string;
+      city?: string;
+      postalCode?: string;
+      guardianName?: string;
+      guardianRelationship?: string;
+      guardianPhone?: string;
+      guardianEmail?: string;
+      previousQualification?: string;
+      previousInstitution?: string;
+      graduationYear?: string;
+      previousScore?: string;
+      targetCourseId?: string;
+      targetBatchId?: string | null;
+      feePlanId?: string | null;
+      preferredCohort?: string;
+      status?: AdmissionStatus;
       notes?: string;
+      applicantRemarks?: string;
+      reviewRemarks?: string;
+      rejectionReason?: string;
+      reason?: string;
       convertToEnrollment?: boolean;
+      waitlistIfFull?: boolean;
     }
   ) =>
-    requestJson<{ dashboard: DashboardPayload }>(`/api/admissions/${id}`, {
+    requestJson<{
+      detail?: AdmissionDetailPayload;
+      dashboard: DashboardPayload;
+    }>(`/api/admissions/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(payload),
+    }),
+
+  uploadAdmissionDocument: (
+    admissionId: string,
+    payload: {
+      documentType: string;
+      title: string;
+      category: DocumentCategory;
+      fileName: string;
+      mimeType: string;
+      contentBase64: string;
+    }
+  ) =>
+    requestJson<{
+      documentId: string;
+      detail: AdmissionDetailPayload;
+      dashboard: DashboardPayload;
+    }>(`/api/admissions/${admissionId}/documents`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  verifyAdmissionDocument: (
+    admissionId: string,
+    docId: string,
+    payload: {
+      status: Exclude<AdmissionDocumentStatus, 'Pending'>;
+      verificationRemarks?: string;
+    }
+  ) =>
+    requestJson<{
+      detail: AdmissionDetailPayload;
+      dashboard: DashboardPayload;
+    }>(`/api/admissions/${admissionId}/documents/${docId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
+  downloadAdmissionDocument: async (
+    admissionId: string,
+    docId: string,
+    fallbackFileName = 'document'
+  ) => {
+    const res = await fetch(
+      `/api/admissions/${admissionId}/documents/${docId}/download`,
+      { credentials: 'same-origin' }
+    );
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(
+        typeof errData?.error === 'string'
+          ? errData.error
+          : `Failed to download document (${res.status}).`
+      );
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fallbackFileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  },
+
+  approveAdmission: (
+    id: string,
+    payload: {
+      targetCourseId?: string;
+      targetBatchId: string;
+      feePlanId?: string | null;
+      waitlistIfFull?: boolean;
+      reviewRemarks?: string;
+      issueInvoice?: boolean;
+    }
+  ) =>
+    requestJson<{
+      admissionId: string;
+      applicationNumber?: string | null;
+      studentId: string;
+      studentName: string;
+      studentCode: string;
+      enrollmentId: string;
+      enrollmentStatus: 'Active' | 'Waitlisted';
+      invoiceId: string | null;
+      courseCode: string;
+      batchName: string;
+      portalActivated: boolean;
+      portalActivationPolicy: string;
+      detail: AdmissionDetailPayload;
+      dashboard: DashboardPayload;
+    }>(`/api/admissions/${id}/approve`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  activateAdmissionPortal: (id: string) =>
+    requestJson<{
+      portalActivated: boolean;
+      detail: AdmissionDetailPayload;
+      dashboard: DashboardPayload;
+    }>(`/api/admissions/${id}/activate-portal`, {
+      method: 'POST',
     }),
 
   // Courses & Cohorts
@@ -298,6 +492,42 @@ export const api = {
       }
     ),
 
+  transferEnrollmentCourse: (
+    enrollmentId: string,
+    payload: {
+      toCourseId: string;
+      toBatchId: string;
+      reason: string;
+      status?: 'Active' | 'Waitlisted';
+      issueTuitionInvoice?: boolean;
+    }
+  ) =>
+    requestJson<{
+      enrollmentId: string;
+      dashboard: DashboardPayload;
+    }>(`/api/enrollments/${enrollmentId}/course-transfer`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  fetchEnrollmentHistory: (enrollmentId: string) =>
+    requestJson<{
+      enrollment: {
+        id: string;
+        studentId: string;
+        studentName: string;
+        studentCode: string | null;
+        courseId: string;
+        courseCode: string;
+        courseTitle: string;
+        cohortId: string | null;
+        cohort: string;
+        status: EnrollmentStatus;
+        enrolledAt: string;
+      };
+      history: EnrollmentHistoryEntry[];
+    }>(`/api/enrollments/${enrollmentId}/history`),
+
   // Enrollments & Academics
   createEnrollment: (payload: {
     studentId: string;
@@ -312,12 +542,16 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
-  updateEnrollmentStatus: (enrollmentId: string, status: EnrollmentStatus) =>
+  updateEnrollmentStatus: (
+    enrollmentId: string,
+    status: EnrollmentStatus,
+    reason?: string
+  ) =>
     requestJson<{ dashboard: DashboardPayload }>(
       `/api/enrollments/${enrollmentId}`,
       {
         method: 'PATCH',
-        body: JSON.stringify({ status }),
+        body: JSON.stringify({ status, ...(reason ? { reason } : {}) }),
       }
     ),
 
