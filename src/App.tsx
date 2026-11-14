@@ -1,9 +1,12 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { AlertCircle, CheckCircle2, KeyRound, X } from 'lucide-react';
+import { AcademySettingsView } from './components/AcademySettingsView';
 import { AdminOverview } from './components/AdminOverview';
 import { AdmissionsView } from './components/AdmissionsView';
 import { AttendanceAlertsView } from './components/AttendanceAlertsView';
 import { AuditLogsView } from './components/AuditLogsView';
 import { AuthView } from './components/AuthView';
+import { BatchesManagementView } from './components/BatchesManagementView';
 import { CertificatesView } from './components/CertificatesView';
 import { CoursesCohortsView } from './components/CoursesCohortsView';
 import { CourseTrackingView } from './components/CourseTrackingView';
@@ -11,10 +14,12 @@ import { DocumentsView } from './components/DocumentsView';
 import { EnrollmentsView } from './components/EnrollmentsView';
 import { FinanceView } from './components/FinanceView';
 import { InstructorOverview } from './components/InstructorOverview';
+import { InstructorsManagementView } from './components/InstructorsManagementView';
 import { ProgressReportView } from './components/ProgressReportView';
 import { SchedulesView } from './components/SchedulesView';
 import { Sidebar, type NavSection } from './components/Sidebar';
 import { StudentDashboard } from './components/StudentDashboard';
+import { StudentsManagementView } from './components/StudentsManagementView';
 import { TopBar } from './components/TopBar';
 import { UsersManagementView } from './components/UsersManagementView';
 import type { DashboardPayload, UserPublic } from './shared/types';
@@ -27,6 +32,13 @@ export default function App() {
   const [loadError, setLoadError] = useState('');
   const [activeSection, setActiveSection] = useState<NavSection>('overview');
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [passwordModalOpen, setPasswordModalOpen] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
+  const [passwordError, setPasswordError] = useState('');
+  const [passwordNotice, setPasswordNotice] = useState('');
+  const [passwordSaving, setPasswordSaving] = useState(false);
 
   const loadWorkspace = useCallback(async (loggedInUser: UserPublic) => {
     setLoadError('');
@@ -81,6 +93,47 @@ export default function App() {
     setDashboard(null);
   }
 
+  function openChangePasswordModal() {
+    setCurrentPassword('');
+    setNewPassword('');
+    setConfirmNewPassword('');
+    setPasswordError('');
+    setPasswordNotice('');
+    setPasswordModalOpen(true);
+  }
+
+  async function handleChangePasswordSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setPasswordError('');
+    setPasswordNotice('');
+    if (!currentPassword) {
+      setPasswordError('Please enter your current password.');
+      return;
+    }
+    if (newPassword.length < 8) {
+      setPasswordError('New password must be at least 8 characters long.');
+      return;
+    }
+    if (newPassword !== confirmNewPassword) {
+      setPasswordError('New password and confirmation do not match.');
+      return;
+    }
+    setPasswordSaving(true);
+    try {
+      const res = await api.changePassword({ currentPassword, newPassword });
+      setPasswordNotice(res.message);
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmNewPassword('');
+    } catch (err) {
+      setPasswordError(
+        err instanceof Error ? err.message : 'Unable to change password.'
+      );
+    } finally {
+      setPasswordSaving(false);
+    }
+  }
+
   if (authChecking) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
@@ -126,9 +179,11 @@ export default function App() {
     <div className="min-h-screen bg-slate-50 flex">
       <Sidebar
         user={user}
+        academy={dashboard?.academy}
         activeSection={activeSection}
         onSelectSection={setActiveSection}
         unreadCount={unreadCount}
+        onOpenChangePassword={openChangePasswordModal}
         onLogout={handleLogout}
         mobileOpen={mobileNavOpen}
         onCloseMobile={() => setMobileNavOpen(false)}
@@ -203,6 +258,20 @@ export default function App() {
                 />
               )}
 
+              {activeSection === 'students' && isAdmin && (
+                <StudentsManagementView
+                  data={dashboard}
+                  onDashboardUpdate={setDashboard}
+                />
+              )}
+
+              {activeSection === 'instructors' && isAdmin && (
+                <InstructorsManagementView
+                  data={dashboard}
+                  onDashboardUpdate={setDashboard}
+                />
+              )}
+
               {activeSection === 'users' && isAdmin && (
                 <UsersManagementView
                   data={dashboard}
@@ -228,6 +297,14 @@ export default function App() {
                     const res = await api.createCohort(payload);
                     setDashboard(res.dashboard);
                   }}
+                  onDashboardUpdate={setDashboard}
+                />
+              )}
+
+              {activeSection === 'batches' && isAdmin && (
+                <BatchesManagementView
+                  data={dashboard}
+                  onDashboardUpdate={setDashboard}
                 />
               )}
 
@@ -377,6 +454,10 @@ export default function App() {
                 <AuditLogsView data={dashboard} />
               )}
 
+              {activeSection === 'settings' && isAdmin && (
+                <AcademySettingsView onDashboardUpdate={setDashboard} />
+              )}
+
               {activeSection === 'student-home' && user.role === 'student' && (
                 <StudentDashboard
                   data={dashboard}
@@ -399,6 +480,126 @@ export default function App() {
           )}
         </main>
       </div>
+
+      {passwordModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="change-password-modal-title"
+        >
+          <div className="w-full max-w-md bg-white border border-slate-200 rounded-xl p-6 shadow-lg">
+            <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+              <div className="flex items-center gap-2">
+                <KeyRound className="w-4 h-4 text-blue-700" />
+                <h3
+                  id="change-password-modal-title"
+                  className="font-display text-base font-semibold text-slate-900"
+                >
+                  Change Account Password
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPasswordModalOpen(false)}
+                aria-label="Close change password modal"
+                className="p-1.5 rounded-md text-slate-400 hover:text-slate-800 hover:bg-slate-100"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {passwordError && (
+              <div
+                role="alert"
+                className="mt-4 flex items-start gap-2 p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-800"
+              >
+                <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                <span>{passwordError}</span>
+              </div>
+            )}
+
+            {passwordNotice && (
+              <div
+                role="status"
+                className="mt-4 flex items-start gap-2 p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-800"
+              >
+                <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
+                <span>{passwordNotice}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleChangePasswordSubmit} className="mt-4 space-y-3.5">
+              <div>
+                <label
+                  htmlFor="modal-current-password"
+                  className="block text-xs font-medium text-slate-700 mb-1"
+                >
+                  Current Password
+                </label>
+                <input
+                  id="modal-current-password"
+                  type="password"
+                  required
+                  value={currentPassword}
+                  onChange={(e) => setCurrentPassword(e.target.value)}
+                  className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg text-slate-900"
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="modal-new-password"
+                  className="block text-xs font-medium text-slate-700 mb-1"
+                >
+                  New Password (minimum 8 characters)
+                </label>
+                <input
+                  id="modal-new-password"
+                  type="password"
+                  required
+                  minLength={8}
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg text-slate-900"
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="modal-confirm-password"
+                  className="block text-xs font-medium text-slate-700 mb-1"
+                >
+                  Confirm New Password
+                </label>
+                <input
+                  id="modal-confirm-password"
+                  type="password"
+                  required
+                  minLength={8}
+                  value={confirmNewPassword}
+                  onChange={(e) => setConfirmNewPassword(e.target.value)}
+                  className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg text-slate-900"
+                />
+              </div>
+              <div className="pt-2 flex items-center justify-end gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setPasswordModalOpen(false)}
+                  className="px-4 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 cursor-pointer"
+                >
+                  Close
+                </button>
+                <button
+                  type="submit"
+                  disabled={passwordSaving}
+                  className="px-4 py-2 text-xs font-medium text-white bg-blue-700 hover:bg-blue-800 disabled:opacity-60 rounded-lg cursor-pointer"
+                >
+                  {passwordSaving ? 'Updating...' : 'Update Password'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

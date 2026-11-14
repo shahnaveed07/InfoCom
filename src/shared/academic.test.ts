@@ -2,19 +2,24 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildAttendanceNotification,
+  buildEnrollmentTrendSeries,
+  buildMonthlyRevenueSeries,
   calculateAttendanceStats,
   calculateCourseCompletion,
   calculateLetterGrade,
   calculateWeightedAverage,
   computeAcademyAnalytics,
+  computeBatchMetrics,
   computeCertificateEligibility,
   computeInvoiceStatus,
   computeStudentProgressReport,
   findUpcomingSessionsNeedingReminders,
   formatCents,
+  formatInvoiceNumber,
   formatMoney,
   formatReportAsText,
   fromCents,
+  resolveAnalyticsDateWindow,
   toCents,
 } from './academic';
 import {
@@ -414,3 +419,131 @@ test('Zod validation schemas reject negative payments and invalid payloads', () 
     false
   );
 });
+
+test('Phase 4 analytics helpers compute date windows, series, batch metrics, and invoice numbers', () => {
+  const nowMs = Date.parse('2026-11-15T12:00:00Z');
+  const allWin = resolveAnalyticsDateWindow('all', null, null, nowMs);
+  assert.equal(allWin.fromMs, null);
+  assert.equal(allWin.toMs, null);
+
+  const win7 = resolveAnalyticsDateWindow('7d', null, null, nowMs);
+  assert.ok(win7.fromMs !== null && win7.toMs !== null);
+  assert.equal(win7.toMs - win7.fromMs, 7 * 24 * 60 * 60 * 1000);
+
+  const revSeries = buildMonthlyRevenueSeries({
+    invoices: [
+      {
+        id: 'inv-1',
+        invoiceNumber: 'INV-1001',
+        studentId: 'stu-1',
+        courseId: 'crs-ts',
+        description: 'Tuition',
+        amountDue: '1450.00',
+        amountPaid: '1000.00',
+        currency: 'USD',
+        status: 'Partial',
+        dueDate: '2026-12-01T00:00:00Z',
+        isArchived: false,
+        createdAt: '2026-11-05T00:00:00Z',
+      },
+      {
+        id: 'inv-void',
+        invoiceNumber: 'INV-1002',
+        studentId: 'stu-1',
+        courseId: 'crs-ts',
+        description: 'Void',
+        amountDue: '999.00',
+        amountPaid: '0.00',
+        currency: 'USD',
+        status: 'Voided',
+        dueDate: '2026-12-01T00:00:00Z',
+        isArchived: false,
+        createdAt: '2026-11-05T00:00:00Z',
+      },
+    ],
+    payments: [{ amount: '1000.00', paidAt: '2026-11-06T00:00:00Z' }],
+    monthsCount: 3,
+    nowMs,
+  });
+  assert.equal(revSeries.length, 3);
+  assert.equal(revSeries[2].monthKey, '2026-11');
+  assert.equal(revSeries[2].billedCents, 145000);
+  assert.equal(revSeries[2].collectedCents, 100000);
+
+  const enrSeries = buildEnrollmentTrendSeries({
+    enrollments: [
+      {
+        id: 'e1',
+        studentId: 'stu-1',
+        courseId: 'crs-ts',
+        cohort: 'Cohort A',
+        status: 'Completed',
+        enrolledAt: '2026-11-02T00:00:00Z',
+        completedModuleIds: ['m1'],
+      },
+      {
+        id: 'e2',
+        studentId: 'stu-2',
+        courseId: 'crs-ts',
+        cohort: 'Cohort A',
+        status: 'Dropped',
+        enrolledAt: '2026-11-02T00:00:00Z',
+        completedModuleIds: [],
+      },
+    ],
+    monthsCount: 3,
+    nowMs,
+  });
+  assert.equal(enrSeries[2].enrollments, 1);
+  assert.equal(enrSeries[2].completions, 1);
+
+  const batchMetrics = computeBatchMetrics({
+    batchId: 'batch-1',
+    batchName: 'Cohort A',
+    courseId: 'crs-ts',
+    capacity: 20,
+    enrollments: [
+      {
+        id: 'e1',
+        studentId: 'stu-1',
+        courseId: 'crs-ts',
+        cohortId: 'batch-1',
+        cohort: 'Cohort A',
+        status: 'Active',
+        enrolledAt: '2026-11-01T00:00:00Z',
+        completedModuleIds: [],
+      },
+    ],
+    attendance: [
+      {
+        id: 'a1',
+        sessionId: 's1',
+        courseId: 'crs-ts',
+        studentId: 'stu-1',
+        status: 'Present',
+        note: '',
+        updatedAt: '2026-11-10T00:00:00Z',
+        updatedBy: 'Elena',
+      },
+    ],
+    grades: [
+      {
+        id: 'g1',
+        studentId: 'stu-1',
+        courseId: 'crs-ts',
+        moduleId: 'm1',
+        score: 88,
+        feedback: 'Good',
+        gradedAt: '2026-11-10T00:00:00Z',
+        gradedBy: 'Elena',
+      },
+    ],
+  });
+  assert.equal(batchMetrics.enrolledCount, 1);
+  assert.equal(batchMetrics.utilizationPct, 5);
+  assert.equal(batchMetrics.attendanceRate, 100);
+  assert.equal(batchMetrics.meanScore, 88);
+
+  assert.equal(formatInvoiceNumber('inf-2026', 7), 'INF-2026-0007');
+});
+

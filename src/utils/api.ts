@@ -1,11 +1,23 @@
 import type {
+  AcademySettingsPayload,
+  AcademicTerm,
+  AcademicYear,
+  AdminAnalyticsDetail,
   AdmissionStatus,
+  AnalyticsPreset,
   AttendanceStatus,
+  Classroom,
   CohortStatus,
   DashboardPayload,
+  Department,
   DocumentCategory,
   EnrollmentStatus,
+  InstructorDetailPayload,
+  InstructorDirectoryRow,
+  InstructorPermissionKey,
+  PaginatedStudentsResult,
   PaymentMethod,
+  StudentDetailPayload,
   UserAccountStatus,
   UserPublic,
   UserRole,
@@ -77,6 +89,24 @@ export const api = {
   logout: () =>
     requestJson<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
 
+  changePassword: (payload: { currentPassword: string; newPassword: string }) =>
+    requestJson<{ ok: boolean; message: string }>('/api/auth/change-password', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  forgotPassword: (email: string) =>
+    requestJson<{ ok: boolean; message: string }>('/api/auth/forgot-password', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    }),
+
+  resetPassword: (payload: { token: string; newPassword: string }) =>
+    requestJson<{ ok: boolean; message: string }>('/api/auth/reset-password', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
   getDashboard: () => requestJson<DashboardPayload>('/api/dashboard'),
 
   // Users (Admin)
@@ -143,7 +173,18 @@ export const api = {
     code: string;
     title: string;
     track: string;
+    category?: string;
+    departmentId?: string | null;
     description: string;
+    prerequisites?: string;
+    learningObjectives?: string[];
+    passingScore?: number;
+    minAttendanceRate?: number;
+    gradingConfig?: {
+      scaleName?: string;
+      passingGrade?: string;
+      rubricNotes?: string;
+    };
     instructorId: string;
     durationWeeks: number;
     tuitionFee: string;
@@ -159,11 +200,48 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  updateCourse: (
+    courseId: string,
+    payload: {
+      title?: string;
+      track?: string;
+      category?: string;
+      departmentId?: string | null;
+      description?: string;
+      prerequisites?: string;
+      learningObjectives?: string[];
+      passingScore?: number;
+      minAttendanceRate?: number;
+      gradingConfig?: {
+        scaleName?: string;
+        passingGrade?: string;
+        rubricNotes?: string;
+      };
+      instructorId?: string;
+      durationWeeks?: number;
+      tuitionFee?: string;
+      isArchived?: boolean;
+      modules?: Array<{
+        id?: string;
+        code: string;
+        title: string;
+        weight: number;
+        labHours: number;
+      }>;
+    }
+  ) =>
+    requestJson<{ dashboard: DashboardPayload }>(`/api/courses/${courseId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
   createCohort: (payload: {
     code: string;
     name: string;
     courseId: string;
+    termId?: string | null;
     instructorId: string;
+    classroomId?: string | null;
     capacity: number;
     startDate: string;
     endDate: string;
@@ -173,6 +251,52 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+
+  updateCohort: (
+    cohortId: string,
+    payload: {
+      name?: string;
+      termId?: string | null;
+      instructorId?: string;
+      classroomId?: string | null;
+      capacity?: number;
+      startDate?: string;
+      endDate?: string;
+      status?: CohortStatus;
+    }
+  ) =>
+    requestJson<{ dashboard: DashboardPayload }>(`/api/cohorts/${cohortId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
+  assignStudentToCohort: (
+    cohortId: string,
+    payload: {
+      studentId: string;
+      status?: 'Active' | 'Waitlisted';
+      issueTuitionInvoice?: boolean;
+    }
+  ) =>
+    requestJson<{ enrollmentId: string; dashboard: DashboardPayload }>(
+      `/api/cohorts/${cohortId}/assign-student`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }
+    ),
+
+  transferEnrollment: (
+    enrollmentId: string,
+    payload: { toBatchId: string; reason: string }
+  ) =>
+    requestJson<{ dashboard: DashboardPayload }>(
+      `/api/enrollments/${enrollmentId}/transfer`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }
+    ),
 
   // Enrollments & Academics
   createEnrollment: (payload: {
@@ -376,5 +500,338 @@ export const api = {
     requestJson<{ dashboard: DashboardPayload }>(
       '/api/notifications/read-all',
       { method: 'POST' }
+    ),
+
+  // Phase 4 Admin Analytics & Master Data
+  getAdminAnalytics: (params?: {
+    preset?: AnalyticsPreset;
+    from?: string;
+    to?: string;
+  }) => {
+    const query = new URLSearchParams();
+    if (params?.preset) query.set('preset', params.preset);
+    if (params?.from) query.set('from', params.from);
+    if (params?.to) query.set('to', params.to);
+    const qs = query.toString();
+    return requestJson<AdminAnalyticsDetail>(
+      `/api/admin/analytics${qs ? `?${qs}` : ''}`
+    );
+  },
+
+  // Students (Admin)
+  listStudents: (params?: {
+    page?: number;
+    pageSize?: number;
+    search?: string;
+    status?: string;
+    courseId?: string;
+    sortBy?: 'name' | 'studentCode' | 'createdAt';
+    sortDir?: 'asc' | 'desc';
+  }) => {
+    const query = new URLSearchParams();
+    if (params?.page) query.set('page', String(params.page));
+    if (params?.pageSize) query.set('pageSize', String(params.pageSize));
+    if (params?.search) query.set('search', params.search);
+    if (params?.status) query.set('status', params.status);
+    if (params?.courseId) query.set('courseId', params.courseId);
+    if (params?.sortBy) query.set('sortBy', params.sortBy);
+    if (params?.sortDir) query.set('sortDir', params.sortDir);
+    const qs = query.toString();
+    return requestJson<PaginatedStudentsResult>(
+      `/api/students${qs ? `?${qs}` : ''}`
+    );
+  },
+
+  createStudent: (payload: {
+    name: string;
+    email: string;
+    phone?: string;
+    password: string;
+    departmentId?: string | null;
+    dateOfBirth?: string | null;
+    address?: string;
+    emergencyContact?: string;
+    academicStanding?: string;
+    initialCourseId?: string;
+    initialCohortId?: string;
+  }) =>
+    requestJson<{ student: UserPublic; dashboard: DashboardPayload }>(
+      '/api/students',
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }
+    ),
+
+  getStudentDetail: (studentId: string) =>
+    requestJson<StudentDetailPayload>(`/api/students/${studentId}/detail`),
+
+  updateStudent: (
+    studentId: string,
+    payload: {
+      name?: string;
+      email?: string;
+      phone?: string;
+      status?: UserAccountStatus;
+      departmentId?: string | null;
+      dateOfBirth?: string | null;
+      address?: string;
+      emergencyContact?: string;
+      academicStanding?: string;
+    }
+  ) =>
+    requestJson<{ detail: StudentDetailPayload; dashboard: DashboardPayload }>(
+      `/api/students/${studentId}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      }
+    ),
+
+  // Instructors (Admin)
+  listInstructors: () =>
+    requestJson<{ items: InstructorDirectoryRow[] }>('/api/instructors'),
+
+  createInstructor: (payload: {
+    name: string;
+    email: string;
+    phone?: string;
+    password: string;
+    departmentId?: string | null;
+    specialization?: string;
+    qualification?: string;
+    bio?: string;
+    hireDate?: string | null;
+    courseIds?: string[];
+    batchIds?: string[];
+    permissions?: InstructorPermissionKey[];
+  }) =>
+    requestJson<{
+      instructor: UserPublic;
+      items: InstructorDirectoryRow[];
+      dashboard: DashboardPayload;
+    }>('/api/instructors', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  getInstructorDetail: (instructorId: string) =>
+    requestJson<InstructorDetailPayload>(
+      `/api/instructors/${instructorId}/detail`
+    ),
+
+  updateInstructor: (
+    instructorId: string,
+    payload: {
+      name?: string;
+      email?: string;
+      phone?: string;
+      status?: UserAccountStatus;
+      departmentId?: string | null;
+      specialization?: string;
+      qualification?: string;
+      bio?: string;
+      hireDate?: string | null;
+    }
+  ) =>
+    requestJson<{
+      detail: InstructorDetailPayload;
+      items: InstructorDirectoryRow[];
+      dashboard: DashboardPayload;
+    }>(`/api/instructors/${instructorId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
+  assignInstructorCourses: (
+    instructorId: string,
+    payload: { courseIds: string[]; batchIds: string[] }
+  ) =>
+    requestJson<{
+      detail: InstructorDetailPayload;
+      items: InstructorDirectoryRow[];
+      dashboard: DashboardPayload;
+    }>(`/api/instructors/${instructorId}/assignments`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+
+  updateInstructorPermissions: (
+    instructorId: string,
+    permissions: InstructorPermissionKey[]
+  ) =>
+    requestJson<{
+      detail: InstructorDetailPayload;
+      items: InstructorDirectoryRow[];
+    }>(`/api/instructors/${instructorId}/permissions`, {
+      method: 'PUT',
+      body: JSON.stringify({ permissions }),
+    }),
+
+  // Departments & Classrooms
+  listDepartments: () =>
+    requestJson<{ items: Department[] }>('/api/departments'),
+
+  createDepartment: (payload: {
+    code: string;
+    name: string;
+    headUserId?: string | null;
+    status?: 'active' | 'inactive' | 'archived';
+  }) =>
+    requestJson<{ departmentId: string; dashboard: DashboardPayload }>(
+      '/api/departments',
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }
+    ),
+
+  updateDepartment: (
+    id: string,
+    payload: {
+      code?: string;
+      name?: string;
+      headUserId?: string | null;
+      status?: 'active' | 'inactive' | 'archived';
+    }
+  ) =>
+    requestJson<{ dashboard: DashboardPayload }>(`/api/departments/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
+  listClassrooms: () =>
+    requestJson<{ items: Classroom[] }>('/api/classrooms'),
+
+  createClassroom: (payload: {
+    code: string;
+    name: string;
+    building?: string;
+    capacity: number;
+    equipment?: string;
+    isActive?: boolean;
+  }) =>
+    requestJson<{ classroomId: string; dashboard: DashboardPayload }>(
+      '/api/classrooms',
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }
+    ),
+
+  updateClassroom: (
+    id: string,
+    payload: {
+      code?: string;
+      name?: string;
+      building?: string;
+      capacity?: number;
+      equipment?: string;
+      isActive?: boolean;
+    }
+  ) =>
+    requestJson<{ dashboard: DashboardPayload }>(`/api/classrooms/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
+  // Academy Settings, Academic Years & Terms
+  getSettings: () => requestJson<AcademySettingsPayload>('/api/settings'),
+
+  updateSettings: (payload: {
+    academy: {
+      name: string;
+      legalName?: string;
+      email: string;
+      phone?: string;
+      website?: string;
+      address?: string;
+      logoDataUrl?: string;
+      timezone: string;
+      currency: string;
+    };
+    policies: AcademySettingsPayload['policies'];
+    certificateTemplate?: {
+      name: string;
+      titleFormat: string;
+      signatoryName: string;
+      signatoryTitle: string;
+    };
+  }) =>
+    requestJson<{ settings: AcademySettingsPayload; dashboard: DashboardPayload }>(
+      '/api/settings',
+      {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+      }
+    ),
+
+  createAcademicYear: (payload: {
+    code: string;
+    name: string;
+    startDate: string;
+    endDate: string;
+    isCurrent?: boolean;
+    status?: 'Planned' | 'Active' | 'Completed' | 'Archived';
+  }) =>
+    requestJson<{ settings: AcademySettingsPayload; dashboard: DashboardPayload }>(
+      '/api/academic-years',
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }
+    ),
+
+  updateAcademicYear: (
+    id: string,
+    payload: {
+      name?: string;
+      startDate?: string;
+      endDate?: string;
+      isCurrent?: boolean;
+      status?: 'Planned' | 'Active' | 'Completed' | 'Archived';
+    }
+  ) =>
+    requestJson<{ settings: AcademySettingsPayload; dashboard: DashboardPayload }>(
+      `/api/academic-years/${id}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      }
+    ),
+
+  createAcademicTerm: (payload: {
+    academicYearId: string;
+    code: string;
+    name: string;
+    startDate: string;
+    endDate: string;
+    isCurrent?: boolean;
+    status?: 'Planned' | 'Active' | 'Completed' | 'Archived';
+  }) =>
+    requestJson<{ settings: AcademySettingsPayload; dashboard: DashboardPayload }>(
+      '/api/academic-terms',
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }
+    ),
+
+  updateAcademicTerm: (
+    id: string,
+    payload: {
+      name?: string;
+      startDate?: string;
+      endDate?: string;
+      isCurrent?: boolean;
+      status?: 'Planned' | 'Active' | 'Completed' | 'Archived';
+    }
+  ) =>
+    requestJson<{ settings: AcademySettingsPayload; dashboard: DashboardPayload }>(
+      `/api/academic-terms/${id}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      }
     ),
 };

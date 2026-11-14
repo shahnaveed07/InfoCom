@@ -2,20 +2,13 @@ import path from 'node:path';
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import { runSessionReminderSweep } from './server/ams-service.ts';
-import { academicsRouter } from './server/routes/academics.routes.ts';
-import { adminOpsRouter } from './server/routes/admin-ops.routes.ts';
-import { authRouter } from './server/routes/auth.routes.ts';
+import { createApiApp } from './server/app.ts';
+import { disconnectPrisma } from './server/db/prisma.ts';
 
 const PORT = 3000;
 
 async function startServer() {
-  const app = express();
-  app.use(express.json({ limit: '5mb' }));
-
-  // Mount modular REST API routers (backed by PostgreSQL + Drizzle ORM)
-  app.use('/api', authRouter);
-  app.use('/api', academicsRouter);
-  app.use('/api', adminOpsRouter);
+  const app = createApiApp();
 
   // Periodic 5-minute automated reminder sweep (lazy, catches any transient DB error)
   setInterval(() => {
@@ -39,9 +32,17 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`InfoCom Academy Management System listening on http://localhost:${PORT}`);
   });
+
+  const shutdown = async () => {
+    server.close();
+    await disconnectPrisma().catch(() => undefined);
+    process.exit(0);
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 }
 
 startServer().catch((err) => {

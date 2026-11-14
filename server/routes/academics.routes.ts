@@ -1,19 +1,6 @@
 import crypto from 'node:crypto';
 import { Router, type Response } from 'express';
-import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
-import { db } from '../../src/db/index.ts';
-import {
-  classSessions,
-  cohorts,
-  courseModules,
-  courses,
-  enrollments,
-  moduleGrades,
-  notifications,
-  progressRemarks,
-  users,
-} from '../../src/db/schema.ts';
 import {
   createCohortSchema,
   createCourseSchema,
@@ -31,21 +18,209 @@ import {
   markAttendanceAndNotify,
   recordAuditLog,
   runSessionReminderSweep,
+  toPublicUser,
 } from '../ams-service.ts';
+import { prisma } from '../db/prisma.ts';
 import {
   requireAuth,
   requireRoles,
   type AuthenticatedRequest,
 } from '../middleware/auth.ts';
-import { ensureDatabaseMigratedAndSeeded } from '../migrate.ts';
+import { listEnrollmentsPaginated } from '../repositories/ams.repository.ts';
+import {
+  canAccessCourse,
+  canAccessStudentRecord,
+  canInstructorAccessCourse,
+  getInstructorScope,
+  hasInstructorPermission,
+} from '../security/permissions.ts';
 
 export const academicsRouter = Router();
 
 const staffGuard = [requireAuth, requireRoles('admin', 'instructor')] as const;
 
-academicsRouter.post('/courses', ...staffGuard, async (req: AuthenticatedRequest, res: Response) => {
+academicsRouter.get('/enrollments', ...staffGuard, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    await ensureDatabaseMigratedAndSeeded();
+    const requestedCourseId =
+      typeof req.query.courseId === 'string' && req.query.courseId.trim()
+        ? req.query.courseId.trim()
+        : undefined;
+    const requestedStudentId =
+      typeof req.query.studentId === 'string' && req.query.studentId.trim()
+        ? req.query.studentId.trim()
+        : undefined;
+
+    let scopedCourseIds: string[] | undefined;
+    if (req.authUser!.role === 'instructor') {
+      const scope = await getInstructorScope(req.authUser!.id);
+      if (requestedCourseId && !scope.courseIds.has(requestedCourseId)) {
+        res.status(403).json({ error: 'Access denied. You are not assigned to this course.' });
+        return;
+      }
+      if (requestedStudentId && !scope.studentIds.has(requestedStudentId)) {
+        res.status(403).json({ error: 'Access denied. Student is not in your assigned courses.' });
+        return;
+      }
+      scopedCourseIds = Array.from(scope.courseIds);
+    }
+
+    const result = await listEnrollmentsPaginated({
+      page: Number(req.query.page) || 1,
+      pageSize: Number(req.query.pageSize) || 20,
+      courseId: requestedCourseId,
+      courseIds: requestedCourseId ? undefined : scopedCourseIds,
+      studentId: requestedStudentId,
+      status: typeof req.query.status === 'string' ? req.query.status : undefined,
+    });
+    res.json(result);
+  } catch (err) {
+    console.error('GET /api/enrollments error:', err);
+    res.status(500).json({ error: 'Failed to load enrollments.' });
+  }
+});
+
+academicsRouter.get('/courses/:courseId', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const course = await prisma.course.findUnique({
+      where: { id: req.params.courseId },
+      include: {
+        modules: { orderBy: { sortOrder: 'asc' } },
+        batches: true,
+        instructor: { select: { id: true, name: true } },
+      },
+    });
+    if (!course) {
+      res.status(404).json({ error: 'Course not found.' });
+      return;
+    }
+
+    const allowed = await canAccessCourse(req.authUser!, course.id);
+    if (!allowed) {
+      res.status(403).json({ error: 'Access denied. You do not have access to this course.' });
+      return;
+    }
+
+    res.json({
+      course: {
+        id: course.id,
+        code: course.code,
+        title: course.title,
+        track: course.track,
+        description: course.description,
+        instructorId: course.instructorId,
+        instructorName: course.instructor?.name ?? 'Instructor',
+        durationWeeks: course.durationWeeks,
+        tuitionFee: course.tuitionFee.toFixed(2),
+        modules: course.modules,
+        cohorts: course.batches,
+      },
+    });
+  } catch (err) {
+    console.error('GET /api/courses/:courseId error:', err);
+    res.status(500).json({ error: 'Failed to load course details.' });
+  }
+});
+
+academicsRouter.get('/students/:studentId', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const targetId = req.params.studentId;
+    const allowed = await canAccessStudentRecord(req.authUser!, targetId);
+    if (!allowed) {
+      res.status(403).json({ error: 'Access denied to student record.' });
+      return;
+    }
+
+    const student = await prisma.user.findFirst({
+      where: { id: targetId, role: 'student' },
+    });
+    if (!student) {
+      res.status(404).json({ error: 'Student not found.' });
+      return;
+    }
+
+    let courseFilter: string[] | undefined;
+    if (req.authUser!.role === 'instructor') {
+      const scope = await getInstructorScope(req.authUser!.id);
+      courseFilter = Array.from(scope.courseIds);
+    }
+
+    const [enrollments, grades, attendance] = await Promise.all([
+      prisma.enrollment.findMany({
+        where: {
+          studentId: targetId,
+          ...(courseFilter ? { courseId: { in: courseFilter } } : {}),
+        },
+        orderBy: { enrolledAt: 'desc' },
+      }),
+      prisma.grade.findMany({
+        where: {
+          studentId: targetId,
+          ...(courseFilter ? { courseId: { in: courseFilter } } : {}),
+        },
+      }),
+      prisma.attendance.findMany({
+        where: {
+          studentId: targetId,
+          ...(courseFilter ? { courseId: { in: courseFilter } } : {}),
+        },
+      }),
+    ]);
+
+    res.json({
+      student: toPublicUser(student),
+      enrollments,
+      grades,
+      attendance,
+    });
+  } catch (err) {
+    console.error('GET /api/students/:studentId error:', err);
+    res.status(500).json({ error: 'Failed to load student record.' });
+  }
+});
+
+academicsRouter.get('/students/:studentId/finance', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const targetId = req.params.studentId;
+    if (req.authUser!.role === 'instructor') {
+      res.status(403).json({ error: 'Instructors do not have permission to view student financial records.' });
+      return;
+    }
+    if (req.authUser!.role === 'student' && req.authUser!.id !== targetId) {
+      res.status(403).json({ error: 'Access denied to another student\'s financial records.' });
+      return;
+    }
+
+    const [invoices, payments] = await Promise.all([
+      prisma.invoice.findMany({
+        where: { studentId: targetId, isArchived: false },
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.payment.findMany({
+        where: { studentId: targetId },
+        orderBy: { paidAt: 'desc' },
+      }),
+    ]);
+
+    res.json({
+      invoices: invoices.map((i) => ({
+        ...i,
+        subtotal: (i.subtotal ?? i.amountDue).toFixed(2),
+        amountDue: i.amountDue.toFixed(2),
+        amountPaid: i.amountPaid.toFixed(2),
+      })),
+      payments: payments.map((p) => ({
+        ...p,
+        amount: p.amount.toFixed(2),
+      })),
+    });
+  } catch (err) {
+    console.error('GET /api/students/:studentId/finance error:', err);
+    res.status(500).json({ error: 'Failed to load financial records.' });
+  }
+});
+
+academicsRouter.post('/courses', requireAuth, requireRoles('admin'), async (req: AuthenticatedRequest, res: Response) => {
+  try {
     const parsed = createCourseSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid course details.' });
@@ -59,50 +234,79 @@ academicsRouter.post('/courses', ...staffGuard, async (req: AuthenticatedRequest
       return;
     }
 
-    const [instructor] = await db
-      .select()
-      .from(users)
-      .where(eq(users.id, input.instructorId))
-      .limit(1);
+    const instructor = await prisma.user.findUnique({ where: { id: input.instructorId } });
     if (!instructor || (instructor.role !== 'instructor' && instructor.role !== 'admin')) {
       res.status(400).json({ error: 'Selected instructor account was not found.' });
       return;
     }
 
-    const [duplicate] = await db
-      .select()
-      .from(courses)
-      .where(eq(courses.code, input.code.toUpperCase()))
-      .limit(1);
+    const upperCode = input.code.toUpperCase();
+    const duplicate = await prisma.course.findUnique({ where: { code: upperCode } });
     if (duplicate) {
-      res.status(409).json({ error: `Course code ${input.code.toUpperCase()} already exists.` });
+      res.status(409).json({ error: `Course code ${upperCode} already exists.` });
       return;
     }
 
     const courseId = `crs-${crypto.randomUUID().slice(0, 8)}`;
-    await db.transaction(async (tx) => {
-      await tx.insert(courses).values({
-        id: courseId,
-        code: input.code.toUpperCase(),
-        title: input.title,
-        track: input.track,
-        description: input.description,
-        instructorId: instructor.id,
-        durationWeeks: input.durationWeeks,
-        tuitionFee: Number(input.tuitionFee).toFixed(2),
-        isArchived: false,
+    const tuitionStr = Number(input.tuitionFee).toFixed(2);
+
+    await prisma.$transaction(async (tx) => {
+      await tx.course.create({
+        data: {
+          id: courseId,
+          code: upperCode,
+          title: input.title,
+          track: input.track,
+          category: input.category || 'Technical Bootcamp',
+          departmentId: input.departmentId || null,
+          description: input.description,
+          prerequisites: input.prerequisites || '',
+          learningObjectives: input.learningObjectives || [],
+          passingScore: input.passingScore ?? 60,
+          minAttendanceRate: input.minAttendanceRate ?? 75,
+          gradingConfig: input.gradingConfig ?? {},
+          instructorId: instructor.id,
+          durationWeeks: input.durationWeeks,
+          tuitionFee: tuitionStr,
+          isArchived: false,
+        },
+      });
+
+      await tx.feeStructure.create({
+        data: {
+          id: `fs-${courseId}`,
+          courseId,
+          tuitionAmount: tuitionStr,
+          isActive: true,
+        },
       });
 
       for (let i = 0; i < input.modules.length; i += 1) {
         const mod = input.modules[i];
-        await tx.insert(courseModules).values({
-          id: `mod-${courseId}-${i + 1}-${crypto.randomUUID().slice(0, 4)}`,
-          courseId,
-          code: mod.code.toUpperCase(),
-          title: mod.title,
-          weight: mod.weight,
-          labHours: mod.labHours,
-          sortOrder: i + 1,
+        const modId = `mod-${courseId}-${i + 1}-${crypto.randomUUID().slice(0, 4)}`;
+        await tx.courseModule.create({
+          data: {
+            id: modId,
+            courseId,
+            code: mod.code.toUpperCase(),
+            title: mod.title,
+            weight: mod.weight,
+            labHours: mod.labHours,
+            sortOrder: i + 1,
+          },
+        });
+
+        await tx.assessment.create({
+          data: {
+            id: `asmt-${modId}`,
+            courseId,
+            moduleId: modId,
+            title: `${mod.code.toUpperCase()}: ${mod.title}`,
+            assessmentType: 'Module Assessment',
+            maxScore: 100,
+            weight: mod.weight,
+            createdByUserId: req.authUser!.id,
+          },
         });
       }
     });
@@ -112,7 +316,7 @@ academicsRouter.post('/courses', ...staffGuard, async (req: AuthenticatedRequest
       action: 'COURSE_CREATED',
       entityType: 'course',
       entityId: courseId,
-      summary: `Created course ${input.code.toUpperCase()} — ${input.title} with ${input.modules.length} modules.`,
+      summary: `Created course ${upperCode} — ${input.title} with ${input.modules.length} modules.`,
     });
 
     const dashboard = await getUserDashboardById(req.authUser!.id);
@@ -123,9 +327,8 @@ academicsRouter.post('/courses', ...staffGuard, async (req: AuthenticatedRequest
   }
 });
 
-academicsRouter.post('/cohorts', ...staffGuard, async (req: AuthenticatedRequest, res: Response) => {
+academicsRouter.post('/cohorts', requireAuth, requireRoles('admin'), async (req: AuthenticatedRequest, res: Response) => {
   try {
-    await ensureDatabaseMigratedAndSeeded();
     const parsed = createCohortSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid cohort details.' });
@@ -133,34 +336,54 @@ academicsRouter.post('/cohorts', ...staffGuard, async (req: AuthenticatedRequest
     }
 
     const input = parsed.data;
-    const [course] = await db.select().from(courses).where(eq(courses.id, input.courseId)).limit(1);
-    const [instructor] = await db.select().from(users).where(eq(users.id, input.instructorId)).limit(1);
+    const [course, instructor] = await Promise.all([
+      prisma.course.findUnique({ where: { id: input.courseId } }),
+      prisma.user.findUnique({ where: { id: input.instructorId } }),
+    ]);
     if (!course || !instructor) {
       res.status(400).json({ error: 'Valid course and instructor are required.' });
       return;
     }
 
-    const [dup] = await db
-      .select()
-      .from(cohorts)
-      .where(eq(cohorts.code, input.code.toUpperCase()))
-      .limit(1);
+    const upperCode = input.code.toUpperCase();
+    const dup = await prisma.batch.findUnique({ where: { code: upperCode } });
     if (dup) {
-      res.status(409).json({ error: `Cohort code ${input.code.toUpperCase()} already exists.` });
+      res.status(409).json({ error: `Cohort code ${upperCode} already exists.` });
       return;
     }
 
     const cohortId = `coh-${crypto.randomUUID().slice(0, 8)}`;
-    await db.insert(cohorts).values({
-      id: cohortId,
-      code: input.code.toUpperCase(),
-      name: input.name,
-      courseId: course.id,
-      instructorId: instructor.id,
-      capacity: input.capacity,
-      startDate: new Date(input.startDate),
-      endDate: new Date(input.endDate),
-      status: input.status,
+    await prisma.$transaction(async (tx) => {
+      await tx.batch.create({
+        data: {
+          id: cohortId,
+          code: upperCode,
+          name: input.name,
+          courseId: course.id,
+          termId: input.termId || null,
+          instructorId: instructor.id,
+          classroomId: input.classroomId || null,
+          capacity: input.capacity,
+          startDate: new Date(input.startDate),
+          endDate: new Date(input.endDate),
+          status: input.status,
+        },
+      });
+
+      await tx.instructorAssignment.upsert({
+        where: {
+          instructorId_batchId: { instructorId: instructor.id, batchId: cohortId },
+        },
+        update: { isActive: true },
+        create: {
+          id: `ia-${crypto.randomUUID().slice(0, 8)}`,
+          instructorId: instructor.id,
+          batchId: cohortId,
+          courseId: course.id,
+          role: 'Lead',
+          isActive: true,
+        },
+      });
     });
 
     await recordAuditLog({
@@ -168,7 +391,7 @@ academicsRouter.post('/cohorts', ...staffGuard, async (req: AuthenticatedRequest
       action: 'COHORT_CREATED',
       entityType: 'cohort',
       entityId: cohortId,
-      summary: `Created cohort ${input.name} (${input.code.toUpperCase()}) for ${course.code}.`,
+      summary: `Created cohort ${input.name} (${upperCode}) for ${course.code}.`,
     });
 
     const dashboard = await getUserDashboardById(req.authUser!.id);
@@ -181,6 +404,13 @@ academicsRouter.post('/cohorts', ...staffGuard, async (req: AuthenticatedRequest
 
 academicsRouter.post('/enrollments', ...staffGuard, async (req: AuthenticatedRequest, res: Response) => {
   try {
+    if (req.authUser!.role === 'instructor') {
+      const permitted = await hasInstructorPermission(req.authUser!, 'enrollments:manage');
+      if (!permitted) {
+        res.status(403).json({ error: 'Your instructor permissions do not allow managing enrollments.' });
+        return;
+      }
+    }
     const parsed = createEnrollmentSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid enrollment payload.' });
@@ -207,30 +437,61 @@ academicsRouter.post('/enrollments', ...staffGuard, async (req: AuthenticatedReq
 
 academicsRouter.patch('/enrollments/:id', ...staffGuard, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    await ensureDatabaseMigratedAndSeeded();
+    if (req.authUser!.role === 'instructor') {
+      const permitted = await hasInstructorPermission(req.authUser!, 'enrollments:manage');
+      if (!permitted) {
+        res.status(403).json({ error: 'Your instructor permissions do not allow updating enrollments.' });
+        return;
+      }
+    }
     const parsed = updateEnrollmentStatusSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: 'Invalid enrollment status.' });
       return;
     }
 
-    const [updated] = await db
-      .update(enrollments)
-      .set({ status: parsed.data.status, updatedAt: new Date() })
-      .where(eq(enrollments.id, req.params.id))
-      .returning();
-
-    if (!updated) {
+    const existing = await prisma.enrollment.findUnique({
+      where: { id: req.params.id },
+    });
+    if (!existing) {
       res.status(404).json({ error: 'Enrollment not found.' });
       return;
     }
+
+    if (req.authUser!.role === 'instructor') {
+      const allowed = await canInstructorAccessCourse(req.authUser!.id, existing.courseId);
+      if (!allowed) {
+        res.status(403).json({ error: 'You are not assigned to manage enrollments for this course.' });
+        return;
+      }
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.enrollment.update({
+        where: { id: existing.id },
+        data: { status: parsed.data.status },
+      });
+
+      await tx.enrollmentHistory.create({
+        data: {
+          id: `eh-${crypto.randomUUID().slice(0, 8)}`,
+          enrollmentId: existing.id,
+          previousStatus: existing.status,
+          newStatus: parsed.data.status,
+          previousBatchId: existing.cohortId,
+          newBatchId: existing.cohortId,
+          reason: `Status updated by ${req.authUser!.name}`,
+          changedByUserId: req.authUser!.id,
+        },
+      });
+    });
 
     await recordAuditLog({
       actor: req.authUser!,
       action: 'ENROLLMENT_STATUS_UPDATED',
       entityType: 'enrollment',
-      entityId: updated.id,
-      summary: `Updated enrollment ${updated.id} status to ${parsed.data.status}.`,
+      entityId: existing.id,
+      summary: `Updated enrollment ${existing.id} status from ${existing.status} to ${parsed.data.status}.`,
     });
 
     const dashboard = await getUserDashboardById(req.authUser!.id);
@@ -243,7 +504,13 @@ academicsRouter.patch('/enrollments/:id', ...staffGuard, async (req: Authenticat
 
 academicsRouter.put('/progress/module-completion', ...staffGuard, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    await ensureDatabaseMigratedAndSeeded();
+    if (req.authUser!.role === 'instructor') {
+      const permitted = await hasInstructorPermission(req.authUser!, 'progress:manage');
+      if (!permitted) {
+        res.status(403).json({ error: 'Your instructor permissions do not allow updating module progress.' });
+        return;
+      }
+    }
     const parsed = toggleModuleSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: 'Invalid module completion payload.' });
@@ -251,35 +518,43 @@ academicsRouter.put('/progress/module-completion', ...staffGuard, async (req: Au
     }
 
     const { enrollmentId, moduleId, completed } = parsed.data;
-    const [enr] = await db
-      .select()
-      .from(enrollments)
-      .where(eq(enrollments.id, enrollmentId))
-      .limit(1);
+    const enr = await prisma.enrollment.findUnique({ where: { id: enrollmentId } });
 
     if (!enr) {
       res.status(404).json({ error: 'Enrollment not found.' });
       return;
     }
+    if (req.authUser!.role === 'instructor') {
+      const allowed = await canInstructorAccessCourse(req.authUser!.id, enr.courseId);
+      if (!allowed) {
+        res.status(403).json({ error: 'You are not assigned to update module progress for this course.' });
+        return;
+      }
+    }
+    if (enr.status === 'Dropped') {
+      res.status(400).json({ error: 'Cannot update module completion for a dropped enrollment.' });
+      return;
+    }
 
-    const [mod] = await db
-      .select()
-      .from(courseModules)
-      .where(and(eq(courseModules.id, moduleId), eq(courseModules.courseId, enr.courseId)))
-      .limit(1);
+    const mod = await prisma.courseModule.findFirst({
+      where: { id: moduleId, courseId: enr.courseId },
+    });
     if (!mod) {
       res.status(400).json({ error: 'Module does not belong to enrolled course.' });
       return;
     }
 
-    const set = new Set(enr.completedModuleIds ?? []);
+    const currentIds = Array.isArray(enr.completedModuleIds)
+      ? (enr.completedModuleIds as string[])
+      : [];
+    const set = new Set(currentIds);
     if (completed) set.add(moduleId);
     else set.delete(moduleId);
 
-    await db
-      .update(enrollments)
-      .set({ completedModuleIds: Array.from(set), updatedAt: new Date() })
-      .where(eq(enrollments.id, enr.id));
+    await prisma.enrollment.update({
+      where: { id: enr.id },
+      data: { completedModuleIds: Array.from(set) },
+    });
 
     await recordAuditLog({
       actor: req.authUser!,
@@ -299,7 +574,13 @@ academicsRouter.put('/progress/module-completion', ...staffGuard, async (req: Au
 
 academicsRouter.put('/grades', ...staffGuard, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    await ensureDatabaseMigratedAndSeeded();
+    if (req.authUser!.role === 'instructor') {
+      const permitted = await hasInstructorPermission(req.authUser!, 'grades:manage');
+      if (!permitted) {
+        res.status(403).json({ error: 'Your instructor permissions do not allow grading assessments.' });
+        return;
+      }
+    }
     const parsed = saveGradeSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid grade input.' });
@@ -307,60 +588,113 @@ academicsRouter.put('/grades', ...staffGuard, async (req: AuthenticatedRequest, 
     }
 
     const { studentId, courseId, moduleId, score, feedback } = parsed.data;
-    const [course] = await db.select().from(courses).where(eq(courses.id, courseId)).limit(1);
-    const [mod] = await db
-      .select()
-      .from(courseModules)
-      .where(and(eq(courseModules.id, moduleId), eq(courseModules.courseId, courseId)))
-      .limit(1);
-    const [student] = await db
-      .select()
-      .from(users)
-      .where(and(eq(users.id, studentId), eq(users.role, 'student')))
-      .limit(1);
+    if (req.authUser!.role === 'instructor') {
+      const allowed = await canInstructorAccessCourse(req.authUser!.id, courseId);
+      if (!allowed) {
+        res.status(403).json({ error: 'You are not assigned to grade assessments for this course.' });
+        return;
+      }
+    }
+
+    const [course, mod, student] = await Promise.all([
+      prisma.course.findUnique({ where: { id: courseId } }),
+      prisma.courseModule.findFirst({ where: { id: moduleId, courseId } }),
+      prisma.user.findFirst({ where: { id: studentId, role: 'student' } }),
+    ]);
 
     if (!course || !mod || !student) {
       res.status(400).json({ error: 'Valid student, course, and module are required.' });
       return;
     }
 
+    const activeEnrollment = await prisma.enrollment.findFirst({
+      where: {
+        studentId,
+        courseId,
+        status: { in: ['Active', 'Completed', 'Waitlisted'] },
+      },
+    });
+
+    if (!activeEnrollment) {
+      res.status(400).json({
+        error: 'Student must have a non-dropped enrollment in this course before recording a grade.',
+      });
+      return;
+    }
+
     const roundedScore = Math.round(score);
     const now = new Date();
 
-    await db.transaction(async (tx) => {
-      await tx
-        .insert(moduleGrades)
-        .values({
+    await prisma.$transaction(async (tx) => {
+      let assessment = await tx.assessment.findFirst({
+        where: { courseId, moduleId },
+      });
+      if (!assessment) {
+        assessment = await tx.assessment.create({
+          data: {
+            id: `asmt-${mod.id}`,
+            courseId,
+            moduleId: mod.id,
+            title: `${mod.code}: ${mod.title}`,
+            assessmentType: 'Module Assessment',
+            maxScore: 100,
+            weight: mod.weight,
+            createdByUserId: req.authUser!.id,
+          },
+        });
+      }
+
+      await tx.grade.upsert({
+        where: {
+          studentId_courseId_moduleId: { studentId, courseId, moduleId },
+        },
+        update: {
+          score: roundedScore,
+          feedback,
+          enrollmentId: activeEnrollment.id,
+          assessmentId: assessment.id,
+          gradedAt: now,
+          gradedByUserId: req.authUser!.id,
+          gradedBy: req.authUser!.name,
+        },
+        create: {
           id: `grd-${crypto.randomUUID().slice(0, 8)}`,
           studentId,
           courseId,
           moduleId,
+          enrollmentId: activeEnrollment.id,
+          assessmentId: assessment.id,
           score: roundedScore,
+          maxScore: 100,
           feedback,
           gradedAt: now,
           gradedByUserId: req.authUser!.id,
           gradedBy: req.authUser!.name,
-        })
-        .onConflictDoUpdate({
-          target: [moduleGrades.studentId, moduleGrades.courseId, moduleGrades.moduleId],
-          set: {
-            score: roundedScore,
-            feedback,
-            gradedAt: now,
-            gradedByUserId: req.authUser!.id,
-            gradedBy: req.authUser!.name,
-          },
-        });
+        },
+      });
 
-      await tx.insert(notifications).values({
-        id: `not-${crypto.randomUUID().slice(0, 8)}`,
-        userId: studentId,
-        kind: 'grade',
-        title: `Grade Posted · ${course.code} ${mod.code}`,
-        message: `Score ${roundedScore}% recorded for "${mod.title}" by ${req.authUser!.name}.`,
-        relatedCourseId: course.id,
-        read: false,
-        createdAt: now,
+      const notif = await tx.notification.create({
+        data: {
+          id: `not-${crypto.randomUUID().slice(0, 8)}`,
+          userId: studentId,
+          kind: 'grade',
+          title: `Grade Posted · ${course.code} ${mod.code}`,
+          message: `Score ${roundedScore}% recorded for "${mod.title}" by ${req.authUser!.name}.`,
+          relatedCourseId: course.id,
+          read: false,
+          createdAt: now,
+        },
+      });
+
+      await tx.deliveryLog.create({
+        data: {
+          id: `del-${crypto.randomUUID().slice(0, 8)}`,
+          notificationId: notif.id,
+          userId: student.id,
+          channel: 'in_app',
+          recipient: student.email,
+          status: 'Delivered',
+        },
       });
     });
 
@@ -382,33 +716,76 @@ academicsRouter.put('/grades', ...staffGuard, async (req: AuthenticatedRequest, 
 
 academicsRouter.put('/progress/remark', ...staffGuard, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    await ensureDatabaseMigratedAndSeeded();
+    if (req.authUser!.role === 'instructor') {
+      const permitted = await hasInstructorPermission(req.authUser!, 'progress:manage');
+      if (!permitted) {
+        res.status(403).json({ error: 'Your instructor permissions do not allow writing progress remarks.' });
+        return;
+      }
+    }
     const parsed = saveRemarkSchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Valid student, course, and remark are required.' });
+      res.status(400).json({
+        error: parsed.error.issues[0]?.message ?? 'Valid student, course, and remark are required.',
+      });
       return;
     }
 
     const { studentId, courseId, summary } = parsed.data;
+    if (req.authUser!.role === 'instructor') {
+      const allowed = await canInstructorAccessCourse(req.authUser!.id, courseId);
+      if (!allowed) {
+        res.status(403).json({ error: 'You are not assigned to write progress remarks for this course.' });
+        return;
+      }
+    }
+
+    const [student, course] = await Promise.all([
+      prisma.user.findFirst({ where: { id: studentId, role: 'student' } }),
+      prisma.course.findUnique({ where: { id: courseId } }),
+    ]);
+
+    if (!student || !course) {
+      res.status(400).json({ error: 'Valid student and course are required.' });
+      return;
+    }
+
+    const activeEnrollment = await prisma.enrollment.findFirst({
+      where: {
+        studentId,
+        courseId,
+        status: { in: ['Active', 'Completed', 'Waitlisted'] },
+      },
+    });
+
+    if (!activeEnrollment) {
+      res.status(400).json({
+        error: 'Student must be enrolled in this course before recording an instructor remark.',
+      });
+      return;
+    }
+
     const now = new Date();
-    await db
-      .insert(progressRemarks)
-      .values({
+    await prisma.progressRemark.upsert({
+      where: {
+        studentId_courseId: { studentId, courseId },
+      },
+      update: {
+        summary,
+        enrollmentId: activeEnrollment.id,
+        updatedAt: now,
+        updatedBy: req.authUser!.name,
+      },
+      create: {
         id: `rem-${crypto.randomUUID().slice(0, 8)}`,
         studentId,
         courseId,
+        enrollmentId: activeEnrollment.id,
         summary,
         updatedAt: now,
         updatedBy: req.authUser!.name,
-      })
-      .onConflictDoUpdate({
-        target: [progressRemarks.studentId, progressRemarks.courseId],
-        set: {
-          summary,
-          updatedAt: now,
-          updatedBy: req.authUser!.name,
-        },
-      });
+      },
+    });
 
     await recordAuditLog({
       actor: req.authUser!,
@@ -428,7 +805,13 @@ academicsRouter.put('/progress/remark', ...staffGuard, async (req: Authenticated
 
 academicsRouter.post('/sessions', ...staffGuard, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    await ensureDatabaseMigratedAndSeeded();
+    if (req.authUser!.role === 'instructor') {
+      const permitted = await hasInstructorPermission(req.authUser!, 'sessions:manage');
+      if (!permitted) {
+        res.status(403).json({ error: 'Your instructor permissions do not allow scheduling sessions.' });
+        return;
+      }
+    }
     const parsed = createSessionSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid session details.' });
@@ -436,29 +819,42 @@ academicsRouter.post('/sessions', ...staffGuard, async (req: AuthenticatedReques
     }
 
     const input = parsed.data;
-    const [course] = await db.select().from(courses).where(eq(courses.id, input.courseId)).limit(1);
+    const course = await prisma.course.findUnique({ where: { id: input.courseId } });
     if (!course) {
       res.status(400).json({ error: 'Valid course is required.' });
       return;
     }
+    if (req.authUser!.role === 'instructor') {
+      const allowed = await canInstructorAccessCourse(req.authUser!.id, course.id);
+      if (!allowed) {
+        res.status(403).json({ error: 'You are not assigned to schedule sessions for this course.' });
+        return;
+      }
+    }
+
+    const matchedBatch = input.cohortId
+      ? await prisma.batch.findUnique({ where: { id: input.cohortId } })
+      : await prisma.batch.findFirst({ where: { courseId: course.id, name: input.cohort } });
 
     const startDate = new Date(input.startIso);
     const endDate = new Date(startDate.getTime() + Math.max(0.5, input.durationHours) * 60 * 60 * 1000);
     const sessionId = `ses-${crypto.randomUUID().slice(0, 8)}`;
 
-    await db.insert(classSessions).values({
-      id: sessionId,
-      courseId: course.id,
-      cohortId: input.cohortId ?? null,
-      cohort: input.cohort,
-      title: input.title,
-      topic: input.topic || 'Instructor-led lab session',
-      room: input.room,
-      instructorId: req.authUser!.id,
-      instructorName: req.authUser!.name,
-      startIso: startDate,
-      endIso: endDate,
-      status: 'Scheduled',
+    await prisma.classSession.create({
+      data: {
+        id: sessionId,
+        courseId: course.id,
+        cohortId: matchedBatch?.id ?? input.cohortId ?? null,
+        cohort: input.cohort,
+        title: input.title,
+        topic: input.topic || 'Instructor-led lab session',
+        room: input.room,
+        instructorId: req.authUser!.id,
+        instructorName: req.authUser!.name,
+        startIso: startDate,
+        endIso: endDate,
+        status: 'Scheduled',
+      },
     });
 
     const remindersCreated = await runSessionReminderSweep();
@@ -484,7 +880,13 @@ academicsRouter.post('/sessions', ...staffGuard, async (req: AuthenticatedReques
 
 academicsRouter.patch('/sessions/:id/status', ...staffGuard, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    await ensureDatabaseMigratedAndSeeded();
+    if (req.authUser!.role === 'instructor') {
+      const permitted = await hasInstructorPermission(req.authUser!, 'sessions:manage');
+      if (!permitted) {
+        res.status(403).json({ error: 'Your instructor permissions do not allow updating session status.' });
+        return;
+      }
+    }
     const schema = z.object({ status: z.enum(['Scheduled', 'Completed', 'Cancelled']) });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) {
@@ -492,15 +894,27 @@ academicsRouter.patch('/sessions/:id/status', ...staffGuard, async (req: Authent
       return;
     }
 
-    const [updated] = await db
-      .update(classSessions)
-      .set({ status: parsed.data.status })
-      .where(eq(classSessions.id, req.params.id))
-      .returning();
-    if (!updated) {
+    const existing = await prisma.classSession.findUnique({
+      where: { id: req.params.id },
+    });
+    if (!existing) {
       res.status(404).json({ error: 'Session not found.' });
       return;
     }
+    if (req.authUser!.role === 'instructor') {
+      const allowed =
+        existing.instructorId === req.authUser!.id ||
+        (await canInstructorAccessCourse(req.authUser!.id, existing.courseId));
+      if (!allowed) {
+        res.status(403).json({ error: 'You are not authorized to manage this class session.' });
+        return;
+      }
+    }
+
+    const updated = await prisma.classSession.update({
+      where: { id: existing.id },
+      data: { status: parsed.data.status },
+    });
 
     await recordAuditLog({
       actor: req.authUser!,
@@ -520,6 +934,13 @@ academicsRouter.patch('/sessions/:id/status', ...staffGuard, async (req: Authent
 
 academicsRouter.post('/attendance', ...staffGuard, async (req: AuthenticatedRequest, res: Response) => {
   try {
+    if (req.authUser!.role === 'instructor') {
+      const permitted = await hasInstructorPermission(req.authUser!, 'attendance:manage');
+      if (!permitted) {
+        res.status(403).json({ error: 'Your instructor permissions do not allow marking attendance.' });
+        return;
+      }
+    }
     const parsed = markAttendanceSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid attendance payload.' });
@@ -531,7 +952,7 @@ academicsRouter.post('/attendance', ...staffGuard, async (req: AuthenticatedRequ
       ...parsed.data,
     });
     if (!result.ok) {
-      res.status(404).json({ error: result.error });
+      res.status(result.status ?? 404).json({ error: result.error });
       return;
     }
 

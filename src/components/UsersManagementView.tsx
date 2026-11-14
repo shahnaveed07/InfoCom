@@ -237,6 +237,7 @@ export function UsersManagementView({
                         className="px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-md text-slate-700 disabled:opacity-60 cursor-pointer"
                       >
                         <option value="active">Active</option>
+                        <option value="suspended">Suspended</option>
                         <option value="inactive">Inactive</option>
                         <option value="archived">Archived</option>
                       </select>

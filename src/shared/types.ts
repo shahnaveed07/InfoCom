@@ -1,6 +1,6 @@
 export type UserRole = 'admin' | 'instructor' | 'student';
 
-export type UserAccountStatus = 'active' | 'inactive' | 'archived';
+export type UserAccountStatus = 'active' | 'inactive' | 'suspended' | 'archived';
 
 export type EnrollmentStatus = 'Active' | 'Completed' | 'Waitlisted' | 'Dropped';
 
@@ -69,7 +69,19 @@ export interface Course {
   code: string;
   title: string;
   track: string;
+  category?: string;
+  departmentId?: string | null;
+  departmentName?: string | null;
   description?: string;
+  prerequisites?: string;
+  learningObjectives?: string[];
+  passingScore?: number;
+  minAttendanceRate?: number;
+  gradingConfig?: {
+    scaleName?: string;
+    passingGrade?: string;
+    rubricNotes?: string;
+  };
   instructorId: string;
   instructorName: string;
   durationWeeks: number;
@@ -83,8 +95,11 @@ export interface Cohort {
   code: string;
   name: string;
   courseId: string;
+  termId?: string | null;
   instructorId: string;
   instructorName: string;
+  classroomId?: string | null;
+  classroomName?: string | null;
   capacity: number;
   startDate: string;
   endDate: string;
@@ -117,10 +132,23 @@ export interface Enrollment {
   completedModuleIds: string[];
 }
 
+export interface EnrollmentHistoryEntry {
+  id: string;
+  enrollmentId: string;
+  previousStatus: string | null;
+  newStatus: string;
+  previousBatchId: string | null;
+  newBatchId: string | null;
+  reason: string;
+  changedByUserId: string | null;
+  changedAt: string;
+}
+
 export interface ClassSession {
   id: string;
   courseId: string;
   cohortId?: string | null;
+  classroomId?: string | null;
   cohort: string;
   title: string;
   topic: string;
@@ -265,8 +293,260 @@ export interface AcademyAnalytics {
   meanAttendanceRate: number;
 }
 
+export type AnalyticsPreset = '7d' | '30d' | '90d' | 'all' | 'custom';
+
+export type InstructorPermissionKey =
+  | 'enrollments:manage'
+  | 'progress:manage'
+  | 'grades:manage'
+  | 'sessions:manage'
+  | 'attendance:manage'
+  | 'documents:upload'
+  | 'certificates:issue';
+
+export interface Department {
+  id: string;
+  code: string;
+  name: string;
+  headUserId?: string | null;
+  status: string;
+  courseCount?: number;
+}
+
+export interface Classroom {
+  id: string;
+  code: string;
+  name: string;
+  building: string;
+  capacity: number;
+  equipment: string;
+  isActive: boolean;
+}
+
+export interface AcademicYear {
+  id: string;
+  code: string;
+  name: string;
+  startDate: string;
+  endDate: string;
+  isCurrent: boolean;
+  status: string;
+}
+
+export interface AcademicTerm {
+  id: string;
+  academicYearId: string;
+  academicYearName?: string;
+  code: string;
+  name: string;
+  startDate: string;
+  endDate: string;
+  isCurrent: boolean;
+  status: string;
+}
+
+export interface AcademyProfile {
+  id: string;
+  code: string;
+  name: string;
+  legalName: string;
+  email: string;
+  phone: string;
+  website: string;
+  address: string;
+  logoDataUrl: string;
+  timezone: string;
+  currency: string;
+}
+
+export interface CertificateTemplateInfo {
+  id: string;
+  code: string;
+  name: string;
+  titleFormat: string;
+  signatoryName: string;
+  signatoryTitle: string;
+  minCompletionPct: number;
+  minScore: number;
+  minAttendancePct: number;
+  isActive: boolean;
+}
+
+export interface AcademySettingsPayload {
+  academy: AcademyProfile;
+  policies: {
+    invoicePrefix: string;
+    invoiceNextSeq: number;
+    feeDueDays: number;
+    lateFeePct: number;
+    passingScore: number;
+    distinctionScore: number;
+    minAttendanceRatePct: number;
+    lateWeightPct: number;
+    reminderWindowHours: number;
+    certificateCodePrefix: string;
+    certificateMinCompletionPct: number;
+    certificateMinScore: number;
+    certificateMinAttendancePct: number;
+  };
+  certificateTemplate: CertificateTemplateInfo | null;
+  academicYears: AcademicYear[];
+  academicTerms: AcademicTerm[];
+  departments: Department[];
+  classrooms: Classroom[];
+}
+
+export interface AdminAnalyticsDetail {
+  dateRange: {
+    preset: AnalyticsPreset;
+    fromIso: string | null;
+    toIso: string | null;
+  };
+  kpis: {
+    activeStudents: number;
+    activeInstructors: number;
+    admissionsPending: number;
+    activeCourses: number;
+    totalBatches: number;
+    todaysClassesCount: number;
+    attendanceOverview: {
+      present: number;
+      late: number;
+      absent: number;
+      total: number;
+      rate: number;
+    };
+    outstandingFeesCents: number;
+    monthlyRevenueCents: number;
+    totalCollectedCents: number;
+    certificatesIssued: number;
+    pendingAdminActionsCount: number;
+  };
+  monthlyRevenueSeries: Array<{
+    monthKey: string;
+    label: string;
+    collectedCents: number;
+    billedCents: number;
+  }>;
+  enrollmentTrendSeries: Array<{
+    monthKey: string;
+    label: string;
+    enrollments: number;
+    completions: number;
+  }>;
+  todaysClasses: ClassSession[];
+  recentTransactions: Array<{
+    id: string;
+    receiptNumber: string;
+    invoiceNumber: string;
+    studentName: string;
+    amount: string;
+    method: PaymentMethod;
+    paidAt: string;
+  }>;
+  pendingActions: Array<{
+    id: string;
+    kind: 'admission' | 'overdue_invoice' | 'low_attendance';
+    title: string;
+    detail: string;
+    targetSection: string;
+  }>;
+}
+
+export interface StudentDirectoryRow {
+  user: UserPublic;
+  profile: {
+    id: string;
+    departmentId: string | null;
+    departmentName: string | null;
+    dateOfBirth: string | null;
+    address: string;
+    emergencyContact: string;
+    academicStanding: string;
+    enrollmentDate: string;
+  } | null;
+  activeEnrollmentsCount: number;
+  completedCoursesCount: number;
+  outstandingCents: number;
+  attendanceRate: number;
+}
+
+export interface PaginatedStudentsResult {
+  items: StudentDirectoryRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}
+
+export interface StudentDetailPayload {
+  student: StudentDirectoryRow;
+  enrollments: Array<
+    Enrollment & {
+      courseCode: string;
+      courseTitle: string;
+      batchCode: string | null;
+      completionPct: number;
+      weightedScore: number | null;
+      letterGrade: string;
+      attendanceRate: number;
+    }
+  >;
+  enrollmentHistory: EnrollmentHistoryEntry[];
+  documents: DocumentRecord[];
+  certificates: CertificateRecord[];
+  feeStatement: {
+    totalBilledCents: number;
+    totalPaidCents: number;
+    outstandingCents: number;
+    invoices: FeeInvoice[];
+    payments: PaymentReceipt[];
+  };
+}
+
+export interface InstructorDirectoryRow {
+  user: UserPublic;
+  profile: {
+    id: string;
+    staffCode: string;
+    departmentId: string | null;
+    departmentName: string | null;
+    specialization: string;
+    qualification: string;
+    bio: string;
+    hireDate: string | null;
+    permissionsConfigured: boolean;
+    permissions: InstructorPermissionKey[];
+  };
+  assignedCoursesCount: number;
+  assignedBatchesCount: number;
+  assignedStudentsCount: number;
+  sessionsTaughtCount: number;
+  upcomingSessionsCount: number;
+  meanAttendanceRate: number;
+  meanGradedScore: number | null;
+}
+
+export interface InstructorDetailPayload {
+  instructor: InstructorDirectoryRow;
+  assignedCourses: Course[];
+  assignedBatches: Array<
+    Cohort & {
+      courseCode: string;
+      courseTitle: string;
+      enrolledCount: number;
+    }
+  >;
+  sessions: ClassSession[];
+}
+
 export interface DashboardPayload {
   user: UserPublic;
+  academy?: AcademyProfile;
+  departments?: Department[];
+  classrooms?: Classroom[];
+  academicYears?: AcademicYear[];
+  academicTerms?: AcademicTerm[];
   courses: Course[];
   cohorts: Cohort[];
   users: UserPublic[];

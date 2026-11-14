@@ -23,15 +23,24 @@ interface AuthViewProps {
 const STUDIO_IMAGE_PATH = '/src/assets/images/academy_lab_studio_1794576422024.jpg';
 
 export function AuthView({ onAuthenticated }: AuthViewProps) {
-  const [mode, setMode] = useState<'login' | 'register' | 'verify'>('login');
+  const [mode, setMode] = useState<'login' | 'register' | 'verify' | 'forgot'>('login');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
   const [imageFailed, setImageFailed] = useState(false);
+
+  // Forgot & Reset Password state
+  const [resetEmail, setResetEmail] = useState('');
+  const [resetToken, setResetToken] = useState('');
+  const [resetNewPassword, setResetNewPassword] = useState('');
+  const [resetConfirmPassword, setResetConfirmPassword] = useState('');
+  const [forgotSaving, setForgotSaving] = useState(false);
+  const [resetSaving, setResetSaving] = useState(false);
 
   // Public Certificate Verification state
   const [certQuery, setCertQuery] = useState('INF-CERT-2026-DA215-042');
@@ -115,9 +124,67 @@ export function AuthView({ onAuthenticated }: AuthViewProps) {
     }
   }
 
+  async function handleForgotPassword(e: React.FormEvent) {
+    e.preventDefault();
+    setError('');
+    setNotice('');
+    if (!resetEmail.trim()) {
+      setError('Please enter your academy email address.');
+      return;
+    }
+    setForgotSaving(true);
+    try {
+      const res = await api.forgotPassword(resetEmail.trim());
+      setNotice(res.message);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : 'Unable to request password reset.'
+      );
+    } finally {
+      setForgotSaving(false);
+    }
+  }
+
+  async function handleResetPassword(e: React.FormEvent) {
+    e.preventDefault();
+    setError('');
+    setNotice('');
+    if (resetToken.trim().length < 16) {
+      setError('Please paste the full password reset token issued to you.');
+      return;
+    }
+    if (resetNewPassword.length < 8) {
+      setError('New password must be at least 8 characters long.');
+      return;
+    }
+    if (resetNewPassword !== resetConfirmPassword) {
+      setError('New password and confirmation do not match.');
+      return;
+    }
+    setResetSaving(true);
+    try {
+      const res = await api.resetPassword({
+        token: resetToken.trim(),
+        newPassword: resetNewPassword,
+      });
+      setResetToken('');
+      setResetNewPassword('');
+      setResetConfirmPassword('');
+      setMode('login');
+      setNotice(res.message);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : 'Unable to complete password reset.'
+      );
+    } finally {
+      setResetSaving(false);
+    }
+  }
+
   function fillDemoAccount(targetRole: UserRole) {
     setMode('login');
     setError('');
+    setNotice('');
     if (targetRole === 'admin') {
       setEmail('admin@infocom.edu');
       setPassword('Admin!2026');
@@ -206,14 +273,18 @@ export function AuthView({ onAuthenticated }: AuthViewProps) {
                   ? 'Sign in to InfoCom AMS'
                   : mode === 'register'
                     ? 'Student Account Registration'
-                    : 'Verify Official Certificate'}
+                    : mode === 'forgot'
+                      ? 'Reset Account Password'
+                      : 'Verify Official Certificate'}
               </h2>
               <p className="text-xs text-slate-500 mt-1">
                 {mode === 'login'
                   ? 'Access admin, instructor, or student workspace'
                   : mode === 'register'
                     ? 'Create a student training portal account'
-                    : 'Validate credential authenticity by code or hash'}
+                    : mode === 'forgot'
+                      ? 'Request a reset link or apply a reset token'
+                      : 'Validate credential authenticity by code or hash'}
               </p>
             </div>
             {mode === 'verify' ? (
@@ -236,6 +307,7 @@ export function AuthView({ onAuthenticated }: AuthViewProps) {
               onClick={() => {
                 setMode('login');
                 setError('');
+                setNotice('');
               }}
               className={`py-2 px-2 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
                 mode === 'login'
@@ -252,6 +324,7 @@ export function AuthView({ onAuthenticated }: AuthViewProps) {
               onClick={() => {
                 setMode('register');
                 setError('');
+                setNotice('');
               }}
               className={`py-2 px-2 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
                 mode === 'register'
@@ -268,6 +341,7 @@ export function AuthView({ onAuthenticated }: AuthViewProps) {
               onClick={() => {
                 setMode('verify');
                 setError('');
+                setNotice('');
               }}
               className={`py-2 px-2 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
                 mode === 'verify'
@@ -279,7 +353,138 @@ export function AuthView({ onAuthenticated }: AuthViewProps) {
             </button>
           </div>
 
-          {mode === 'verify' ? (
+          {mode === 'forgot' ? (
+            <div className="mt-5 space-y-5">
+              {error && (
+                <div
+                  role="alert"
+                  className="flex items-start gap-2.5 p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-800"
+                >
+                  <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                  <span>{error}</span>
+                </div>
+              )}
+
+              {notice && (
+                <div
+                  role="status"
+                  className="flex items-start gap-2.5 p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-800"
+                >
+                  <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
+                  <span>{notice}</span>
+                </div>
+              )}
+
+              <form onSubmit={handleForgotPassword} className="space-y-3" noValidate>
+                <div>
+                  <label
+                    htmlFor="forgot-email"
+                    className="block text-xs font-medium text-slate-700 mb-1.5"
+                  >
+                    1. Request Reset Instructions (Academy Email)
+                  </label>
+                  <input
+                    id="forgot-email"
+                    type="email"
+                    required
+                    value={resetEmail}
+                    onChange={(e) => setResetEmail(e.target.value)}
+                    placeholder="name@infocom.edu"
+                    className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={forgotSaving}
+                  className="w-full inline-flex items-center justify-center gap-2 px-4 py-2 text-xs font-medium text-white bg-blue-700 hover:bg-blue-800 disabled:opacity-60 rounded-lg cursor-pointer whitespace-nowrap"
+                >
+                  <span>{forgotSaving ? 'Submitting...' : 'Request Password Reset'}</span>
+                </button>
+              </form>
+
+              <div className="border-t border-slate-200 pt-4">
+                <form onSubmit={handleResetPassword} className="space-y-3" noValidate>
+                  <p className="text-xs font-medium text-slate-700">
+                    2. Complete Password Reset with Token
+                  </p>
+                  <div>
+                    <label
+                      htmlFor="reset-token"
+                      className="block text-[11px] font-medium text-slate-600 mb-1"
+                    >
+                      Reset Token
+                    </label>
+                    <input
+                      id="reset-token"
+                      type="text"
+                      required
+                      value={resetToken}
+                      onChange={(e) => setResetToken(e.target.value)}
+                      placeholder="Paste single-use reset token"
+                      className="w-full px-3 py-2 text-xs font-mono bg-white border border-slate-300 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div>
+                      <label
+                        htmlFor="reset-new-password"
+                        className="block text-[11px] font-medium text-slate-600 mb-1"
+                      >
+                        New Password
+                      </label>
+                      <input
+                        id="reset-new-password"
+                        type="password"
+                        required
+                        minLength={8}
+                        value={resetNewPassword}
+                        onChange={(e) => setResetNewPassword(e.target.value)}
+                        placeholder="Min 8 characters"
+                        className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                      />
+                    </div>
+                    <div>
+                      <label
+                        htmlFor="reset-confirm-password"
+                        className="block text-[11px] font-medium text-slate-600 mb-1"
+                      >
+                        Confirm Password
+                      </label>
+                      <input
+                        id="reset-confirm-password"
+                        type="password"
+                        required
+                        minLength={8}
+                        value={resetConfirmPassword}
+                        onChange={(e) => setResetConfirmPassword(e.target.value)}
+                        placeholder="Repeat password"
+                        className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                      />
+                    </div>
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={resetSaving}
+                    className="w-full inline-flex items-center justify-center gap-2 px-4 py-2 text-xs font-medium text-slate-800 bg-slate-100 hover:bg-slate-200 disabled:opacity-60 rounded-lg cursor-pointer whitespace-nowrap"
+                  >
+                    <span>{resetSaving ? 'Updating Password...' : 'Apply New Password'}</span>
+                  </button>
+                </form>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setMode('login');
+                  setError('');
+                  setNotice('');
+                }}
+                className="text-xs font-medium text-blue-700 hover:text-blue-900 cursor-pointer"
+              >
+                &larr; Back to Sign In
+              </button>
+            </div>
+          ) : mode === 'verify' ? (
             <div className="mt-5 space-y-4">
               <form onSubmit={handleVerifyCertificate} className="space-y-3">
                 <div>
@@ -371,6 +576,16 @@ export function AuthView({ onAuthenticated }: AuthViewProps) {
                 </div>
               )}
 
+              {notice && (
+                <div
+                  role="status"
+                  className="mt-4 flex items-start gap-2.5 p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-800"
+                >
+                  <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
+                  <span>{notice}</span>
+                </div>
+              )}
+
               <form onSubmit={handleSubmit} className="mt-5 space-y-4" noValidate>
                 {mode === 'register' && (
                   <>
@@ -430,12 +645,28 @@ export function AuthView({ onAuthenticated }: AuthViewProps) {
                 </div>
 
                 <div>
-                  <label
-                    htmlFor="auth-password"
-                    className="block text-xs font-medium text-slate-700 mb-1.5"
-                  >
-                    Password
-                  </label>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label
+                      htmlFor="auth-password"
+                      className="block text-xs font-medium text-slate-700"
+                    >
+                      Password
+                    </label>
+                    {mode === 'login' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMode('forgot');
+                          setResetEmail(email);
+                          setError('');
+                          setNotice('');
+                        }}
+                        className="text-xs font-medium text-blue-700 hover:text-blue-900 cursor-pointer"
+                      >
+                        Forgot password?
+                      </button>
+                    )}
+                  </div>
                   <input
                     id="auth-password"
                     type="password"

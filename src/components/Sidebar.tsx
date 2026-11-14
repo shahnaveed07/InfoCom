@@ -9,22 +9,27 @@ import {
   FileText,
   FolderOpen,
   GraduationCap,
+  KeyRound,
   Layers,
   LayoutDashboard,
   LogOut,
   ScrollText,
+  Settings,
   ShieldCheck,
   UserCheck,
   Users,
   X,
 } from 'lucide-react';
-import type { UserPublic } from '../shared/types';
+import type { AcademyProfile, UserPublic } from '../shared/types';
 
 export type NavSection =
   | 'overview'
   | 'admissions'
+  | 'students'
+  | 'instructors'
   | 'users'
   | 'catalog'
+  | 'batches'
   | 'enrollments'
   | 'courses'
   | 'attendance'
@@ -34,14 +39,17 @@ export type NavSection =
   | 'certificates'
   | 'reports'
   | 'audit'
+  | 'settings'
   | 'student-home'
   | 'student-report';
 
 interface SidebarProps {
   user: UserPublic;
+  academy?: AcademyProfile;
   activeSection: NavSection;
   onSelectSection: (section: NavSection) => void;
   unreadCount: number;
+  onOpenChangePassword: () => void;
   onLogout: () => void;
   mobileOpen: boolean;
   onCloseMobile: () => void;
@@ -56,9 +64,11 @@ type NavItem = {
 
 export function Sidebar({
   user,
+  academy,
   activeSection,
   onSelectSection,
   unreadCount,
+  onOpenChangePassword,
   onLogout,
   mobileOpen,
   onCloseMobile,
@@ -66,8 +76,11 @@ export function Sidebar({
   const adminItems: NavItem[] = [
     { id: 'overview', label: 'Academy Analytics', icon: LayoutDashboard },
     { id: 'admissions', label: 'Admissions', icon: UserCheck },
-    { id: 'users', label: 'Students & Staff', icon: ShieldCheck },
-    { id: 'catalog', label: 'Courses & Cohorts', icon: Layers },
+    { id: 'students', label: 'Students', icon: GraduationCap },
+    { id: 'instructors', label: 'Instructors', icon: Users },
+    { id: 'users', label: 'User Accounts', icon: ShieldCheck },
+    { id: 'catalog', label: 'Courses & Depts', icon: BookOpen },
+    { id: 'batches', label: 'Batches & Rooms', icon: Layers },
     { id: 'enrollments', label: 'Enrollments', icon: Users },
     { id: 'courses', label: 'Grading & Modules', icon: BookOpen },
     { id: 'attendance', label: 'Attendance & Alerts', icon: ClipboardCheck },
@@ -77,6 +90,7 @@ export function Sidebar({
     { id: 'certificates', label: 'Certificates', icon: Award },
     { id: 'reports', label: 'Progress Reports', icon: FileText },
     { id: 'audit', label: 'Audit Logs', icon: ScrollText },
+    { id: 'settings', label: 'Academy Settings', icon: Settings },
   ];
 
   const instructorItems: NavItem[] = [
@@ -123,13 +137,21 @@ export function Sidebar({
     <div className="h-full flex flex-col bg-white border-r border-slate-200 w-64">
       <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between gap-2 shrink-0">
         <div className="flex items-center gap-2.5 min-w-0">
-          <GraduationCap className="w-5 h-5 text-blue-700 shrink-0" />
+          {academy?.logoDataUrl ? (
+            <img
+              src={academy.logoDataUrl}
+              alt={`${academy.name} logo`}
+              className="w-6 h-6 rounded object-contain shrink-0"
+            />
+          ) : (
+            <GraduationCap className="w-5 h-5 text-blue-700 shrink-0" />
+          )}
           <div className="min-w-0">
             <span className="font-display text-sm font-semibold text-slate-900 truncate block">
               InfoCom AMS
             </span>
             <span className="text-[11px] text-slate-500 truncate block">
-              Northbridge Academy
+              {academy?.name ?? 'InfoCom Academy'}
             </span>
           </div>
         </div>
@@ -190,14 +212,27 @@ export function Sidebar({
             {user.staffCode ? ` · ${user.staffCode}` : ''}
           </p>
         </div>
-        <button
-          type="button"
-          onClick={onLogout}
-          className="mt-3 w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-100 hover:text-slate-900 transition-colors cursor-pointer whitespace-nowrap"
-        >
-          <LogOut className="w-3.5 h-3.5" />
-          <span>Sign Out</span>
-        </button>
+        <div className="mt-3 flex flex-col gap-1.5">
+          <button
+            type="button"
+            onClick={() => {
+              onOpenChangePassword();
+              onCloseMobile();
+            }}
+            className="w-full inline-flex items-center justify-center gap-2 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-100 hover:text-slate-900 transition-colors cursor-pointer whitespace-nowrap"
+          >
+            <KeyRound className="w-3.5 h-3.5" />
+            <span>Change Password</span>
+          </button>
+          <button
+            type="button"
+            onClick={onLogout}
+            className="w-full inline-flex items-center justify-center gap-2 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-100 hover:text-slate-900 transition-colors cursor-pointer whitespace-nowrap"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span>Sign Out</span>
+          </button>
+        </div>
       </div>
     </div>
   );

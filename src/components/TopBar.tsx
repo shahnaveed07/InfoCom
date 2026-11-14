@@ -18,8 +18,11 @@ interface TopBarProps {
 const SECTION_TITLES: Record<NavSection, string> = {
   overview: 'Academy Overview',
   admissions: 'Admissions Pipeline',
-  users: 'Students & Staff Directory',
-  catalog: 'Courses & Cohort Batches',
+  students: 'Student Directory & Profiles',
+  instructors: 'Instructor & Faculty Management',
+  users: 'User Accounts & Roles',
+  catalog: 'Course Master Data & Departments',
+  batches: 'Batch Cohorts & Classrooms',
   enrollments: 'Enrollment Management',
   courses: 'Course & Module Tracking',
   attendance: 'Attendance & Automated Alerts',
@@ -29,6 +32,7 @@ const SECTION_TITLES: Record<NavSection, string> = {
   certificates: 'Certificates & Verification',
   reports: 'Academic Progress Reports',
   audit: 'System Audit Logs',
+  settings: 'Academy Settings & Configuration',
   'student-home': 'Student Dashboard',
   'student-report': 'My Progress Report',
 };
@@ -72,16 +76,23 @@ export function TopBar({
         </div>
       </div>
 
-      <div className="flex items-center gap-3 shrink-0">
+      <div className="flex items-center gap-2 sm:gap-3 shrink-0">
         <button
           type="button"
           onClick={onJumpToNotifications}
           aria-label={`View notifications (${unreadCount} unread)`}
-          className="inline-flex items-center gap-2 px-3 py-2 text-xs font-medium text-slate-700 bg-slate-50 border border-slate-200 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+          className="inline-flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-2 text-xs font-medium text-slate-700 bg-slate-50 border border-slate-200 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer whitespace-nowrap shrink-0"
         >
           <Bell className="w-3.5 h-3.5 text-slate-500" />
           <span className="tabular-nums">
-            {unreadCount > 0 ? `${unreadCount} Alerts` : 'Alerts'}
+            {unreadCount > 0 ? (
+              <>
+                {unreadCount}
+                <span className="hidden sm:inline"> Alerts</span>
+              </>
+            ) : (
+              <span className="hidden sm:inline">Alerts</span>
+            )}
           </span>
         </button>
 
@@ -89,7 +100,7 @@ export function TopBar({
           <button
             type="button"
             onClick={primaryAction.onClick}
-            className="inline-flex items-center justify-center px-4 py-2 text-xs font-medium text-white bg-blue-700 hover:bg-blue-800 rounded-lg transition-colors cursor-pointer whitespace-nowrap shrink-0"
+            className="inline-flex items-center justify-center px-3 sm:px-4 py-2 text-xs font-medium text-white bg-blue-700 hover:bg-blue-800 rounded-lg transition-colors cursor-pointer whitespace-nowrap shrink-0"
           >
             {primaryAction.label}
           </button>

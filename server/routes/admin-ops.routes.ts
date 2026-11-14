@@ -1,17 +1,5 @@
 import crypto from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
-import { and, eq } from 'drizzle-orm';
-import { db } from '../../src/db/index.ts';
-import {
-  admissions,
-  certificates,
-  courses,
-  documents,
-  enrollments,
-  feeInvoices,
-  notifications,
-  users,
-} from '../../src/db/schema.ts';
 import { toCents } from '../../src/shared/academic.ts';
 import {
   createAdmissionSchema,
@@ -26,6 +14,9 @@ import {
 } from '../../src/shared/validation.ts';
 import {
   findUserByEmail,
+  generateNextInvoiceNumber,
+  generateUniqueStaffCode,
+  generateUniqueStudentCode,
   getActiveDocumentContent,
   getUserDashboardById,
   issueVerifiedCertificate,
@@ -36,14 +27,33 @@ import {
   verifyCertificateByCode,
 } from '../ams-service.ts';
 import { hashPassword } from '../auth.ts';
+import { prisma } from '../db/prisma.ts';
 import {
   requireAuth,
   requireRoles,
   type AuthenticatedRequest,
 } from '../middleware/auth.ts';
-import { ensureDatabaseMigratedAndSeeded } from '../migrate.ts';
+import { createRateLimiter } from '../middleware/security.ts';
+import {
+  listAuditLogsPaginated,
+  listNotificationsPaginated,
+  listPaymentsPaginated,
+  revokeAllUserSessionsInDb,
+} from '../repositories/ams.repository.ts';
+import {
+  canInstructorAccessCourse,
+  canInstructorAccessStudent,
+  hasInstructorPermission,
+} from '../security/permissions.ts';
 
 export const adminOpsRouter = Router();
+
+const publicAdmissionLimiter = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  maxRequests: 10,
+  keyPrefix: 'public-admission',
+  message: 'Too many admission submissions from this network. Please wait before submitting again.',
+});
 
 // Public certificate verification endpoint
 adminOpsRouter.get('/certificates/verify/:code', async (req: Request, res: Response) => {
@@ -61,35 +71,32 @@ adminOpsRouter.get('/certificates/verify/:code', async (req: Request, res: Respo
 });
 
 // Public admission application submission
-adminOpsRouter.post('/admissions/public', async (req: Request, res: Response) => {
+adminOpsRouter.post('/admissions/public', publicAdmissionLimiter, async (req: Request, res: Response) => {
   try {
-    await ensureDatabaseMigratedAndSeeded();
     const parsed = createAdmissionSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid admission details.' });
       return;
     }
     const input = parsed.data;
-    const [course] = await db
-      .select()
-      .from(courses)
-      .where(eq(courses.id, input.targetCourseId))
-      .limit(1);
+    const course = await prisma.course.findUnique({ where: { id: input.targetCourseId } });
     if (!course) {
       res.status(400).json({ error: 'Selected target course was not found.' });
       return;
     }
 
     const admissionId = `adm-${crypto.randomUUID().slice(0, 8)}`;
-    await db.insert(admissions).values({
-      id: admissionId,
-      applicantName: input.applicantName,
-      applicantEmail: input.applicantEmail.toLowerCase(),
-      phone: input.phone,
-      targetCourseId: course.id,
-      preferredCohort: input.preferredCohort,
-      status: 'Submitted',
-      notes: input.notes,
+    await prisma.admissionApplication.create({
+      data: {
+        id: admissionId,
+        applicantName: input.applicantName,
+        applicantEmail: input.applicantEmail.toLowerCase(),
+        phone: input.phone,
+        targetCourseId: course.id,
+        preferredCohort: input.preferredCohort,
+        status: 'Submitted',
+        notes: input.notes,
+      },
     });
 
     await recordAuditLog({
@@ -107,6 +114,84 @@ adminOpsRouter.post('/admissions/public', async (req: Request, res: Response) =>
   }
 });
 
+// Paginated repository endpoints for large datasets
+adminOpsRouter.get(
+  '/audit-logs',
+  requireAuth,
+  requireRoles('admin'),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const result = await listAuditLogsPaginated({
+        page: Number(req.query.page) || 1,
+        pageSize: Number(req.query.pageSize) || 25,
+        action: typeof req.query.action === 'string' ? req.query.action : undefined,
+        entityType: typeof req.query.entityType === 'string' ? req.query.entityType : undefined,
+      });
+      res.json(result);
+    } catch (err) {
+      console.error('GET /api/audit-logs error:', err);
+      res.status(500).json({ error: 'Failed to load audit logs.' });
+    }
+  }
+);
+
+adminOpsRouter.get(
+  '/payments',
+  requireAuth,
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (req.authUser!.role === 'instructor') {
+        res.status(403).json({ error: 'Access denied.' });
+        return;
+      }
+      const requestedStudentId =
+        typeof req.query.studentId === 'string' && req.query.studentId.trim()
+          ? req.query.studentId.trim()
+          : undefined;
+      if (
+        req.authUser!.role === 'student' &&
+        requestedStudentId &&
+        requestedStudentId !== req.authUser!.id
+      ) {
+        res.status(403).json({ error: 'Access denied to another student\'s financial records.' });
+        return;
+      }
+      const studentId =
+        req.authUser!.role === 'student'
+          ? req.authUser!.id
+          : requestedStudentId;
+      const result = await listPaymentsPaginated({
+        page: Number(req.query.page) || 1,
+        pageSize: Number(req.query.pageSize) || 25,
+        studentId,
+      });
+      res.json(result);
+    } catch (err) {
+      console.error('GET /api/payments error:', err);
+      res.status(500).json({ error: 'Failed to load payments.' });
+    }
+  }
+);
+
+adminOpsRouter.get(
+  '/notifications',
+  requireAuth,
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const result = await listNotificationsPaginated({
+        userId: req.authUser!.id,
+        page: Number(req.query.page) || 1,
+        pageSize: Number(req.query.pageSize) || 25,
+        unreadOnly: req.query.unreadOnly === 'true',
+      });
+      res.json(result);
+    } catch (err) {
+      console.error('GET /api/notifications error:', err);
+      res.status(500).json({ error: 'Failed to load notifications.' });
+    }
+  }
+);
+
 // Admin-only User Management
 adminOpsRouter.post(
   '/users',
@@ -114,7 +199,6 @@ adminOpsRouter.post(
   requireRoles('admin'),
   async (req: AuthenticatedRequest, res: Response) => {
     try {
-      await ensureDatabaseMigratedAndSeeded();
       const parsed = createUserSchema.safeParse(req.body);
       if (!parsed.success) {
         res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid user details.' });
@@ -130,23 +214,70 @@ adminOpsRouter.post(
       const prefix =
         input.role === 'admin' ? 'adm' : input.role === 'instructor' ? 'ins' : 'stu';
       const id = `${prefix}-${crypto.randomUUID().slice(0, 8)}`;
-      const randNum = Math.floor(100 + Math.random() * 899);
+      const studentCode =
+        input.role === 'student' ? await generateUniqueStudentCode() : null;
+      const staffCode =
+        input.role !== 'student' ? await generateUniqueStaffCode() : null;
 
-      const [created] = await db
-        .insert(users)
-        .values({
-          id,
-          name: input.name,
-          email: input.email.toLowerCase(),
-          role: input.role,
-          status: 'active',
-          studentCode: input.role === 'student' ? `NTA-2026-${randNum}` : null,
-          staffCode: input.role !== 'student' ? `INF-STF-${randNum}` : null,
-          department: input.department || (input.role === 'admin' ? 'Administration' : input.role === 'instructor' ? 'Academic Faculty' : null),
-          phone: input.phone || null,
-          passwordHash: hashPassword(input.password),
-        })
-        .returning();
+      const newUserHash = await hashPassword(input.password);
+      const created = await prisma.$transaction(async (tx) => {
+        const user = await tx.user.create({
+          data: {
+            id,
+            name: input.name,
+            email: input.email.toLowerCase(),
+            role: input.role,
+            status: 'active',
+            studentCode,
+            staffCode,
+            department:
+              input.department ||
+              (input.role === 'admin'
+                ? 'Administration'
+                : input.role === 'instructor'
+                  ? 'Academic Faculty'
+                  : null),
+            phone: input.phone || null,
+            passwordHash: newUserHash,
+            passwordUpdatedAt: new Date(),
+          },
+        });
+
+        const roleRow = await tx.role.findUnique({ where: { code: input.role } });
+        if (roleRow) {
+          await tx.userRole.upsert({
+            where: { userId_roleId: { userId: user.id, roleId: roleRow.id } },
+            update: {},
+            create: {
+              id: `ur-${user.id}-${roleRow.code}`,
+              userId: user.id,
+              roleId: roleRow.id,
+              assignedByUserId: req.authUser!.id,
+            },
+          });
+        }
+
+        if (user.role === 'student' && user.studentCode) {
+          await tx.studentProfile.create({
+            data: {
+              id: `sp-${user.id}`,
+              userId: user.id,
+              studentCode: user.studentCode,
+            },
+          });
+        } else if (user.role === 'instructor' && user.staffCode) {
+          await tx.instructorProfile.create({
+            data: {
+              id: `ip-${user.id}`,
+              userId: user.id,
+              staffCode: user.staffCode,
+              specialization: user.department ?? '',
+            },
+          });
+        }
+
+        return user;
+      });
 
       await recordAuditLog({
         actor: req.authUser!,
@@ -171,7 +302,6 @@ adminOpsRouter.patch(
   requireRoles('admin'),
   async (req: AuthenticatedRequest, res: Response) => {
     try {
-      await ensureDatabaseMigratedAndSeeded();
       const parsed = updateUserSchema.safeParse(req.body);
       if (!parsed.success) {
         res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid user update.' });
@@ -189,20 +319,51 @@ adminOpsRouter.patch(
         return;
       }
 
-      const [existing] = await db.select().from(users).where(eq(users.id, targetId)).limit(1);
+      const existing = await prisma.user.findUnique({ where: { id: targetId } });
       if (!existing) {
         res.status(404).json({ error: 'User account not found.' });
         return;
       }
 
-      const updates: Record<string, unknown> = { updatedAt: new Date() };
-      if (input.name !== undefined) updates.name = input.name;
-      if (input.role !== undefined) updates.role = input.role;
-      if (input.status !== undefined) updates.status = input.status;
-      if (input.department !== undefined) updates.department = input.department;
-      if (input.phone !== undefined) updates.phone = input.phone;
+      const roleChanged = Boolean(input.role && input.role !== existing.role);
+      const deactivated = Boolean(input.status && input.status !== 'active');
 
-      await db.update(users).set(updates).where(eq(users.id, targetId));
+      await prisma.$transaction(async (tx) => {
+        await tx.user.update({
+          where: { id: targetId },
+          data: {
+            ...(input.name !== undefined ? { name: input.name } : {}),
+            ...(input.role !== undefined ? { role: input.role } : {}),
+            ...(input.status !== undefined ? { status: input.status } : {}),
+            ...(input.department !== undefined ? { department: input.department } : {}),
+            ...(input.phone !== undefined ? { phone: input.phone } : {}),
+            ...(roleChanged || deactivated ? { sessionVersion: { increment: 1 } } : {}),
+          },
+        });
+
+        if (roleChanged && input.role) {
+          const newRoleRow = await tx.role.findUnique({ where: { code: input.role } });
+          if (newRoleRow) {
+            await tx.userRole.upsert({
+              where: { userId_roleId: { userId: targetId, roleId: newRoleRow.id } },
+              update: {},
+              create: {
+                id: `ur-${targetId}-${newRoleRow.code}`,
+                userId: targetId,
+                roleId: newRoleRow.id,
+                assignedByUserId: req.authUser!.id,
+              },
+            });
+          }
+        }
+      });
+
+      if (roleChanged || deactivated) {
+        await revokeAllUserSessionsInDb(
+          targetId,
+          deactivated ? 'account_deactivated' : 'role_changed'
+        );
+      }
 
       await recordAuditLog({
         actor: req.authUser!,
@@ -240,36 +401,33 @@ adminOpsRouter.get(
 adminOpsRouter.post(
   '/admissions',
   requireAuth,
-  requireRoles('admin', 'instructor'),
+  requireRoles('admin'),
   async (req: AuthenticatedRequest, res: Response) => {
     try {
-      await ensureDatabaseMigratedAndSeeded();
       const parsed = createAdmissionSchema.safeParse(req.body);
       if (!parsed.success) {
         res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid admission details.' });
         return;
       }
       const input = parsed.data;
-      const [course] = await db
-        .select()
-        .from(courses)
-        .where(eq(courses.id, input.targetCourseId))
-        .limit(1);
+      const course = await prisma.course.findUnique({ where: { id: input.targetCourseId } });
       if (!course) {
         res.status(400).json({ error: 'Selected course does not exist.' });
         return;
       }
 
       const admissionId = `adm-${crypto.randomUUID().slice(0, 8)}`;
-      await db.insert(admissions).values({
-        id: admissionId,
-        applicantName: input.applicantName,
-        applicantEmail: input.applicantEmail.toLowerCase(),
-        phone: input.phone,
-        targetCourseId: course.id,
-        preferredCohort: input.preferredCohort,
-        status: 'Submitted',
-        notes: input.notes,
+      await prisma.admissionApplication.create({
+        data: {
+          id: admissionId,
+          applicantName: input.applicantName,
+          applicantEmail: input.applicantEmail.toLowerCase(),
+          phone: input.phone,
+          targetCourseId: course.id,
+          preferredCohort: input.preferredCohort,
+          status: 'Submitted',
+          notes: input.notes,
+        },
       });
 
       await recordAuditLog({
@@ -295,18 +453,15 @@ adminOpsRouter.patch(
   requireRoles('admin'),
   async (req: AuthenticatedRequest, res: Response) => {
     try {
-      await ensureDatabaseMigratedAndSeeded();
       const parsed = updateAdmissionSchema.safeParse(req.body);
       if (!parsed.success) {
         res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid admission update.' });
         return;
       }
 
-      const [admission] = await db
-        .select()
-        .from(admissions)
-        .where(eq(admissions.id, req.params.id))
-        .limit(1);
+      const admission = await prisma.admissionApplication.findUnique({
+        where: { id: req.params.id },
+      });
       if (!admission) {
         res.status(404).json({ error: 'Admission application not found.' });
         return;
@@ -315,109 +470,181 @@ adminOpsRouter.patch(
       const input = parsed.data;
       const shouldConvert = Boolean(input.convertToEnrollment) && !admission.convertedUserId;
 
-      await db.transaction(async (tx) => {
+      await prisma.$transaction(async (tx) => {
         if (shouldConvert) {
-          const [course] = await tx
-            .select()
-            .from(courses)
-            .where(eq(courses.id, admission.targetCourseId))
-            .limit(1);
+          const course = await tx.course.findUnique({
+            where: { id: admission.targetCourseId },
+            include: { instructor: true },
+          });
           if (!course) {
             throw new Error('Target course not found for admission conversion.');
           }
 
-          const existingUsers = await tx
-            .select()
-            .from(users)
-            .where(eq(users.email, admission.applicantEmail.toLowerCase()))
-            .limit(1);
-
-          let studentId = existingUsers[0]?.id;
-          if (!studentId) {
-            studentId = `stu-${crypto.randomUUID().slice(0, 8)}`;
-            await tx.insert(users).values({
-              id: studentId,
-              name: admission.applicantName,
-              email: admission.applicantEmail.toLowerCase(),
-              role: 'student',
-              status: 'active',
-              studentCode: `NTA-2026-${Math.floor(100 + Math.random() * 899)}`,
-              phone: admission.phone || null,
-              passwordHash: hashPassword('Student!2026'),
-            });
-          }
-
-          const existingEnr = await tx
-            .select()
-            .from(enrollments)
-            .where(
-              and(
-                eq(enrollments.studentId, studentId),
-                eq(enrollments.courseId, course.id)
-              )
-            );
-          const hasActive = existingEnr.some((e) => e.status !== 'Dropped');
-
-          let enrollmentId = existingEnr[0]?.id;
-          if (!hasActive) {
-            enrollmentId = `enr-${crypto.randomUUID().slice(0, 8)}`;
-            await tx.insert(enrollments).values({
-              id: enrollmentId,
-              studentId,
-              courseId: course.id,
-              cohort: admission.preferredCohort,
-              status: 'Active',
-              completedModuleIds: [],
-            });
-          }
-
-          if (toCents(String(course.tuitionFee)) > 0) {
-            await tx.insert(feeInvoices).values({
-              id: `inv-${crypto.randomUUID().slice(0, 8)}`,
-              invoiceNumber: `INV-2026-${Math.floor(1000 + Math.random() * 8999)}`,
-              studentId,
-              enrollmentId: enrollmentId ?? null,
-              courseId: course.id,
-              description: `${course.code} ${course.title} Tuition (${admission.preferredCohort})`,
-              amountDue: String(course.tuitionFee),
-              amountPaid: '0.00',
-              currency: 'USD',
-              status: 'Unpaid',
-              dueDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
-              issuedByUserId: req.authUser!.id,
-            });
-          }
-
-          await tx.insert(notifications).values({
-            id: `not-${crypto.randomUUID().slice(0, 8)}`,
-            userId: studentId,
-            kind: 'admission',
-            title: `Admission Accepted · ${course.code}`,
-            message: `Your admission to ${course.title} (${admission.preferredCohort}) is confirmed and tuition invoice has been issued.`,
-            relatedCourseId: course.id,
-            read: false,
+          const existingUser = await tx.user.findUnique({
+            where: { email: admission.applicantEmail.toLowerCase() },
           });
 
-          await tx
-            .update(admissions)
-            .set({
+          let studentId = existingUser?.id;
+          const studentEmail = admission.applicantEmail.toLowerCase();
+          if (!studentId) {
+            studentId = `stu-${crypto.randomUUID().slice(0, 8)}`;
+            const studentCode = await generateUniqueStudentCode(tx);
+            const tempSecret = crypto.randomBytes(12).toString('base64url');
+            const tempHash = await hashPassword(tempSecret);
+            await tx.user.create({
+              data: {
+                id: studentId,
+                name: admission.applicantName,
+                email: studentEmail,
+                role: 'student',
+                status: 'active',
+                studentCode,
+                phone: admission.phone || null,
+                passwordHash: tempHash,
+                mustChangePassword: true,
+              },
+            });
+
+            const roleRow = await tx.role.findUnique({ where: { code: 'student' } });
+            if (roleRow) {
+              await tx.userRole.upsert({
+                where: { userId_roleId: { userId: studentId, roleId: roleRow.id } },
+                update: {},
+                create: {
+                  id: `ur-${studentId}-student`,
+                  userId: studentId,
+                  roleId: roleRow.id,
+                },
+              });
+            }
+
+            await tx.studentProfile.create({
+              data: {
+                id: `sp-${studentId}`,
+                userId: studentId,
+                studentCode,
+              },
+            });
+          }
+
+          const activeEnr = await tx.enrollment.findFirst({
+            where: {
+              studentId,
+              courseId: course.id,
+              status: { not: 'Dropped' },
+            },
+          });
+
+          let enrollmentId = activeEnr?.id;
+          if (!activeEnr) {
+            const matchedBatch = await tx.batch.findFirst({
+              where: { courseId: course.id, name: admission.preferredCohort },
+            });
+            enrollmentId = `enr-${crypto.randomUUID().slice(0, 8)}`;
+            await tx.enrollment.create({
+              data: {
+                id: enrollmentId,
+                studentId,
+                courseId: course.id,
+                cohortId: matchedBatch?.id ?? null,
+                cohort: admission.preferredCohort,
+                status: 'Active',
+                completedModuleIds: [],
+                tuitionSnapshot: course.tuitionFee,
+                batchNameSnapshot: admission.preferredCohort,
+                instructorNameSnapshot: course.instructor?.name ?? null,
+              },
+            });
+            await tx.enrollmentHistory.create({
+              data: {
+                id: `eh-${crypto.randomUUID().slice(0, 8)}`,
+                enrollmentId,
+                previousStatus: null,
+                newStatus: 'Active',
+                newBatchId: matchedBatch?.id ?? null,
+                reason: `Converted from admission ${admission.id}`,
+                changedByUserId: req.authUser!.id,
+              },
+            });
+          }
+
+          if (toCents(course.tuitionFee.toString()) > 0) {
+            const invId = `inv-${crypto.randomUUID().slice(0, 8)}`;
+            const invDesc = `${course.code} ${course.title} Tuition (${admission.preferredCohort})`;
+            const invNum = await generateNextInvoiceNumber(tx);
+            await tx.invoice.create({
+              data: {
+                id: invId,
+                invoiceNumber: invNum,
+                studentId,
+                enrollmentId: enrollmentId ?? null,
+                courseId: course.id,
+                description: invDesc,
+                subtotal: course.tuitionFee,
+                amountDue: course.tuitionFee,
+                amountPaid: '0.00',
+                currency: 'USD',
+                status: 'Unpaid',
+                dueDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+                issuedByUserId: req.authUser!.id,
+              },
+            });
+            await tx.invoiceItem.create({
+              data: {
+                id: `item-${crypto.randomUUID().slice(0, 8)}`,
+                invoiceId: invId,
+                itemType: 'Tuition',
+                description: invDesc,
+                quantity: 1,
+                unitPrice: course.tuitionFee,
+                lineTotal: course.tuitionFee,
+              },
+            });
+          }
+
+          const notif = await tx.notification.create({
+            data: {
+              id: `not-${crypto.randomUUID().slice(0, 8)}`,
+              userId: studentId,
+              kind: 'admission',
+              title: `Admission Accepted · ${course.code}`,
+              message: `Your admission to ${course.title} (${admission.preferredCohort}) is confirmed and tuition invoice has been issued.`,
+              relatedCourseId: course.id,
+              read: false,
+            },
+          });
+
+          await tx.deliveryLog.create({
+            data: {
+              id: `del-${crypto.randomUUID().slice(0, 8)}`,
+              notificationId: notif.id,
+              userId: studentId,
+              channel: 'in_app',
+              recipient: studentEmail,
+              status: 'Delivered',
+            },
+          });
+
+          await tx.admissionApplication.update({
+            where: { id: admission.id },
+            data: {
               status: 'Enrolled',
               notes: input.notes ?? admission.notes,
               reviewedByUserId: req.authUser!.id,
               convertedUserId: studentId,
               reviewedAt: new Date(),
-            })
-            .where(eq(admissions.id, admission.id));
+            },
+          });
         } else {
-          await tx
-            .update(admissions)
-            .set({
+          await tx.admissionApplication.update({
+            where: { id: admission.id },
+            data: {
               status: input.status,
               notes: input.notes ?? admission.notes,
               reviewedByUserId: req.authUser!.id,
               reviewedAt: new Date(),
-            })
-            .where(eq(admissions.id, admission.id));
+            },
+          });
         }
       });
 
@@ -447,7 +674,6 @@ adminOpsRouter.post(
   requireRoles('admin'),
   async (req: AuthenticatedRequest, res: Response) => {
     try {
-      await ensureDatabaseMigratedAndSeeded();
       const parsed = createInvoiceSchema.safeParse(req.body);
       if (!parsed.success) {
         res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid invoice details.' });
@@ -455,16 +681,10 @@ adminOpsRouter.post(
       }
 
       const input = parsed.data;
-      const [student] = await db
-        .select()
-        .from(users)
-        .where(and(eq(users.id, input.studentId), eq(users.role, 'student')))
-        .limit(1);
-      const [course] = await db
-        .select()
-        .from(courses)
-        .where(eq(courses.id, input.courseId))
-        .limit(1);
+      const [student, course] = await Promise.all([
+        prisma.user.findFirst({ where: { id: input.studentId, role: 'student' } }),
+        prisma.course.findUnique({ where: { id: input.courseId } }),
+      ]);
 
       if (!student || !course) {
         res.status(400).json({ error: 'Valid student and course are required.' });
@@ -472,33 +692,61 @@ adminOpsRouter.post(
       }
 
       const invoiceId = `inv-${crypto.randomUUID().slice(0, 8)}`;
-      const invoiceNumber = `INV-2026-${Math.floor(1000 + Math.random() * 8999)}`;
+      const invoiceNumber = await generateNextInvoiceNumber();
       const formattedAmount = Number(input.amountDue).toFixed(2);
 
-      await db.transaction(async (tx) => {
-        await tx.insert(feeInvoices).values({
-          id: invoiceId,
-          invoiceNumber,
-          studentId: student.id,
-          enrollmentId: input.enrollmentId ?? null,
-          courseId: course.id,
-          description: input.description,
-          amountDue: formattedAmount,
-          amountPaid: '0.00',
-          currency: 'USD',
-          status: 'Unpaid',
-          dueDate: new Date(input.dueDate),
-          issuedByUserId: req.authUser!.id,
+      await prisma.$transaction(async (tx) => {
+        await tx.invoice.create({
+          data: {
+            id: invoiceId,
+            invoiceNumber,
+            studentId: student.id,
+            enrollmentId: input.enrollmentId ?? null,
+            courseId: course.id,
+            description: input.description,
+            subtotal: formattedAmount,
+            amountDue: formattedAmount,
+            amountPaid: '0.00',
+            currency: 'USD',
+            status: 'Unpaid',
+            dueDate: new Date(input.dueDate),
+            issuedByUserId: req.authUser!.id,
+          },
         });
 
-        await tx.insert(notifications).values({
-          id: `not-${crypto.randomUUID().slice(0, 8)}`,
-          userId: student.id,
-          kind: 'finance',
-          title: `Tuition Invoice Issued · ${invoiceNumber}`,
-          message: `Invoice ${invoiceNumber} for $${formattedAmount} (${input.description}) is due on ${new Date(input.dueDate).toLocaleDateString('en-US')}.`,
-          relatedCourseId: course.id,
-          read: false,
+        await tx.invoiceItem.create({
+          data: {
+            id: `item-${crypto.randomUUID().slice(0, 8)}`,
+            invoiceId,
+            itemType: 'Tuition',
+            description: input.description,
+            quantity: 1,
+            unitPrice: formattedAmount,
+            lineTotal: formattedAmount,
+          },
+        });
+
+        const notif = await tx.notification.create({
+          data: {
+            id: `not-${crypto.randomUUID().slice(0, 8)}`,
+            userId: student.id,
+            kind: 'finance',
+            title: `Tuition Invoice Issued · ${invoiceNumber}`,
+            message: `Invoice ${invoiceNumber} for $${formattedAmount} (${input.description}) is due on ${new Date(input.dueDate).toLocaleDateString('en-US')}.`,
+            relatedCourseId: course.id,
+            read: false,
+          },
+        });
+
+        await tx.deliveryLog.create({
+          data: {
+            id: `del-${crypto.randomUUID().slice(0, 8)}`,
+            notificationId: notif.id,
+            userId: student.id,
+            channel: 'in_app',
+            recipient: student.email,
+            status: 'Delivered',
+          },
         });
       });
 
@@ -525,25 +773,20 @@ adminOpsRouter.patch(
   requireRoles('admin'),
   async (req: AuthenticatedRequest, res: Response) => {
     try {
-      await ensureDatabaseMigratedAndSeeded();
-      const [invoice] = await db
-        .select()
-        .from(feeInvoices)
-        .where(eq(feeInvoices.id, req.params.id))
-        .limit(1);
+      const invoice = await prisma.invoice.findUnique({ where: { id: req.params.id } });
       if (!invoice) {
         res.status(404).json({ error: 'Invoice not found.' });
         return;
       }
-      if (toCents(String(invoice.amountPaid)) > 0) {
+      if (toCents(invoice.amountPaid.toString()) > 0) {
         res.status(400).json({ error: 'Invoices with recorded payments cannot be voided to preserve ledger integrity.' });
         return;
       }
 
-      await db
-        .update(feeInvoices)
-        .set({ status: 'Voided', isArchived: true, updatedAt: new Date() })
-        .where(eq(feeInvoices.id, invoice.id));
+      await prisma.invoice.update({
+        where: { id: invoice.id },
+        data: { status: 'Voided', isArchived: true },
+      });
 
       await recordAuditLog({
         actor: req.authUser!,
@@ -604,6 +847,13 @@ adminOpsRouter.post(
   requireRoles('admin', 'instructor'),
   async (req: AuthenticatedRequest, res: Response) => {
     try {
+      if (req.authUser!.role === 'instructor') {
+        const permitted = await hasInstructorPermission(req.authUser!, 'certificates:issue');
+        if (!permitted) {
+          res.status(403).json({ error: 'Your instructor permissions do not allow issuing certificates.' });
+          return;
+        }
+      }
       const parsed = issueCertificateSchema.safeParse(req.body);
       if (!parsed.success) {
         res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid certificate request.' });
@@ -634,37 +884,34 @@ adminOpsRouter.post(
   requireRoles('admin'),
   async (req: AuthenticatedRequest, res: Response) => {
     try {
-      await ensureDatabaseMigratedAndSeeded();
       const parsed = revokeCertificateSchema.safeParse(req.body);
       if (!parsed.success) {
         res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Revocation reason is required.' });
         return;
       }
 
-      const [cert] = await db
-        .select()
-        .from(certificates)
-        .where(eq(certificates.id, req.params.id))
-        .limit(1);
+      const cert = await prisma.certificate.findUnique({ where: { id: req.params.id } });
       if (!cert) {
         res.status(404).json({ error: 'Certificate not found.' });
         return;
       }
 
-      await db.transaction(async (tx) => {
-        await tx
-          .update(certificates)
-          .set({ status: 'Revoked', revokedReason: parsed.data.reason })
-          .where(eq(certificates.id, cert.id));
+      await prisma.$transaction(async (tx) => {
+        await tx.certificate.update({
+          where: { id: cert.id },
+          data: { status: 'Revoked', revokedReason: parsed.data.reason },
+        });
 
-        await tx.insert(notifications).values({
-          id: `not-${crypto.randomUUID().slice(0, 8)}`,
-          userId: cert.studentId,
-          kind: 'certificate',
-          title: `Certificate Revoked · ${cert.certificateCode}`,
-          message: `Certificate ${cert.certificateCode} has been revoked: ${parsed.data.reason}`,
-          relatedCourseId: cert.courseId,
-          read: false,
+        await tx.notification.create({
+          data: {
+            id: `not-${crypto.randomUUID().slice(0, 8)}`,
+            userId: cert.studentId,
+            kind: 'certificate',
+            title: `Certificate Revoked · ${cert.certificateCode}`,
+            message: `Certificate ${cert.certificateCode} has been revoked: ${parsed.data.reason}`,
+            relatedCourseId: cert.courseId,
+            read: false,
+          },
         });
       });
 
@@ -681,6 +928,61 @@ adminOpsRouter.post(
     } catch (err) {
       console.error('POST /api/certificates/:id/revoke error:', err);
       res.status(500).json({ error: 'Failed to revoke certificate.' });
+    }
+  }
+);
+
+adminOpsRouter.get(
+  '/certificates/:id/download',
+  requireAuth,
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const cert = await prisma.certificate.findUnique({
+        where: { id: req.params.id },
+        include: {
+          student: { select: { name: true, studentCode: true } },
+          course: { select: { code: true, title: true } },
+        },
+      });
+      if (!cert) {
+        res.status(404).json({ error: 'Certificate not found.' });
+        return;
+      }
+
+      if (req.authUser!.role === 'student' && cert.studentId !== req.authUser!.id) {
+        res.status(403).json({ error: 'Access denied to another student\'s certificate.' });
+        return;
+      }
+      if (req.authUser!.role === 'instructor') {
+        const assigned = await canInstructorAccessCourse(req.authUser!.id, cert.courseId);
+        if (!assigned) {
+          res.status(403).json({ error: 'Access denied to certificate outside your assigned courses.' });
+          return;
+        }
+      }
+
+      const payload = {
+        certificateCode: cert.certificateCode,
+        verificationHash: cert.verificationHash,
+        studentName: cert.student?.name ?? 'Student',
+        studentCode: cert.student?.studentCode ?? '',
+        courseCode: cert.course?.code ?? '',
+        courseTitle: cert.courseTitleSnapshot ?? cert.course?.title ?? '',
+        finalScore: cert.finalScore.toFixed(2),
+        letterGrade: cert.letterGrade,
+        attendanceRate: cert.attendanceRate,
+        issuedByName: cert.issuedByName,
+        status: cert.status,
+        issuedAt: cert.issuedAt.toISOString(),
+      };
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${cert.certificateCode}.json"`
+      );
+      res.json(payload);
+    } catch (err) {
+      console.error('GET /api/certificates/:id/download error:', err);
+      res.status(500).json({ error: 'Failed to download certificate.' });
     }
   }
 );
@@ -707,25 +1009,22 @@ adminOpsRouter.patch(
   requireAuth,
   async (req: AuthenticatedRequest, res: Response) => {
     try {
-      await ensureDatabaseMigratedAndSeeded();
-      const [notif] = await db
-        .select()
-        .from(notifications)
-        .where(eq(notifications.id, req.params.id))
-        .limit(1);
+      const notif = await prisma.notification.findUnique({
+        where: { id: req.params.id },
+      });
       if (!notif) {
         res.status(404).json({ error: 'Notification not found.' });
         return;
       }
-      if (req.authUser!.role === 'student' && notif.userId !== req.authUser!.id) {
+      if (notif.userId !== req.authUser!.id) {
         res.status(403).json({ error: 'Access denied.' });
         return;
       }
 
-      await db
-        .update(notifications)
-        .set({ read: true })
-        .where(eq(notifications.id, notif.id));
+      await prisma.notification.update({
+        where: { id: notif.id },
+        data: { read: true },
+      });
 
       const dashboard = await getUserDashboardById(req.authUser!.id);
       res.json({ dashboard });
@@ -741,15 +1040,10 @@ adminOpsRouter.post(
   requireAuth,
   async (req: AuthenticatedRequest, res: Response) => {
     try {
-      await ensureDatabaseMigratedAndSeeded();
-      if (req.authUser!.role === 'student') {
-        await db
-          .update(notifications)
-          .set({ read: true })
-          .where(eq(notifications.userId, req.authUser!.id));
-      } else {
-        await db.update(notifications).set({ read: true });
-      }
+      await prisma.notification.updateMany({
+        where: { userId: req.authUser!.id },
+        data: { read: true },
+      });
       const dashboard = await getUserDashboardById(req.authUser!.id);
       res.json({ dashboard });
     } catch (err) {
@@ -765,7 +1059,6 @@ adminOpsRouter.post(
   requireAuth,
   async (req: AuthenticatedRequest, res: Response) => {
     try {
-      await ensureDatabaseMigratedAndSeeded();
       const parsed = uploadDocumentSchema.safeParse(req.body);
       if (!parsed.success) {
         res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid document payload.' });
@@ -787,25 +1080,58 @@ adminOpsRouter.post(
       }
 
       const ownerUserId = isStudent ? req.authUser!.id : (input.ownerUserId || req.authUser!.id);
-      const [ownerRow] = await db.select().from(users).where(eq(users.id, ownerUserId)).limit(1);
+
+      if (req.authUser!.role === 'instructor') {
+        const permitted = await hasInstructorPermission(req.authUser!, 'documents:upload');
+        if (!permitted) {
+          res.status(403).json({ error: 'Your instructor permissions do not allow uploading documents.' });
+          return;
+        }
+        if (input.category === 'Receipt') {
+          res.status(403).json({ error: 'Instructors cannot upload financial receipt documents.' });
+          return;
+        }
+        if (input.courseId) {
+          const allowedCourse = await canInstructorAccessCourse(req.authUser!.id, input.courseId);
+          if (!allowedCourse) {
+            res.status(403).json({ error: 'You are not assigned to upload documents for this course.' });
+            return;
+          }
+        }
+        if (ownerUserId !== req.authUser!.id) {
+          const allowedStudent = await canInstructorAccessStudent(req.authUser!.id, ownerUserId);
+          if (!allowedStudent) {
+            res.status(403).json({ error: 'You cannot upload documents for a student outside your assigned courses.' });
+            return;
+          }
+        }
+      }
+
+      const ownerRow = await prisma.user.findUnique({ where: { id: ownerUserId } });
       if (!ownerRow) {
         res.status(400).json({ error: 'Document owner account not found.' });
         return;
       }
 
       const docId = `doc-${crypto.randomUUID().slice(0, 8)}`;
-      await db.insert(documents).values({
-        id: docId,
-        ownerUserId,
-        courseId: input.courseId || null,
-        title: input.title,
-        category: input.category,
-        fileName: input.fileName,
-        mimeType: input.mimeType,
-        sizeBytes: decoded.byteLength,
-        contentBase64: input.contentBase64,
-        uploadedByUserId: req.authUser!.id,
-        isArchived: false,
+      const checksumSha256 = crypto.createHash('sha256').update(decoded).digest('hex');
+
+      await prisma.fileAsset.create({
+        data: {
+          id: docId,
+          ownerUserId,
+          courseId: input.courseId || null,
+          title: input.title,
+          category: input.category,
+          fileName: input.fileName,
+          mimeType: input.mimeType,
+          sizeBytes: decoded.byteLength,
+          contentBase64: input.contentBase64,
+          storageProvider: 'postgres',
+          checksumSha256,
+          uploadedByUserId: req.authUser!.id,
+          isArchived: false,
+        },
       });
 
       await recordAuditLog({
@@ -841,6 +1167,7 @@ adminOpsRouter.get(
       }
 
       const buffer = Buffer.from(result.contentBase64, 'base64');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
       res.setHeader('Content-Type', result.mimeType || 'application/octet-stream');
       res.setHeader(
         'Content-Disposition',
@@ -859,12 +1186,7 @@ adminOpsRouter.patch(
   requireAuth,
   async (req: AuthenticatedRequest, res: Response) => {
     try {
-      await ensureDatabaseMigratedAndSeeded();
-      const [doc] = await db
-        .select()
-        .from(documents)
-        .where(eq(documents.id, req.params.id))
-        .limit(1);
+      const doc = await prisma.fileAsset.findUnique({ where: { id: req.params.id } });
       if (!doc) {
         res.status(404).json({ error: 'Document not found.' });
         return;
@@ -879,10 +1201,10 @@ adminOpsRouter.patch(
         return;
       }
 
-      await db
-        .update(documents)
-        .set({ isArchived: true })
-        .where(eq(documents.id, doc.id));
+      await prisma.fileAsset.update({
+        where: { id: doc.id },
+        data: { isArchived: true },
+      });
 
       await recordAuditLog({
         actor: req.authUser!,

@@ -1,9 +1,17 @@
-import { Router, type Request, type Response } from 'express';
+import crypto from 'node:crypto';
+import express, { Router, type Request, type Response } from 'express';
 import { adminAuth } from '../../src/lib/firebase-admin.ts';
 import type { UserRole } from '../../src/shared/types.ts';
-import { loginSchema, registerSchema } from '../../src/shared/validation.ts';
+import {
+  changePasswordSchema,
+  forgotPasswordSchema,
+  loginSchema,
+  registerSchema,
+  resetPasswordSchema,
+} from '../../src/shared/validation.ts';
 import {
   findUserByEmail,
+  findUserById,
   getUserDashboardById,
   recordAuditLog,
   registerStudentAccount,
@@ -11,15 +19,114 @@ import {
   syncFirebaseUser,
   toPublicUser,
 } from '../ams-service.ts';
-import { SESSION_COOKIE_NAME, signSessionToken, verifyPassword } from '../auth.ts';
 import {
+  PASSWORD_RESET_TTL_MS,
+  SESSION_TTL_MS,
+  generateOpaqueSessionToken,
+  generatePasswordResetToken,
+  hashPassword,
+  hashPasswordResetToken,
+  hashSessionToken,
+  verifyPassword,
+} from '../auth.ts';
+import { prisma } from '../db/prisma.ts';
+import {
+  clearSessionCookie,
+  extractSessionToken,
   requireAuth,
   resolveRequestUser,
   setSessionCookie,
   type AuthenticatedRequest,
 } from '../middleware/auth.ts';
+import { createRateLimiter, getClientIp } from '../middleware/security.ts';
+import {
+  createAuthSessionRecord,
+  revokeAllUserSessionsInDb,
+  revokeAuthSessionByTokenHash,
+  revokeOtherUserSessionsInDb,
+} from '../repositories/ams.repository.ts';
 
 export const authRouter = Router();
+
+// Tight 64kb body size limit for authentication routes
+authRouter.use('/auth', express.json({ limit: '64kb' }));
+
+async function issueOpaqueSession(
+  req: Request,
+  user: { id: string; role: string }
+): Promise<{ rawToken: string; sessionId: string }> {
+  const rawToken = generateOpaqueSessionToken();
+  const tokenHash = hashSessionToken(rawToken);
+  const sessionId = `ses-${crypto.randomUUID()}`;
+  const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
+
+  await createAuthSessionRecord({
+    id: sessionId,
+    tokenHash,
+    userId: user.id,
+    roleCode: user.role,
+    ipAddress: getClientIp(req),
+    userAgent: typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : undefined,
+    expiresAt,
+  });
+
+  return { rawToken, sessionId };
+}
+
+const loginLimiter = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  maxRequests: 10,
+  keyPrefix: 'auth-login',
+  keySelector: (req) =>
+    typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '',
+  message: 'Too many sign-in attempts. Please wait 15 minutes before trying again.',
+});
+
+const registerLimiter = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  maxRequests: 10,
+  keyPrefix: 'auth-register',
+  message: 'Too many registration attempts from this network. Please wait before retrying.',
+});
+
+const forgotPasswordLimiter = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  maxRequests: 5,
+  keyPrefix: 'auth-forgot-password',
+  keySelector: (req) =>
+    typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '',
+  message: 'Too many password reset requests. Please wait before trying again.',
+});
+
+const resetPasswordLimiter = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  maxRequests: 10,
+  keyPrefix: 'auth-reset-password',
+  message: 'Too many password reset attempts. Please wait before trying again.',
+});
+
+const changePasswordLimiter = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  maxRequests: 10,
+  keyPrefix: 'auth-change-password',
+  message: 'Too many password change attempts. Please wait before trying again.',
+});
+
+const firebaseAuthLimiter = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  maxRequests: 20,
+  keyPrefix: 'auth-firebase',
+  message: 'Too many Google Sign-In verification attempts. Please try again shortly.',
+});
+
+export function resetAuthRateLimiters(): void {
+  loginLimiter.reset();
+  registerLimiter.reset();
+  forgotPasswordLimiter.reset();
+  resetPasswordLimiter.reset();
+  changePasswordLimiter.reset();
+  firebaseAuthLimiter.reset();
+}
 
 authRouter.get('/auth/me', async (req: Request, res: Response) => {
   try {
@@ -31,7 +138,7 @@ authRouter.get('/auth/me', async (req: Request, res: Response) => {
   }
 });
 
-authRouter.post('/auth/login', async (req: Request, res: Response) => {
+authRouter.post('/auth/login', loginLimiter, async (req: Request, res: Response) => {
   try {
     const parsed = loginSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -40,24 +147,71 @@ authRouter.post('/auth/login', async (req: Request, res: Response) => {
     }
 
     const { email, password } = parsed.data;
-    const user = await findUserByEmail(email);
-    if (!user || !user.passwordHash || !verifyPassword(password, user.passwordHash)) {
+    const normalizedEmail = email.toLowerCase();
+    const user = await findUserByEmail(normalizedEmail);
+    const verification = await verifyPassword(password, user?.passwordHash);
+
+    if (!user || !user.passwordHash || !verification.valid) {
+      await recordAuditLog({
+        actor: {
+          id: user?.id ?? null,
+          email: normalizedEmail,
+          role: user?.role ?? 'anonymous',
+        },
+        action: 'USER_LOGIN_FAILED',
+        entityType: 'user',
+        entityId: user?.id ?? normalizedEmail,
+        ipAddress: getClientIp(req),
+        summary: `Failed sign-in attempt for ${normalizedEmail}.`,
+      });
       res.status(401).json({ error: 'Invalid email or password.' });
       return;
     }
+
     if (user.status !== 'active') {
-      res.status(403).json({ error: 'This account is inactive or archived. Contact Academy Administration.' });
+      await recordAuditLog({
+        actor: { id: user.id, email: user.email, role: user.role },
+        action: 'USER_LOGIN_BLOCKED',
+        entityType: 'user',
+        entityId: user.id,
+        ipAddress: getClientIp(req),
+        summary: `Blocked sign-in attempt for ${user.status} account ${user.email}.`,
+      });
+      res.status(403).json({
+        error: 'This account is suspended, inactive, or archived. Contact Academy Administration.',
+      });
       return;
     }
 
-    const token = signSessionToken(user.id, user.role as UserRole);
-    setSessionCookie(res, token);
+    // Transparently upgrade legacy scrypt or outdated Argon2id hashes to Argon2id
+    if (verification.needsRehash) {
+      const upgradedHash = await hashPassword(password);
+      await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          passwordHash: upgradedHash,
+          passwordUpdatedAt: new Date(),
+        },
+      });
+      await recordAuditLog({
+        actor: { id: user.id, email: user.email, role: user.role },
+        action: 'PASSWORD_HASH_UPGRADED',
+        entityType: 'user',
+        entityId: user.id,
+        ipAddress: getClientIp(req),
+        summary: `Upgraded password digest to Argon2id for ${user.email}.`,
+      });
+    }
+
+    const { rawToken } = await issueOpaqueSession(req, user);
+    setSessionCookie(res, rawToken, req);
 
     await recordAuditLog({
       actor: { id: user.id, email: user.email, role: user.role },
       action: 'USER_LOGIN',
       entityType: 'user',
       entityId: user.id,
+      ipAddress: getClientIp(req),
       summary: `User ${user.email} signed in with academy credentials.`,
     });
 
@@ -68,7 +222,7 @@ authRouter.post('/auth/login', async (req: Request, res: Response) => {
   }
 });
 
-authRouter.post('/auth/firebase', async (req: Request, res: Response) => {
+authRouter.post('/auth/firebase', firebaseAuthLimiter, async (req: Request, res: Response) => {
   try {
     const idToken = typeof req.body?.idToken === 'string' ? req.body.idToken.trim() : '';
     if (!idToken) {
@@ -89,18 +243,21 @@ authRouter.post('/auth/firebase', async (req: Request, res: Response) => {
     });
 
     if (user.status !== 'active') {
-      res.status(403).json({ error: 'This account is inactive or archived. Contact Academy Administration.' });
+      res.status(403).json({
+        error: 'This account is suspended, inactive, or archived. Contact Academy Administration.',
+      });
       return;
     }
 
-    const token = signSessionToken(user.id, user.role as UserRole);
-    setSessionCookie(res, token);
+    const { rawToken } = await issueOpaqueSession(req, user);
+    setSessionCookie(res, rawToken, req);
 
     await recordAuditLog({
       actor: { id: user.id, email: user.email, role: user.role },
       action: 'USER_GOOGLE_LOGIN',
       entityType: 'user',
       entityId: user.id,
+      ipAddress: getClientIp(req),
       summary: `User ${user.email} authenticated via Google Sign-In.`,
     });
 
@@ -111,8 +268,36 @@ authRouter.post('/auth/firebase', async (req: Request, res: Response) => {
   }
 });
 
-authRouter.post('/auth/register', async (req: Request, res: Response) => {
+authRouter.post('/auth/register', registerLimiter, async (req: Request, res: Response) => {
   try {
+    // Explicitly reject any client attempt to self-assign admin or instructor role
+    if (
+      req.body &&
+      typeof req.body === 'object' &&
+      'role' in req.body &&
+      req.body.role !== undefined &&
+      String(req.body.role).trim().toLowerCase() !== 'student'
+    ) {
+      await recordAuditLog({
+        actor: {
+          email:
+            typeof req.body.email === 'string'
+              ? req.body.email.trim().toLowerCase()
+              : 'anonymous',
+          role: 'anonymous',
+        },
+        action: 'PRIVILEGE_ESCALATION_BLOCKED',
+        entityType: 'user',
+        entityId: 'public-register',
+        ipAddress: getClientIp(req),
+        summary: `Blocked attempt to register with elevated role "${String(req.body.role)}".`,
+      });
+      res.status(403).json({
+        error: 'Public registration is strictly limited to student accounts.',
+      });
+      return;
+    }
+
     const parsed = registerSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid registration data.' });
@@ -125,8 +310,8 @@ authRouter.post('/auth/register', async (req: Request, res: Response) => {
       return;
     }
 
-    const token = signSessionToken(created.user.id, created.user.role as UserRole);
-    setSessionCookie(res, token);
+    const { rawToken } = await issueOpaqueSession(req, created.user);
+    setSessionCookie(res, rawToken, req);
     res.status(201).json({ user: toPublicUser(created.user) });
   } catch (err) {
     console.error('POST /api/auth/register error:', err);
@@ -134,10 +319,215 @@ authRouter.post('/auth/register', async (req: Request, res: Response) => {
   }
 });
 
-authRouter.post('/auth/logout', (_req: Request, res: Response) => {
-  res.clearCookie(SESSION_COOKIE_NAME, { path: '/' });
+authRouter.post('/auth/logout', async (req: Request, res: Response) => {
+  const rawToken = extractSessionToken(req);
+  if (rawToken) {
+    const tokenHash = hashSessionToken(rawToken);
+    await revokeAuthSessionByTokenHash(tokenHash, 'logout');
+  }
+  clearSessionCookie(res, req);
   res.json({ ok: true });
 });
+
+authRouter.post(
+  '/auth/change-password',
+  requireAuth,
+  changePasswordLimiter,
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const parsed = changePasswordSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid password payload.' });
+        return;
+      }
+
+      const { currentPassword, newPassword } = parsed.data;
+      if (currentPassword === newPassword) {
+        res.status(400).json({ error: 'New password must differ from your current password.' });
+        return;
+      }
+
+      const user = await findUserById(req.authUser!.id);
+      if (!user || user.status !== 'active') {
+        res.status(403).json({ error: 'Account is not active.' });
+        return;
+      }
+
+      if (user.passwordHash) {
+        const verified = await verifyPassword(currentPassword, user.passwordHash);
+        if (!verified.valid) {
+          res.status(401).json({ error: 'Current password is incorrect.' });
+          return;
+        }
+      }
+
+      const newHash = await hashPassword(newPassword);
+      await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          passwordHash: newHash,
+          passwordUpdatedAt: new Date(),
+          mustChangePassword: false,
+          sessionVersion: { increment: 1 },
+        },
+      });
+
+      if (req.authSessionId) {
+        await revokeOtherUserSessionsInDb(user.id, req.authSessionId, 'password_changed');
+      }
+
+      await recordAuditLog({
+        actor: req.authUser!,
+        action: 'PASSWORD_CHANGED',
+        entityType: 'user',
+        entityId: user.id,
+        ipAddress: getClientIp(req),
+        summary: `User ${user.email} updated their account password.`,
+      });
+
+      res.json({ ok: true, message: 'Password updated successfully.' });
+    } catch (err) {
+      console.error('POST /api/auth/change-password error:', err);
+      res.status(500).json({ error: 'Unable to update password right now.' });
+    }
+  }
+);
+
+authRouter.post(
+  '/auth/forgot-password',
+  forgotPasswordLimiter,
+  async (req: Request, res: Response) => {
+    try {
+      const parsed = forgotPasswordSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Valid email is required.' });
+        return;
+      }
+
+      const normalizedEmail = parsed.data.email.toLowerCase();
+      const user = await findUserByEmail(normalizedEmail);
+
+      if (user && user.status === 'active') {
+        const { tokenHash } = generatePasswordResetToken();
+        const now = new Date();
+        const expiresAt = new Date(now.getTime() + PASSWORD_RESET_TTL_MS);
+
+        await prisma.$transaction(async (tx) => {
+          await tx.passwordResetToken.updateMany({
+            where: { userId: user.id, usedAt: null },
+            data: { usedAt: now },
+          });
+
+          await tx.passwordResetToken.create({
+            data: {
+              id: `prt-${crypto.randomUUID()}`,
+              userId: user.id,
+              tokenHash,
+              expiresAt,
+              createdByUserId: user.id,
+            },
+          });
+        });
+
+        await recordAuditLog({
+          actor: { id: user.id, email: user.email, role: user.role },
+          action: 'PASSWORD_RESET_REQUESTED',
+          entityType: 'user',
+          entityId: user.id,
+          ipAddress: getClientIp(req),
+          summary: `Password reset token generated for ${user.email} (expires in 30m).`,
+        });
+      }
+
+      // Always return generic response to prevent account enumeration
+      res.json({
+        ok: true,
+        message:
+          'If an active account matches that email address, password reset instructions have been issued.',
+      });
+    } catch (err) {
+      console.error('POST /api/auth/forgot-password error:', err);
+      res.status(500).json({ error: 'Unable to process password reset request.' });
+    }
+  }
+);
+
+authRouter.post(
+  '/auth/reset-password',
+  resetPasswordLimiter,
+  async (req: Request, res: Response) => {
+    try {
+      const parsed = resetPasswordSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid reset payload.' });
+        return;
+      }
+
+      const tokenHash = hashPasswordResetToken(parsed.data.token);
+      const resetRecord = await prisma.passwordResetToken.findUnique({
+        where: { tokenHash },
+        include: { user: true },
+      });
+
+      const now = new Date();
+      if (
+        !resetRecord ||
+        resetRecord.usedAt !== null ||
+        resetRecord.expiresAt.getTime() <= now.getTime() ||
+        !resetRecord.user ||
+        resetRecord.user.status !== 'active'
+      ) {
+        res.status(400).json({ error: 'Password reset token is invalid or has expired.' });
+        return;
+      }
+
+      const newHash = await hashPassword(parsed.data.newPassword);
+
+      await prisma.$transaction(async (tx) => {
+        await tx.passwordResetToken.update({
+          where: { id: resetRecord.id },
+          data: { usedAt: now },
+        });
+
+        await tx.user.update({
+          where: { id: resetRecord.userId },
+          data: {
+            passwordHash: newHash,
+            passwordUpdatedAt: now,
+            mustChangePassword: false,
+            sessionVersion: { increment: 1 },
+          },
+        });
+
+        await tx.authSession.updateMany({
+          where: { userId: resetRecord.userId, revokedAt: null },
+          data: { revokedAt: now, revokedReason: 'password_reset' },
+        });
+      });
+
+      await revokeAllUserSessionsInDb(resetRecord.userId, 'password_reset');
+
+      await recordAuditLog({
+        actor: {
+          id: resetRecord.user.id,
+          email: resetRecord.user.email,
+          role: resetRecord.user.role,
+        },
+        action: 'PASSWORD_RESET_COMPLETED',
+        entityType: 'user',
+        entityId: resetRecord.user.id,
+        ipAddress: getClientIp(req),
+        summary: `Password reset completed and all prior sessions revoked for ${resetRecord.user.email}.`,
+      });
+
+      clearSessionCookie(res, req);
+      res.json({ ok: true, message: 'Password has been reset. You may now sign in.' });
+    } catch (err) {
+      console.error('POST /api/auth/reset-password error:', err);
+      res.status(500).json({ error: 'Unable to reset password right now.' });
+    }
+  }
+);
 
 authRouter.get('/dashboard', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {

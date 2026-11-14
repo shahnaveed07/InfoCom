@@ -1,100 +1,98 @@
 import crypto from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
-import type { UserRole } from '../src/shared/types.ts';
+import argon2 from 'argon2';
 
 export const SESSION_COOKIE_NAME = 'nta_session';
-const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
+export const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
+export const PASSWORD_RESET_TTL_MS = 1000 * 60 * 30; // 30 minutes
 
-function getSessionSecret(): string {
-  if (process.env.SESSION_SECRET && process.env.SESSION_SECRET.length >= 16) {
-    return process.env.SESSION_SECRET;
+const ARGON2_OPTIONS = {
+  type: argon2.argon2id as 2,
+  memoryCost: 19456, // 19 MiB (OWASP minimum recommended for Argon2id)
+  timeCost: 2,
+  parallelism: 1,
+  raw: false as const,
+};
+
+export async function hashPassword(password: string): Promise<string> {
+  return argon2.hash(password, ARGON2_OPTIONS);
+}
+
+/**
+ * Verifies a password against either an Argon2id digest ($argon2id$...)
+ * or a legacy Phase 1/2 salted scrypt digest (<32-char-hex-salt>:<128-char-hex-key>).
+ * Returns `needsRehash: true` when a legacy scrypt hash or outdated Argon2id cost is matched
+ * so the authentication flow can transparently upgrade the stored hash in PostgreSQL.
+ */
+export async function verifyPassword(
+  password: string,
+  storedHash: string | null | undefined
+): Promise<{ valid: boolean; needsRehash: boolean }> {
+  if (!password || !storedHash) {
+    return { valid: false, needsRehash: false };
   }
-  const dataDir = path.resolve(process.cwd(), 'data');
-  const secretPath = path.join(dataDir, '.session-secret');
-  try {
-    if (fs.existsSync(secretPath)) {
-      const existing = fs.readFileSync(secretPath, 'utf8').trim();
-      if (existing.length >= 32) return existing;
+
+  if (storedHash.startsWith('$argon2')) {
+    try {
+      const valid = await argon2.verify(storedHash, password);
+      if (!valid) {
+        return { valid: false, needsRehash: false };
+      }
+      const needsRehash =
+        !storedHash.startsWith('$argon2id$') || argon2.needsRehash(storedHash, ARGON2_OPTIONS);
+      return { valid: true, needsRehash };
+    } catch {
+      return { valid: false, needsRehash: false };
     }
-    fs.mkdirSync(dataDir, { recursive: true });
-    const generated = crypto.randomBytes(32).toString('hex');
-    fs.writeFileSync(secretPath, generated, { mode: 0o600 });
-    return generated;
-  } catch {
-    return crypto.createHash('sha256').update(process.cwd()).digest('hex');
   }
-}
 
-const SESSION_SECRET = getSessionSecret();
-
-export function hashPassword(password: string): string {
-  const salt = crypto.randomBytes(16).toString('hex');
-  const derived = crypto.scryptSync(password, salt, 64).toString('hex');
-  return `${salt}:${derived}`;
-}
-
-export function verifyPassword(password: string, storedHash: string | null | undefined): boolean {
-  if (!storedHash) return false;
+  // Legacy scrypt format (<salt>:<64-byte-hex-key>)
   const parts = storedHash.split(':');
-  if (parts.length !== 2) return false;
+  if (parts.length !== 2) {
+    return { valid: false, needsRehash: false };
+  }
   const [salt, keyHex] = parts;
-  if (!salt || !keyHex) return false;
+  if (!salt || !keyHex || keyHex.length !== 128) {
+    return { valid: false, needsRehash: false };
+  }
+
   try {
     const keyBuf = Buffer.from(keyHex, 'hex');
     const derivedBuf = crypto.scryptSync(password, salt, 64);
-    if (keyBuf.length !== derivedBuf.length) return false;
-    return crypto.timingSafeEqual(keyBuf, derivedBuf);
-  } catch {
-    return false;
-  }
-}
-
-export interface SessionPayload {
-  userId: string;
-  role: UserRole;
-  exp: number;
-}
-
-export function signSessionToken(userId: string, role: UserRole): string {
-  const payload: SessionPayload = {
-    userId,
-    role,
-    exp: Date.now() + SESSION_TTL_MS,
-  };
-  const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
-  const signature = crypto
-    .createHmac('sha256', SESSION_SECRET)
-    .update(encoded)
-    .digest('base64url');
-  return `${encoded}.${signature}`;
-}
-
-export function verifySessionToken(token: string | undefined): SessionPayload | null {
-  if (!token || !token.includes('.')) return null;
-  const [encoded, sig] = token.split('.');
-  if (!encoded || !sig) return null;
-  try {
-    const expectedSig = crypto
-      .createHmac('sha256', SESSION_SECRET)
-      .update(encoded)
-      .digest('base64url');
-    const sigBuf = Buffer.from(sig);
-    const expectedBuf = Buffer.from(expectedSig);
-    if (sigBuf.length !== expectedBuf.length) return null;
-    if (!crypto.timingSafeEqual(sigBuf, expectedBuf)) return null;
-
-    const payload = JSON.parse(
-      Buffer.from(encoded, 'base64url').toString('utf8')
-    ) as SessionPayload;
-    if (!payload.userId || !payload.role || typeof payload.exp !== 'number') {
-      return null;
+    if (keyBuf.length !== derivedBuf.length) {
+      return { valid: false, needsRehash: false };
     }
-    if (Date.now() > payload.exp) return null;
-    return payload;
+    const valid = crypto.timingSafeEqual(keyBuf, derivedBuf);
+    return { valid, needsRehash: valid };
   } catch {
-    return null;
+    return { valid: false, needsRehash: false };
   }
+}
+
+/**
+ * Generates an opaque, high-entropy 256-bit session identifier.
+ * Only its SHA-256 hash is persisted in PostgreSQL (`auth_sessions.token_hash`).
+ */
+export function generateOpaqueSessionToken(): string {
+  return crypto.randomBytes(32).toString('base64url');
+}
+
+export function hashSessionToken(rawToken: string): string {
+  return crypto.createHash('sha256').update(rawToken, 'utf8').digest('hex');
+}
+
+export function generatePasswordResetToken(): {
+  rawToken: string;
+  tokenHash: string;
+} {
+  const rawToken = crypto.randomBytes(32).toString('base64url');
+  return {
+    rawToken,
+    tokenHash: hashPasswordResetToken(rawToken),
+  };
+}
+
+export function hashPasswordResetToken(rawToken: string): string {
+  return crypto.createHash('sha256').update(rawToken, 'utf8').digest('hex');
 }
 
 export function parseCookies(cookieHeader: string | undefined): Record<string, string> {
@@ -107,7 +105,11 @@ export function parseCookies(cookieHeader: string | undefined): Record<string, s
     const key = pair.slice(0, idx).trim();
     const val = pair.slice(idx + 1).trim();
     if (key) {
-      result[key] = decodeURIComponent(val);
+      try {
+        result[key] = decodeURIComponent(val);
+      } catch {
+        result[key] = val;
+      }
     }
   }
   return result;

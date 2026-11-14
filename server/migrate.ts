@@ -147,9 +147,9 @@ export async function runControlledMigration(): Promise<void> {
     legacy = JSON.parse(raw) as LegacyJsonDb;
   }
 
-  const adminPasswordHash = hashPassword('Admin!2026');
-  const instructorPasswordHash = hashPassword('Instructor!2026');
-  const studentPasswordHash = hashPassword('Student!2026');
+  const adminPasswordHash = await hashPassword('Admin!2026');
+  const instructorPasswordHash = await hashPassword('Instructor!2026');
+  const studentPasswordHash = await hashPassword('Student!2026');
 
   await db.transaction(async (tx) => {
     // Re-check inside transaction to avoid race condition

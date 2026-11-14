@@ -41,8 +41,9 @@ export function EnrollmentsView({
   const [cohort, setCohort] = useState(
     data.cohorts[0]?.name ?? 'Cohort A · Autumn'
   );
+  const isAdmin = data.user.role === 'admin';
   const [newStatus, setNewStatus] = useState<'Active' | 'Waitlisted'>('Active');
-  const [issueTuitionInvoice, setIssueTuitionInvoice] = useState(true);
+  const [issueTuitionInvoice, setIssueTuitionInvoice] = useState(isAdmin);
   const [formError, setFormError] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
@@ -72,7 +73,7 @@ export function EnrollmentsView({
         courseId,
         cohort: cohort.trim(),
         status: newStatus,
-        issueTuitionInvoice,
+        issueTuitionInvoice: isAdmin ? issueTuitionInvoice : false,
       });
       setModalOpen(false);
     } catch (err) {
@@ -424,15 +425,17 @@ export function EnrollmentsView({
                 </div>
               </div>
 
-              <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer pt-1">
-                <input
-                  type="checkbox"
-                  checked={issueTuitionInvoice}
-                  onChange={(e) => setIssueTuitionInvoice(e.target.checked)}
-                  className="rounded border-slate-300 text-blue-700 focus:ring-blue-600"
-                />
-                <span>Automatically issue course tuition fee invoice</span>
-              </label>
+              {isAdmin && (
+                <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer pt-1">
+                  <input
+                    type="checkbox"
+                    checked={issueTuitionInvoice}
+                    onChange={(e) => setIssueTuitionInvoice(e.target.checked)}
+                    className="rounded border-slate-300 text-blue-700 focus:ring-blue-600"
+                  />
+                  <span>Automatically issue course tuition fee invoice</span>
+                </label>
+              )}
 
               <div className="pt-2 flex items-center justify-end gap-2.5">
                 <button

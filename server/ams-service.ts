@@ -1,26 +1,9 @@
 import crypto from 'node:crypto';
-import { and, desc, eq, inArray } from 'drizzle-orm';
-import { db } from '../src/db/index.ts';
-import {
-  admissions,
-  attendanceRecords,
-  auditLogs,
-  certificates,
-  classSessions,
-  cohorts,
-  courseModules,
-  courses,
-  documents,
-  enrollments,
-  feeInvoices,
-  moduleGrades,
-  notifications,
-  payments,
-  progressRemarks,
-  users,
-} from '../src/db/schema.ts';
+import type { Prisma, User as PrismaUser } from '@prisma/client';
 import {
   buildAttendanceNotification,
+  buildEnrollmentTrendSeries,
+  buildMonthlyRevenueSeries,
   calculateAttendanceStats,
   calculateCourseCompletion,
   calculateLetterGrade,
@@ -29,27 +12,110 @@ import {
   computeCertificateEligibility,
   computeInvoiceStatus,
   findUpcomingSessionsNeedingReminders,
+  formatInvoiceNumber,
   fromCents,
+  resolveAnalyticsDateWindow,
   toCents,
 } from '../src/shared/academic.ts';
 import type {
+  AcademySettingsPayload,
+  AdminAnalyticsDetail,
+  AnalyticsPreset,
   AttendanceStatus,
   CertificateRecord,
   Course,
   DashboardPayload,
   DocumentRecord,
   EnrollmentStatus,
+  InstructorDetailPayload,
+  InstructorDirectoryRow,
+  InstructorPermissionKey,
   NotificationItem,
   PaymentMethod,
+  StudentDetailPayload,
   UserPublic,
   UserRole,
 } from '../src/shared/types.ts';
 import { hashPassword } from './auth.ts';
-import { ensureDatabaseMigratedAndSeeded } from './migrate.ts';
+import { prisma } from './db/prisma.ts';
+import {
+  DEFAULT_INSTRUCTOR_PERMISSIONS,
+  canInstructorAccessCourse,
+  canInstructorAccessStudent,
+  getInstructorScope,
+} from './security/permissions.ts';
 
-type DbUserRow = typeof users.$inferSelect;
+type PrismaDbClient = Prisma.TransactionClient | typeof prisma;
 
-export function toPublicUser(u: DbUserRow): UserPublic {
+export async function generateUniqueStudentCode(db: PrismaDbClient = prisma): Promise<string> {
+  const year = new Date().getUTCFullYear();
+  for (let i = 0; i < 12; i += 1) {
+    const suffix = crypto.randomInt(1000, 9999);
+    const candidate = `NTA-${year}-${suffix}`;
+    const exists = await db.user.findUnique({
+      where: { studentCode: candidate },
+      select: { id: true },
+    });
+    if (!exists) return candidate;
+  }
+  return `NTA-${year}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+}
+
+export async function generateUniqueStaffCode(db: PrismaDbClient = prisma): Promise<string> {
+  for (let i = 0; i < 12; i += 1) {
+    const suffix = crypto.randomInt(1000, 9999);
+    const candidate = `INF-STF-${suffix}`;
+    const exists = await db.user.findUnique({
+      where: { staffCode: candidate },
+      select: { id: true },
+    });
+    if (!exists) return candidate;
+  }
+  return `INF-STF-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+}
+
+export async function generateNextInvoiceNumber(db: PrismaDbClient = prisma): Promise<string> {
+  const [prefixRow, seqRow] = await Promise.all([
+    db.academySetting.findFirst({ where: { key: 'academy.invoice_prefix' } }),
+    db.academySetting.findFirst({ where: { key: 'academy.invoice_next_seq' } }),
+  ]);
+  const prefix = prefixRow?.value || 'INV-2026';
+  let seq = Number(seqRow?.value || '1050');
+  if (!Number.isFinite(seq) || seq < 1) seq = 1050;
+
+  for (let i = 0; i < 20; i += 1) {
+    const candidate = formatInvoiceNumber(prefix, seq + i);
+    const existing = await db.invoice.findUnique({
+      where: { invoiceNumber: candidate },
+      select: { id: true },
+    });
+    if (!existing) {
+      if (seqRow) {
+        await db.academySetting.update({
+          where: { id: seqRow.id },
+          data: { value: String(seq + i + 1) },
+        });
+      }
+      return candidate;
+    }
+  }
+  return `${prefix}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+}
+
+export async function generateUniqueReceiptNumber(db: PrismaDbClient = prisma): Promise<string> {
+  const year = new Date().getUTCFullYear();
+  for (let i = 0; i < 12; i += 1) {
+    const candidate = `RCPT-${year}-${crypto.randomInt(10000, 99999)}`;
+    const exists = await db.payment.findUnique({
+      where: { receiptNumber: candidate },
+      select: { id: true },
+    });
+    if (!exists) return candidate;
+  }
+  return `RCPT-${year}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+}
+
+export function toPublicUser(u: PrismaUser): UserPublic {
   return {
     id: u.id,
     name: u.name,
@@ -70,44 +136,42 @@ export async function recordAuditLog(params: {
   entityType: string;
   entityId: string;
   summary: string;
+  ipAddress?: string;
   metadata?: Record<string, unknown>;
 }): Promise<void> {
   try {
-    await db.insert(auditLogs).values({
-      id: `aud-${crypto.randomUUID().slice(0, 12)}`,
-      actorUserId: params.actor.id ?? null,
-      actorEmail: params.actor.email,
-      actorRole: params.actor.role,
-      action: params.action,
-      entityType: params.entityType,
-      entityId: params.entityId,
-      summary: params.summary,
-      metadata: params.metadata ?? {},
+    await prisma.auditLog.create({
+      data: {
+        id: `aud-${crypto.randomUUID().slice(0, 12)}`,
+        actorUserId: params.actor.id ?? null,
+        actorEmail: params.actor.email,
+        actorRole: params.actor.role,
+        action: params.action,
+        entityType: params.entityType,
+        entityId: params.entityId,
+        summary: params.summary,
+        ipAddress: params.ipAddress ?? null,
+        metadata: (params.metadata ?? {}) as Prisma.InputJsonValue,
+      },
     });
   } catch (err) {
     console.error('Audit log insert failed:', err);
   }
 }
 
-export async function findUserById(id: string): Promise<DbUserRow | null> {
-  await ensureDatabaseMigratedAndSeeded();
+export async function findUserById(id: string): Promise<PrismaUser | null> {
   try {
-    const rows = await db.select().from(users).where(eq(users.id, id)).limit(1);
-    return rows[0] ?? null;
+    return await prisma.user.findUnique({ where: { id } });
   } catch (err) {
     throw new Error('Failed to load user record.', { cause: err });
   }
 }
 
-export async function findUserByEmail(email: string): Promise<DbUserRow | null> {
-  await ensureDatabaseMigratedAndSeeded();
+export async function findUserByEmail(email: string): Promise<PrismaUser | null> {
   try {
-    const rows = await db
-      .select()
-      .from(users)
-      .where(eq(users.email, email.trim().toLowerCase()))
-      .limit(1);
-    return rows[0] ?? null;
+    return await prisma.user.findUnique({
+      where: { email: email.trim().toLowerCase() },
+    });
   } catch (err) {
     throw new Error('Failed to query user by email.', { cause: err });
   }
@@ -117,62 +181,75 @@ export async function syncFirebaseUser(params: {
   uid: string;
   email: string;
   name: string;
-}): Promise<DbUserRow> {
-  await ensureDatabaseMigratedAndSeeded();
+}): Promise<PrismaUser> {
   const normalizedEmail = params.email.trim().toLowerCase();
   try {
-    const existingByUid = await db
-      .select()
-      .from(users)
-      .where(eq(users.firebaseUid, params.uid))
-      .limit(1);
-    if (existingByUid[0]) {
-      return existingByUid[0];
+    const existingByUid = await prisma.user.findUnique({
+      where: { firebaseUid: params.uid },
+    });
+    if (existingByUid) return existingByUid;
+
+    const existingByEmail = await prisma.user.findUnique({
+      where: { email: normalizedEmail },
+    });
+    if (existingByEmail) {
+      return await prisma.user.update({
+        where: { id: existingByEmail.id },
+        data: { firebaseUid: params.uid },
+      });
     }
 
-    const existingByEmail = await db
-      .select()
-      .from(users)
-      .where(eq(users.email, normalizedEmail))
-      .limit(1);
+    // Public Google SSO provisioning is strictly restricted to the student role.
+    // Admin and Instructor roles must be granted via bootstrap CLI or an existing Admin.
+    const newId = `stu-${crypto.randomUUID().slice(0, 8)}`;
+    const studentCode = await generateUniqueStudentCode();
+    const roleCode = 'student';
 
-    if (existingByEmail[0]) {
-      const updated = await db
-        .update(users)
-        .set({ firebaseUid: params.uid, updatedAt: new Date() })
-        .where(eq(users.id, existingByEmail[0].id))
-        .returning();
-      return updated[0];
-    }
+    const user = await prisma.$transaction(async (tx) => {
+      const upserted = await tx.user.upsert({
+        where: { email: normalizedEmail },
+        update: { firebaseUid: params.uid },
+        create: {
+          id: newId,
+          firebaseUid: params.uid,
+          name: params.name.trim() || normalizedEmail.split('@')[0],
+          email: normalizedEmail,
+          role: roleCode,
+          status: 'active',
+          studentCode,
+          staffCode: null,
+          department: null,
+        },
+      });
 
-    // Bootstrap runtime owner or create standard student account (never trust client role!)
-    const isBootstrappedAdmin = normalizedEmail === 'snave9401@gmail.com';
-    const newId = `${isBootstrappedAdmin ? 'adm' : 'stu'}-${crypto.randomUUID().slice(0, 8)}`;
-    const studentCode = isBootstrappedAdmin
-      ? null
-      : `NTA-2026-${Math.floor(100 + Math.random() * 899)}`;
-    const staffCode = isBootstrappedAdmin ? 'INF-ADM-OWNER' : null;
+      const roleRow = await tx.role.findUnique({ where: { code: upserted.role } });
+      if (roleRow) {
+        await tx.userRole.upsert({
+          where: { userId_roleId: { userId: upserted.id, roleId: roleRow.id } },
+          update: {},
+          create: {
+            id: `ur-${upserted.id}-${roleRow.code}`,
+            userId: upserted.id,
+            roleId: roleRow.id,
+          },
+        });
+      }
 
-    const inserted = await db
-      .insert(users)
-      .values({
-        id: newId,
-        firebaseUid: params.uid,
-        name: params.name.trim() || normalizedEmail.split('@')[0],
-        email: normalizedEmail,
-        role: isBootstrappedAdmin ? 'admin' : 'student',
-        status: 'active',
-        studentCode,
-        staffCode,
-        department: isBootstrappedAdmin ? 'Academy Administration' : null,
-      })
-      .onConflictDoUpdate({
-        target: users.email,
-        set: { firebaseUid: params.uid, updatedAt: new Date() },
-      })
-      .returning();
+      if (upserted.role === 'student' && upserted.studentCode) {
+        await tx.studentProfile.upsert({
+          where: { userId: upserted.id },
+          update: {},
+          create: {
+            id: `sp-${upserted.id}`,
+            userId: upserted.id,
+            studentCode: upserted.studentCode,
+          },
+        });
+      }
 
-    const user = inserted[0];
+      return upserted;
+    });
+
     await recordAuditLog({
       actor: { id: user.id, email: user.email, role: user.role },
       action: 'USER_SSO_PROVISIONED',
@@ -191,22 +268,20 @@ export async function registerStudentAccount(params: {
   email: string;
   password: string;
   phone?: string;
-}): Promise<{ ok: true; user: DbUserRow } | { ok: false; error: string }> {
-  await ensureDatabaseMigratedAndSeeded();
+}): Promise<{ ok: true; user: PrismaUser } | { ok: false; error: string }> {
   const normalizedEmail = params.email.trim().toLowerCase();
   const existing = await findUserByEmail(normalizedEmail);
   if (existing) {
     return { ok: false, error: 'An account with this email already exists.' };
   }
 
-  const studentCode = `NTA-2026-${Math.floor(100 + Math.random() * 899)}`;
+  const studentCode = await generateUniqueStudentCode();
   const newId = `stu-${crypto.randomUUID().slice(0, 8)}`;
 
   try {
-    const createdUser = await db.transaction(async (tx) => {
-      const [inserted] = await tx
-        .insert(users)
-        .values({
+    const createdUser = await prisma.$transaction(async (tx) => {
+      const inserted = await tx.user.create({
+        data: {
           id: newId,
           name: params.name.trim(),
           email: normalizedEmail,
@@ -214,28 +289,94 @@ export async function registerStudentAccount(params: {
           status: 'active',
           studentCode,
           phone: params.phone?.trim() || null,
-          passwordHash: hashPassword(params.password),
-        })
-        .returning();
+          passwordHash: await hashPassword(params.password),
+          passwordUpdatedAt: new Date(),
+        },
+      });
 
-      const allCourses = await tx.select().from(courses).limit(1);
-      if (allCourses[0]) {
-        await tx.insert(enrollments).values({
-          id: `enr-${crypto.randomUUID().slice(0, 8)}`,
-          studentId: inserted.id,
-          courseId: allCourses[0].id,
-          cohort: 'Cohort A · Autumn',
-          status: 'Active',
-          completedModuleIds: [],
+      const roleRow = await tx.role.findUnique({ where: { code: 'student' } });
+      if (roleRow) {
+        await tx.userRole.upsert({
+          where: { userId_roleId: { userId: inserted.id, roleId: roleRow.id } },
+          update: {},
+          create: {
+            id: `ur-${inserted.id}-student`,
+            userId: inserted.id,
+            roleId: roleRow.id,
+          },
         });
-        await tx.insert(notifications).values({
-          id: `not-${crypto.randomUUID().slice(0, 8)}`,
+      }
+
+      await tx.studentProfile.create({
+        data: {
+          id: `sp-${inserted.id}`,
           userId: inserted.id,
-          kind: 'enrollment',
-          title: `Welcome · ${allCourses[0].code}`,
-          message: `Welcome to InfoCom AMS. You have been enrolled in ${allCourses[0].title} (Cohort A · Autumn).`,
-          relatedCourseId: allCourses[0].id,
-          read: false,
+          studentCode,
+        },
+      });
+
+      const firstCourse = await tx.course.findFirst({
+        where: { isArchived: false },
+        include: { instructor: true },
+        orderBy: { createdAt: 'asc' },
+      });
+
+      if (firstCourse) {
+        const matchingBatch = await tx.batch.findFirst({
+          where: { courseId: firstCourse.id, status: 'Active' },
+          orderBy: { startDate: 'asc' },
+        });
+        const cohortName = matchingBatch?.name ?? 'Cohort A · Autumn';
+        const enrId = `enr-${crypto.randomUUID().slice(0, 8)}`;
+
+        await tx.enrollment.create({
+          data: {
+            id: enrId,
+            studentId: inserted.id,
+            courseId: firstCourse.id,
+            cohortId: matchingBatch?.id ?? null,
+            cohort: cohortName,
+            status: 'Active',
+            completedModuleIds: [],
+            tuitionSnapshot: firstCourse.tuitionFee,
+            batchNameSnapshot: cohortName,
+            instructorNameSnapshot: firstCourse.instructor?.name ?? null,
+          },
+        });
+
+        await tx.enrollmentHistory.create({
+          data: {
+            id: `eh-${crypto.randomUUID().slice(0, 8)}`,
+            enrollmentId: enrId,
+            previousStatus: null,
+            newStatus: 'Active',
+            newBatchId: matchingBatch?.id ?? null,
+            reason: 'Initial student self-registration',
+            changedByUserId: inserted.id,
+          },
+        });
+
+        const notif = await tx.notification.create({
+          data: {
+            id: `not-${crypto.randomUUID().slice(0, 8)}`,
+            userId: inserted.id,
+            kind: 'enrollment',
+            title: `Welcome · ${firstCourse.code}`,
+            message: `Welcome to InfoCom AMS. You have been enrolled in ${firstCourse.title} (${cohortName}).`,
+            relatedCourseId: firstCourse.id,
+            read: false,
+          },
+        });
+
+        await tx.deliveryLog.create({
+          data: {
+            id: `del-${crypto.randomUUID().slice(0, 8)}`,
+            notificationId: notif.id,
+            userId: inserted.id,
+            channel: 'in_app',
+            recipient: inserted.email,
+            status: 'Delivered',
+          },
         });
       }
       return inserted;
@@ -256,15 +397,16 @@ export async function registerStudentAccount(params: {
 }
 
 export async function runSessionReminderSweep(nowMs = Date.now()): Promise<NotificationItem[]> {
-  await ensureDatabaseMigratedAndSeeded();
   try {
     const [allCourses, allSessions, allEnrollments, allNotifs, allUsers] =
       await Promise.all([
-        db.select().from(courses),
-        db.select().from(classSessions),
-        db.select().from(enrollments),
-        db.select().from(notifications),
-        db.select().from(users),
+        prisma.course.findMany(),
+        prisma.classSession.findMany(),
+        prisma.enrollment.findMany(),
+        prisma.notification.findMany({
+          where: { kind: 'reminder' },
+        }),
+        prisma.user.findMany({ select: { id: true, name: true, email: true } }),
       ]);
 
     const userMap = new Map(allUsers.map((u) => [u.id, u]));
@@ -277,7 +419,7 @@ export async function runSessionReminderSweep(nowMs = Date.now()): Promise<Notif
       instructorId: c.instructorId,
       instructorName: userMap.get(c.instructorId)?.name ?? 'Instructor',
       durationWeeks: c.durationWeeks,
-      tuitionFee: String(c.tuitionFee),
+      tuitionFee: c.tuitionFee.toString(),
       isArchived: c.isArchived,
       modules: [],
     }));
@@ -306,7 +448,9 @@ export async function runSessionReminderSweep(nowMs = Date.now()): Promise<Notif
         cohort: e.cohort,
         status: e.status as EnrollmentStatus,
         enrolledAt: e.enrolledAt.toISOString(),
-        completedModuleIds: e.completedModuleIds ?? [],
+        completedModuleIds: Array.isArray(e.completedModuleIds)
+          ? (e.completedModuleIds as string[])
+          : [],
       })),
       existingNotifications: allNotifs.map((n) => ({
         id: n.id,
@@ -328,37 +472,60 @@ export async function runSessionReminderSweep(nowMs = Date.now()): Promise<Notif
 
     const created: NotificationItem[] = [];
     for (const item of pending) {
-      const id = `not-${crypto.randomUUID().slice(0, 8)}`;
-      const [inserted] = await db
-        .insert(notifications)
-        .values({
-          id,
-          userId: item.userId,
-          kind: item.kind,
-          title: item.title,
-          message: item.message,
-          relatedCourseId: item.relatedCourseId ?? null,
-          relatedSessionId: item.relatedSessionId ?? null,
-          dedupeKey: item.dedupeKey ?? null,
-          read: false,
-          createdAt: new Date(item.createdAt),
-        })
-        .onConflictDoNothing()
-        .returning();
+      try {
+        const inserted = await prisma.$transaction(async (tx) => {
+          if (item.dedupeKey) {
+            const exists = await tx.notification.findUnique({
+              where: { dedupeKey: item.dedupeKey },
+              select: { id: true },
+            });
+            if (exists) return null;
+          }
+          const notif = await tx.notification.create({
+            data: {
+              id: `not-${crypto.randomUUID().slice(0, 8)}`,
+              userId: item.userId,
+              kind: item.kind,
+              title: item.title,
+              message: item.message,
+              relatedCourseId: item.relatedCourseId ?? null,
+              relatedSessionId: item.relatedSessionId ?? null,
+              dedupeKey: item.dedupeKey ?? null,
+              read: false,
+              createdAt: new Date(item.createdAt),
+            },
+          });
 
-      if (inserted) {
-        created.push({
-          id: inserted.id,
-          userId: inserted.userId,
-          kind: inserted.kind as NotificationItem['kind'],
-          title: inserted.title,
-          message: inserted.message,
-          relatedCourseId: inserted.relatedCourseId,
-          relatedSessionId: inserted.relatedSessionId,
-          dedupeKey: inserted.dedupeKey,
-          read: inserted.read,
-          createdAt: inserted.createdAt.toISOString(),
+          const recipientEmail = userMap.get(item.userId)?.email ?? item.userId;
+          await tx.deliveryLog.create({
+            data: {
+              id: `del-${crypto.randomUUID().slice(0, 8)}`,
+              notificationId: notif.id,
+              userId: item.userId,
+              channel: 'in_app',
+              recipient: recipientEmail,
+              status: 'Delivered',
+            },
+          });
+          return notif;
         });
+
+        if (inserted) {
+          created.push({
+            id: inserted.id,
+            userId: inserted.userId,
+            kind: inserted.kind as NotificationItem['kind'],
+            title: inserted.title,
+            message: inserted.message,
+            relatedCourseId: inserted.relatedCourseId,
+            relatedSessionId: inserted.relatedSessionId,
+            dedupeKey: inserted.dedupeKey,
+            read: inserted.read,
+            createdAt: inserted.createdAt.toISOString(),
+          });
+        }
+      } catch {
+        // Ignore unique dedupeKey race condition
       }
     }
     return created;
@@ -367,12 +534,16 @@ export async function runSessionReminderSweep(nowMs = Date.now()): Promise<Notif
   }
 }
 
-export async function buildDashboardForUser(userRow: DbUserRow): Promise<DashboardPayload> {
-  await ensureDatabaseMigratedAndSeeded();
+export async function buildDashboardForUser(userRow: PrismaUser): Promise<DashboardPayload> {
   try {
     const publicUser = toPublicUser(userRow);
 
     const [
+      academyRow,
+      allDepartments,
+      allClassrooms,
+      allAcademicYears,
+      allAcademicTerms,
       allUsers,
       allCourses,
       allModules,
@@ -390,41 +561,76 @@ export async function buildDashboardForUser(userRow: DbUserRow): Promise<Dashboa
       allNotifs,
       recentAudits,
     ] = await Promise.all([
-      db.select().from(users),
-      db.select().from(courses),
-      db.select().from(courseModules),
-      db.select().from(cohorts),
-      db.select().from(admissions).orderBy(desc(admissions.submittedAt)),
-      db.select().from(enrollments).orderBy(desc(enrollments.enrolledAt)),
-      db.select().from(classSessions),
-      db.select().from(attendanceRecords),
-      db.select().from(moduleGrades),
-      db.select().from(progressRemarks),
-      db.select().from(feeInvoices).orderBy(desc(feeInvoices.createdAt)),
-      db.select().from(payments).orderBy(desc(payments.paidAt)),
-      db.select().from(documents).orderBy(desc(documents.createdAt)),
-      db.select().from(certificates).orderBy(desc(certificates.issuedAt)),
-      db.select().from(notifications).orderBy(desc(notifications.createdAt)),
-      db.select().from(auditLogs).orderBy(desc(auditLogs.createdAt)).limit(80),
+      prisma.academy.findFirst({ orderBy: { createdAt: 'asc' } }),
+      prisma.department.findMany({ orderBy: { name: 'asc' } }),
+      prisma.classroom.findMany({ orderBy: { code: 'asc' } }),
+      prisma.academicYear.findMany({ orderBy: { startDate: 'desc' } }),
+      prisma.academicTerm.findMany({ orderBy: { startDate: 'desc' } }),
+      prisma.user.findMany(),
+      prisma.course.findMany(),
+      prisma.courseModule.findMany({ orderBy: { sortOrder: 'asc' } }),
+      prisma.batch.findMany(),
+      prisma.admissionApplication.findMany({ orderBy: { submittedAt: 'desc' } }),
+      prisma.enrollment.findMany({ orderBy: { enrolledAt: 'desc' } }),
+      prisma.classSession.findMany(),
+      prisma.attendance.findMany(),
+      prisma.grade.findMany(),
+      prisma.progressRemark.findMany(),
+      prisma.invoice.findMany({ orderBy: { createdAt: 'desc' } }),
+      prisma.payment.findMany({ orderBy: { paidAt: 'desc' } }),
+      prisma.fileAsset.findMany({
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          ownerUserId: true,
+          courseId: true,
+          title: true,
+          category: true,
+          fileName: true,
+          mimeType: true,
+          sizeBytes: true,
+          uploadedByUserId: true,
+          isArchived: true,
+          createdAt: true,
+        },
+      }),
+      prisma.certificate.findMany({ orderBy: { issuedAt: 'desc' } }),
+      prisma.notification.findMany({ orderBy: { createdAt: 'desc' } }),
+      prisma.auditLog.findMany({ orderBy: { createdAt: 'desc' }, take: 80 }),
     ]);
 
     const userMap = new Map(allUsers.map((u) => [u.id, u]));
     const courseMap = new Map(allCourses.map((c) => [c.id, c]));
+    const deptMap = new Map(allDepartments.map((d) => [d.id, d]));
+    const roomMap = new Map(allClassrooms.map((r) => [r.id, r]));
+    const yearMap = new Map(allAcademicYears.map((y) => [y.id, y]));
 
     const mappedCourses: Course[] = allCourses.map((c) => ({
       id: c.id,
       code: c.code,
       title: c.title,
       track: c.track,
+      category: c.category,
+      departmentId: c.departmentId,
+      departmentName: c.departmentId ? deptMap.get(c.departmentId)?.name ?? null : null,
       description: c.description,
+      prerequisites: c.prerequisites,
+      learningObjectives: Array.isArray(c.learningObjectives)
+        ? (c.learningObjectives as string[])
+        : [],
+      passingScore: c.passingScore,
+      minAttendanceRate: c.minAttendanceRate,
+      gradingConfig:
+        c.gradingConfig && typeof c.gradingConfig === 'object'
+          ? (c.gradingConfig as Course['gradingConfig'])
+          : {},
       instructorId: c.instructorId,
       instructorName: userMap.get(c.instructorId)?.name ?? 'Instructor',
       durationWeeks: c.durationWeeks,
-      tuitionFee: String(c.tuitionFee),
+      tuitionFee: c.tuitionFee.toFixed(2),
       isArchived: c.isArchived,
       modules: allModules
         .filter((m) => m.courseId === c.id)
-        .sort((a, b) => a.sortOrder - b.sortOrder)
         .map((m) => ({
           id: m.id,
           code: m.code,
@@ -440,12 +646,72 @@ export async function buildDashboardForUser(userRow: DbUserRow): Promise<Dashboa
       code: coh.code,
       name: coh.name,
       courseId: coh.courseId,
+      termId: coh.termId,
       instructorId: coh.instructorId,
       instructorName: userMap.get(coh.instructorId)?.name ?? 'Instructor',
+      classroomId: coh.classroomId,
+      classroomName: coh.classroomId ? roomMap.get(coh.classroomId)?.name ?? null : null,
       capacity: coh.capacity,
       startDate: coh.startDate.toISOString(),
       endDate: coh.endDate.toISOString(),
       status: coh.status as 'Planned' | 'Active' | 'Completed' | 'Archived',
+    }));
+
+    const mappedAcademy = academyRow
+      ? {
+          id: academyRow.id,
+          code: academyRow.code,
+          name: academyRow.name,
+          legalName: academyRow.legalName,
+          email: academyRow.email,
+          phone: academyRow.phone,
+          website: academyRow.website,
+          address: academyRow.address,
+          logoDataUrl: academyRow.logoDataUrl,
+          timezone: academyRow.timezone,
+          currency: academyRow.currency,
+        }
+      : undefined;
+
+    const mappedDepartments = allDepartments.map((d) => ({
+      id: d.id,
+      code: d.code,
+      name: d.name,
+      headUserId: d.headUserId,
+      status: d.status,
+      courseCount: allCourses.filter((c) => c.departmentId === d.id).length,
+    }));
+
+    const mappedClassrooms = allClassrooms.map((r) => ({
+      id: r.id,
+      code: r.code,
+      name: r.name,
+      building: r.building,
+      capacity: r.capacity,
+      equipment: r.equipment,
+      isActive: r.isActive,
+    }));
+
+    const mappedYears = allAcademicYears.map((y) => ({
+      id: y.id,
+      code: y.code,
+      name: y.name,
+      startDate: y.startDate.toISOString(),
+      endDate: y.endDate.toISOString(),
+      isCurrent: y.isCurrent,
+      status: y.status,
+    }));
+
+    const mappedTerms = allAcademicTerms.map((t) => ({
+      id: t.id,
+      academicYearId: t.academicYearId,
+      academicYearName: yearMap.get(t.academicYearId)?.name ?? '',
+      code: t.code,
+      name: t.name,
+      startDate: t.startDate.toISOString(),
+      endDate: t.endDate.toISOString(),
+      isCurrent: t.isCurrent,
+      status: t.status,
     }));
 
     const mappedEnrollments = allEnrollments.map((e) => ({
@@ -456,7 +722,9 @@ export async function buildDashboardForUser(userRow: DbUserRow): Promise<Dashboa
       cohort: e.cohort,
       status: e.status as EnrollmentStatus,
       enrolledAt: e.enrolledAt.toISOString(),
-      completedModuleIds: e.completedModuleIds ?? [],
+      completedModuleIds: Array.isArray(e.completedModuleIds)
+        ? (e.completedModuleIds as string[])
+        : [],
     }));
 
     const mappedSessions = allSessions.map((s) => ({
@@ -512,8 +780,8 @@ export async function buildDashboardForUser(userRow: DbUserRow): Promise<Dashboa
       enrollmentId: inv.enrollmentId,
       courseId: inv.courseId,
       description: inv.description,
-      amountDue: String(inv.amountDue),
-      amountPaid: String(inv.amountPaid),
+      amountDue: inv.amountDue.toFixed(2),
+      amountPaid: inv.amountPaid.toFixed(2),
       currency: inv.currency,
       status: inv.status as 'Unpaid' | 'Partial' | 'Paid' | 'Voided',
       dueDate: inv.dueDate.toISOString(),
@@ -526,7 +794,7 @@ export async function buildDashboardForUser(userRow: DbUserRow): Promise<Dashboa
       receiptNumber: p.receiptNumber,
       invoiceId: p.invoiceId,
       studentId: p.studentId,
-      amount: String(p.amount),
+      amount: p.amount.toFixed(2),
       method: p.method as PaymentMethod,
       referenceCode: p.referenceCode,
       recordedByUserId: p.recordedByUserId,
@@ -556,9 +824,9 @@ export async function buildDashboardForUser(userRow: DbUserRow): Promise<Dashboa
       studentName: userMap.get(c.studentId)?.name,
       courseId: c.courseId,
       courseCode: courseMap.get(c.courseId)?.code,
-      courseTitle: courseMap.get(c.courseId)?.title,
+      courseTitle: c.courseTitleSnapshot ?? courseMap.get(c.courseId)?.title,
       enrollmentId: c.enrollmentId,
-      finalScore: String(c.finalScore),
+      finalScore: c.finalScore.toFixed(2),
       letterGrade: c.letterGrade,
       attendanceRate: c.attendanceRate,
       issuedByName: c.issuedByName,
@@ -610,6 +878,11 @@ export async function buildDashboardForUser(userRow: DbUserRow): Promise<Dashboa
     if (publicUser.role === 'admin') {
       return {
         user: publicUser,
+        academy: mappedAcademy,
+        departments: mappedDepartments,
+        classrooms: mappedClassrooms,
+        academicYears: mappedYears,
+        academicTerms: mappedTerms,
         courses: mappedCourses,
         cohorts: mappedCohorts,
         users: publicUsers,
@@ -634,7 +907,7 @@ export async function buildDashboardForUser(userRow: DbUserRow): Promise<Dashboa
           entityType: a.entityType,
           entityId: a.entityId,
           summary: a.summary,
-          metadata: a.metadata ?? {},
+          metadata: (a.metadata as Record<string, unknown>) ?? {},
           createdAt: a.createdAt.toISOString(),
         })),
         analytics,
@@ -642,26 +915,82 @@ export async function buildDashboardForUser(userRow: DbUserRow): Promise<Dashboa
     }
 
     if (publicUser.role === 'instructor') {
+      const scope = await getInstructorScope(publicUser.id);
+      const scopedCourses = mappedCourses.filter((c) => scope.courseIds.has(c.id));
+      const scopedCohorts = mappedCohorts.filter(
+        (coh) => scope.batchIds.has(coh.id) || scope.courseIds.has(coh.courseId)
+      );
+      const scopedEnrollments = mappedEnrollments.filter(
+        (e) =>
+          scope.courseIds.has(e.courseId) ||
+          (e.cohortId ? scope.batchIds.has(e.cohortId) : false)
+      );
+      const scopedStudentIds = new Set(
+        scopedEnrollments.filter((e) => e.status !== 'Dropped').map((e) => e.studentId)
+      );
+      const scopedStudents = studentsList.filter((s) => scopedStudentIds.has(s.id));
+      const scopedSessions = mappedSessions.filter(
+        (s) =>
+          scope.courseIds.has(s.courseId) ||
+          s.instructorId === publicUser.id ||
+          (s.cohortId ? scope.batchIds.has(s.cohortId) : false)
+      );
+      const scopedAttendance = mappedAttendance.filter(
+        (a) => scope.courseIds.has(a.courseId) && scopedStudentIds.has(a.studentId)
+      );
+      const scopedGrades = mappedGrades.filter(
+        (g) => scope.courseIds.has(g.courseId) && scopedStudentIds.has(g.studentId)
+      );
+      const scopedRemarks = mappedRemarks.filter(
+        (r) => scope.courseIds.has(r.courseId) && scopedStudentIds.has(r.studentId)
+      );
+      const scopedCerts = mappedCerts.filter((c) => scope.courseIds.has(c.courseId));
+      const scopedDocs = mappedDocs.filter(
+        (d) =>
+          !d.isArchived &&
+          d.category !== 'Receipt' &&
+          (d.ownerUserId === publicUser.id ||
+            d.uploadedByUserId === publicUser.id ||
+            (d.courseId ? scope.courseIds.has(d.courseId) : false) ||
+            scopedStudentIds.has(d.ownerUserId))
+      );
+      const scopedNotifs = mappedNotifs.filter(
+        (n) =>
+          n.userId === publicUser.id ||
+          (n.relatedCourseId ? scope.courseIds.has(n.relatedCourseId) : false)
+      );
+      const scopedAnalytics = computeAcademyAnalytics({
+        users: [publicUser, ...scopedStudents],
+        admissions: [],
+        enrollments: scopedEnrollments,
+        invoices: [],
+        certificates: scopedCerts,
+        attendance: scopedAttendance,
+      });
+
       return {
         user: publicUser,
-        courses: mappedCourses,
-        cohorts: mappedCohorts,
-        users: publicUsers.filter((u) => u.role === 'instructor' || u.role === 'student'),
-        students: studentsList,
+        academy: mappedAcademy,
+        departments: mappedDepartments,
+        classrooms: mappedClassrooms,
+        courses: scopedCourses,
+        cohorts: scopedCohorts,
+        users: [publicUser, ...scopedStudents],
+        students: scopedStudents,
         admissions: [],
-        enrollments: mappedEnrollments,
-        sessions: mappedSessions,
-        attendance: mappedAttendance,
-        grades: mappedGrades,
-        remarks: mappedRemarks,
+        enrollments: scopedEnrollments,
+        sessions: scopedSessions,
+        attendance: scopedAttendance,
+        grades: scopedGrades,
+        remarks: scopedRemarks,
         invoices: [],
         payments: [],
-        documents: mappedDocs.filter((d) => d.category !== 'Receipt' && !d.isArchived),
-        certificates: mappedCerts,
-        notifications: mappedNotifs,
+        documents: scopedDocs,
+        certificates: scopedCerts,
+        notifications: scopedNotifs,
         auditLogs: [],
         analytics: {
-          ...analytics,
+          ...scopedAnalytics,
           totalBilledCents: 0,
           totalCollectedCents: 0,
           outstandingCents: 0,
@@ -676,6 +1005,7 @@ export async function buildDashboardForUser(userRow: DbUserRow): Promise<Dashboa
 
     return {
       user: publicUser,
+      academy: mappedAcademy,
       courses: mappedCourses,
       cohorts: mappedCohorts.filter((coh) => myCourseIds.has(coh.courseId)),
       users: [publicUser],
@@ -729,33 +1059,47 @@ export async function createEnrollmentWithOptionalInvoice(params: {
   status: 'Active' | 'Waitlisted';
   issueTuitionInvoice: boolean;
 }) {
-  await ensureDatabaseMigratedAndSeeded();
   try {
-    const [student] = await db
-      .select()
-      .from(users)
-      .where(and(eq(users.id, params.studentId), eq(users.role, 'student')))
-      .limit(1);
-    const [course] = await db
-      .select()
-      .from(courses)
-      .where(eq(courses.id, params.courseId))
-      .limit(1);
+    if (params.actor.role === 'instructor') {
+      if (params.issueTuitionInvoice) {
+        return {
+          ok: false as const,
+          status: 403,
+          error: 'Instructors cannot create tuition invoices or modify financial records.',
+        };
+      }
+      const allowed = await canInstructorAccessCourse(params.actor.id, params.courseId);
+      if (!allowed) {
+        return {
+          ok: false as const,
+          status: 403,
+          error: 'You are not assigned to manage enrollments for this course.',
+        };
+      }
+    }
+
+    const [student, course] = await Promise.all([
+      prisma.user.findFirst({
+        where: { id: params.studentId, role: 'student' },
+      }),
+      prisma.course.findUnique({
+        where: { id: params.courseId },
+        include: { instructor: true },
+      }),
+    ]);
 
     if (!student || !course) {
       return { ok: false as const, status: 400, error: 'Valid student and course are required.' };
     }
 
-    const existing = await db
-      .select()
-      .from(enrollments)
-      .where(
-        and(
-          eq(enrollments.studentId, params.studentId),
-          eq(enrollments.courseId, params.courseId)
-        )
-      );
-    const activeDuplicate = existing.find((e) => e.status !== 'Dropped');
+    const activeDuplicate = await prisma.enrollment.findFirst({
+      where: {
+        studentId: params.studentId,
+        courseId: params.courseId,
+        status: { not: 'Dropped' },
+      },
+    });
+
     if (activeDuplicate) {
       return {
         ok: false as const,
@@ -764,43 +1108,102 @@ export async function createEnrollmentWithOptionalInvoice(params: {
       };
     }
 
+    const matchedBatch = params.cohortId
+      ? await prisma.batch.findUnique({ where: { id: params.cohortId } })
+      : await prisma.batch.findFirst({
+          where: { courseId: course.id, name: params.cohort },
+        });
+
     const enrollmentId = `enr-${crypto.randomUUID().slice(0, 8)}`;
-    await db.transaction(async (tx) => {
-      await tx.insert(enrollments).values({
-        id: enrollmentId,
-        studentId: params.studentId,
-        courseId: params.courseId,
-        cohortId: params.cohortId ?? null,
-        cohort: params.cohort,
-        status: params.status,
-        completedModuleIds: [],
-      });
 
-      await tx.insert(notifications).values({
-        id: `not-${crypto.randomUUID().slice(0, 8)}`,
-        userId: params.studentId,
-        kind: 'enrollment',
-        title: `Enrollment Confirmed · ${course.code}`,
-        message: `You were enrolled in ${course.title} (${params.cohort}) with status ${params.status}.`,
-        relatedCourseId: course.id,
-        read: false,
-      });
-
-      if (params.issueTuitionInvoice && toCents(String(course.tuitionFee)) > 0) {
-        const invNum = `INV-2026-${Math.floor(1000 + Math.random() * 8999)}`;
-        await tx.insert(feeInvoices).values({
-          id: `inv-${crypto.randomUUID().slice(0, 8)}`,
-          invoiceNumber: invNum,
+    await prisma.$transaction(async (tx) => {
+      await tx.enrollment.create({
+        data: {
+          id: enrollmentId,
           studentId: params.studentId,
+          courseId: params.courseId,
+          cohortId: matchedBatch?.id ?? params.cohortId ?? null,
+          cohort: params.cohort,
+          status: params.status,
+          completedModuleIds: [],
+          tuitionSnapshot: course.tuitionFee,
+          batchNameSnapshot: params.cohort,
+          instructorNameSnapshot: course.instructor?.name ?? null,
+        },
+      });
+
+      await tx.enrollmentHistory.create({
+        data: {
+          id: `eh-${crypto.randomUUID().slice(0, 8)}`,
           enrollmentId,
-          courseId: course.id,
-          description: `${course.code} ${course.title} Tuition (${params.cohort})`,
-          amountDue: String(course.tuitionFee),
-          amountPaid: '0.00',
-          currency: 'USD',
-          status: 'Unpaid',
-          dueDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
-          issuedByUserId: params.actor.id,
+          previousStatus: null,
+          newStatus: params.status,
+          newBatchId: matchedBatch?.id ?? params.cohortId ?? null,
+          reason: 'Enrollment created by academy staff',
+          changedByUserId: params.actor.id,
+        },
+      });
+
+      const notif = await tx.notification.create({
+        data: {
+          id: `not-${crypto.randomUUID().slice(0, 8)}`,
+          userId: params.studentId,
+          kind: 'enrollment',
+          title: `Enrollment Confirmed · ${course.code}`,
+          message: `You were enrolled in ${course.title} (${params.cohort}) with status ${params.status}.`,
+          relatedCourseId: course.id,
+          read: false,
+        },
+      });
+
+      await tx.deliveryLog.create({
+        data: {
+          id: `del-${crypto.randomUUID().slice(0, 8)}`,
+          notificationId: notif.id,
+          userId: student.id,
+          channel: 'in_app',
+          recipient: student.email,
+          status: 'Delivered',
+        },
+      });
+
+      if (params.issueTuitionInvoice && toCents(course.tuitionFee.toString()) > 0) {
+        const feeStruct = await tx.feeStructure.findFirst({
+          where: { courseId: course.id, isActive: true },
+        });
+        const invId = `inv-${crypto.randomUUID().slice(0, 8)}`;
+        const invNum = await generateNextInvoiceNumber(tx);
+        const desc = `${course.code} ${course.title} Tuition (${params.cohort})`;
+
+        await tx.invoice.create({
+          data: {
+            id: invId,
+            invoiceNumber: invNum,
+            studentId: params.studentId,
+            enrollmentId,
+            courseId: course.id,
+            feeStructureId: feeStruct?.id ?? null,
+            description: desc,
+            subtotal: course.tuitionFee,
+            amountDue: course.tuitionFee,
+            amountPaid: '0.00',
+            currency: 'USD',
+            status: 'Unpaid',
+            dueDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+            issuedByUserId: params.actor.id,
+          },
+        });
+
+        await tx.invoiceItem.create({
+          data: {
+            id: `item-${crypto.randomUUID().slice(0, 8)}`,
+            invoiceId: invId,
+            itemType: 'Tuition',
+            description: desc,
+            quantity: 1,
+            unitPrice: course.tuitionFee,
+            lineTotal: course.tuitionFee,
+          },
         });
       }
     });
@@ -828,23 +1231,25 @@ export async function recordInvoicePayment(params: {
   referenceCode: string;
   notes: string;
 }) {
-  await ensureDatabaseMigratedAndSeeded();
   try {
-    const result = await db.transaction(async (tx) => {
-      const [invoice] = await tx
-        .select()
-        .from(feeInvoices)
-        .where(eq(feeInvoices.id, params.invoiceId))
-        .limit(1);
+    const result = await prisma.$transaction(async (tx) => {
+      const invoice = await tx.invoice.findUnique({
+        where: { id: params.invoiceId },
+        include: { student: { select: { email: true } } },
+      });
       if (!invoice) {
         return { ok: false as const, status: 404, error: 'Invoice not found.' };
       }
       if (invoice.status === 'Voided' || invoice.isArchived) {
-        return { ok: false as const, status: 400, error: 'Cannot record payment on a voided or archived invoice.' };
+        return {
+          ok: false as const,
+          status: 400,
+          error: 'Cannot record payment on a voided or archived invoice.',
+        };
       }
 
-      const dueCents = toCents(String(invoice.amountDue));
-      const paidCents = toCents(String(invoice.amountPaid));
+      const dueCents = toCents(invoice.amountDue.toString());
+      const paidCents = toCents(invoice.amountPaid.toString());
       const payCents = toCents(params.amount);
       const remainingCents = dueCents - paidCents;
 
@@ -860,42 +1265,72 @@ export async function recordInvoicePayment(params: {
       }
 
       const newPaidStr = fromCents(paidCents + payCents);
-      const newStatus = computeInvoiceStatus(String(invoice.amountDue), newPaidStr);
+      const newStatus = computeInvoiceStatus(invoice.amountDue.toString(), newPaidStr);
       const paymentId = `pay-${crypto.randomUUID().slice(0, 8)}`;
-      const receiptNumber = `RCPT-2026-${Math.floor(1000 + Math.random() * 8999)}`;
+      const receiptNumber = await generateUniqueReceiptNumber(tx);
+      const formattedPay = fromCents(payCents);
 
-      await tx.insert(payments).values({
-        id: paymentId,
-        receiptNumber,
-        invoiceId: invoice.id,
-        studentId: invoice.studentId,
-        amount: fromCents(payCents),
-        method: params.method,
-        referenceCode: params.referenceCode,
-        recordedByUserId: params.actor.id,
-        notes: params.notes,
+      await tx.payment.create({
+        data: {
+          id: paymentId,
+          receiptNumber,
+          invoiceId: invoice.id,
+          studentId: invoice.studentId,
+          amount: formattedPay,
+          method: params.method,
+          referenceCode: params.referenceCode,
+          recordedByUserId: params.actor.id,
+          notes: params.notes,
+        },
       });
 
-      await tx
-        .update(feeInvoices)
-        .set({
+      await tx.paymentAllocation.create({
+        data: {
+          id: `alloc-${crypto.randomUUID().slice(0, 8)}`,
+          paymentId,
+          invoiceId: invoice.id,
+          allocatedAmount: formattedPay,
+        },
+      });
+
+      await tx.invoice.update({
+        where: { id: invoice.id },
+        data: {
           amountPaid: newPaidStr,
           status: newStatus,
-          updatedAt: new Date(),
-        })
-        .where(eq(feeInvoices.id, invoice.id));
-
-      await tx.insert(notifications).values({
-        id: `not-${crypto.randomUUID().slice(0, 8)}`,
-        userId: invoice.studentId,
-        kind: 'finance',
-        title: `Payment Receipt · ${receiptNumber}`,
-        message: `Payment of $${fromCents(payCents)} via ${params.method} applied to invoice ${invoice.invoiceNumber}. Status: ${newStatus}.`,
-        relatedCourseId: invoice.courseId,
-        read: false,
+        },
       });
 
-      return { ok: true as const, paymentId, receiptNumber, newStatus, invoiceNumber: invoice.invoiceNumber };
+      const notif = await tx.notification.create({
+        data: {
+          id: `not-${crypto.randomUUID().slice(0, 8)}`,
+          userId: invoice.studentId,
+          kind: 'finance',
+          title: `Payment Receipt · ${receiptNumber}`,
+          message: `Payment of $${formattedPay} via ${params.method} applied to invoice ${invoice.invoiceNumber}. Status: ${newStatus}.`,
+          relatedCourseId: invoice.courseId,
+          read: false,
+        },
+      });
+
+      await tx.deliveryLog.create({
+        data: {
+          id: `del-${crypto.randomUUID().slice(0, 8)}`,
+          notificationId: notif.id,
+          userId: invoice.studentId,
+          channel: 'in_app',
+          recipient: invoice.student?.email ?? invoice.studentId,
+          status: 'Delivered',
+        },
+      });
+
+      return {
+        ok: true as const,
+        paymentId,
+        receiptNumber,
+        newStatus,
+        invoiceNumber: invoice.invoiceNumber,
+      };
     });
 
     if (result.ok) {
@@ -918,48 +1353,46 @@ export async function issueVerifiedCertificate(params: {
   studentId: string;
   courseId: string;
 }) {
-  await ensureDatabaseMigratedAndSeeded();
   try {
-    const [student] = await db
-      .select()
-      .from(users)
-      .where(and(eq(users.id, params.studentId), eq(users.role, 'student')))
-      .limit(1);
-    const [course] = await db
-      .select()
-      .from(courses)
-      .where(eq(courses.id, params.courseId))
-      .limit(1);
+    if (params.actor.role === 'instructor') {
+      const allowed = await canInstructorAccessCourse(params.actor.id, params.courseId);
+      if (!allowed) {
+        return {
+          ok: false as const,
+          status: 403,
+          error: 'You are not assigned to issue certificates for this course.',
+        };
+      }
+    }
+
+    const [student, course] = await Promise.all([
+      prisma.user.findFirst({
+        where: { id: params.studentId, role: 'student' },
+      }),
+      prisma.course.findUnique({ where: { id: params.courseId } }),
+    ]);
 
     if (!student || !course) {
       return { ok: false as const, status: 404, error: 'Student or course not found.' };
     }
 
-    const [enrollment] = await db
-      .select()
-      .from(enrollments)
-      .where(
-        and(
-          eq(enrollments.studentId, student.id),
-          eq(enrollments.courseId, course.id)
-        )
-      )
-      .limit(1);
+    const enrollment = await prisma.enrollment.findFirst({
+      where: {
+        studentId: student.id,
+        courseId: course.id,
+        status: { not: 'Dropped' },
+      },
+    });
 
     if (!enrollment) {
       return { ok: false as const, status: 400, error: 'Student is not enrolled in this course.' };
     }
 
-    const [existingCert] = await db
-      .select()
-      .from(certificates)
-      .where(
-        and(
-          eq(certificates.studentId, student.id),
-          eq(certificates.courseId, course.id)
-        )
-      )
-      .limit(1);
+    const existingCert = await prisma.certificate.findUnique({
+      where: {
+        studentId_courseId: { studentId: student.id, courseId: course.id },
+      },
+    });
 
     if (existingCert && existingCert.status === 'Issued') {
       return {
@@ -969,32 +1402,24 @@ export async function issueVerifiedCertificate(params: {
       };
     }
 
-    const [mods, grades, att] = await Promise.all([
-      db.select().from(courseModules).where(eq(courseModules.courseId, course.id)),
-      db
-        .select()
-        .from(moduleGrades)
-        .where(
-          and(
-            eq(moduleGrades.studentId, student.id),
-            eq(moduleGrades.courseId, course.id)
-          )
-        ),
-      db
-        .select()
-        .from(attendanceRecords)
-        .where(
-          and(
-            eq(attendanceRecords.studentId, student.id),
-            eq(attendanceRecords.courseId, course.id)
-          )
-        ),
+    const [mods, grades, att, template] = await Promise.all([
+      prisma.courseModule.findMany({ where: { courseId: course.id } }),
+      prisma.grade.findMany({
+        where: { studentId: student.id, courseId: course.id },
+      }),
+      prisma.attendance.findMany({
+        where: { studentId: student.id, courseId: course.id },
+      }),
+      prisma.certificateTemplate.findFirst({
+        where: { isActive: true },
+        orderBy: { createdAt: 'asc' },
+      }),
     ]);
 
-    const completionPct = calculateCourseCompletion(
-      enrollment.completedModuleIds ?? [],
-      mods.length
-    );
+    const completedIds = Array.isArray(enrollment.completedModuleIds)
+      ? (enrollment.completedModuleIds as string[])
+      : [];
+    const completionPct = calculateCourseCompletion(completedIds, mods.length);
 
     const weightedScore = calculateWeightedAverage(
       mods
@@ -1034,7 +1459,11 @@ export async function issueVerifiedCertificate(params: {
     }
 
     const letterGrade = calculateLetterGrade(weightedScore);
-    const certCode = `INF-CERT-2026-${course.code.replace(/[^A-Z0-9]/g, '')}-${Math.floor(100 + Math.random() * 899)}`;
+    const prefixSetting = await prisma.academySetting.findFirst({
+      where: { key: 'certificate.code_prefix' },
+    });
+    const certPrefix = prefixSetting?.value || 'INF-CERT-2026';
+    const certCode = `${certPrefix}-${course.code.replace(/[^A-Z0-9]/g, '')}-${crypto.randomInt(1000, 9999)}`;
     const verificationHash = crypto
       .createHash('sha256')
       .update(`${certCode}:${student.id}:${course.id}:${weightedScore.toFixed(2)}`)
@@ -1044,55 +1473,84 @@ export async function issueVerifiedCertificate(params: {
 
     const certId = `cert-${crypto.randomUUID().slice(0, 8)}`;
 
-    await db.transaction(async (tx) => {
+    await prisma.$transaction(async (tx) => {
       if (existingCert) {
-        await tx
-          .update(certificates)
-          .set({
+        await tx.certificate.update({
+          where: { id: existingCert.id },
+          data: {
             certificateCode: certCode,
             verificationHash,
+            templateId: template?.id ?? null,
             finalScore: weightedScore.toFixed(2),
             letterGrade,
             attendanceRate: attendanceStats.rate,
             issuedByUserId: params.actor.id,
             issuedByName: params.actor.name,
+            courseTitleSnapshot: course.title,
             status: 'Issued',
             revokedReason: null,
             issuedAt: new Date(),
-          })
-          .where(eq(certificates.id, existingCert.id));
+          },
+        });
       } else {
-        await tx.insert(certificates).values({
-          id: certId,
-          certificateCode: certCode,
-          verificationHash,
-          studentId: student.id,
-          courseId: course.id,
-          enrollmentId: enrollment.id,
-          finalScore: weightedScore.toFixed(2),
-          letterGrade,
-          attendanceRate: attendanceStats.rate,
-          issuedByUserId: params.actor.id,
-          issuedByName: params.actor.name,
-          status: 'Issued',
+        await tx.certificate.create({
+          data: {
+            id: certId,
+            certificateCode: certCode,
+            verificationHash,
+            studentId: student.id,
+            courseId: course.id,
+            enrollmentId: enrollment.id,
+            templateId: template?.id ?? null,
+            finalScore: weightedScore.toFixed(2),
+            letterGrade,
+            attendanceRate: attendanceStats.rate,
+            issuedByUserId: params.actor.id,
+            issuedByName: params.actor.name,
+            courseTitleSnapshot: course.title,
+            status: 'Issued',
+          },
         });
       }
 
       if (enrollment.status !== 'Completed') {
-        await tx
-          .update(enrollments)
-          .set({ status: 'Completed', updatedAt: new Date() })
-          .where(eq(enrollments.id, enrollment.id));
+        await tx.enrollment.update({
+          where: { id: enrollment.id },
+          data: { status: 'Completed' },
+        });
+        await tx.enrollmentHistory.create({
+          data: {
+            id: `eh-${crypto.randomUUID().slice(0, 8)}`,
+            enrollmentId: enrollment.id,
+            previousStatus: enrollment.status,
+            newStatus: 'Completed',
+            reason: `Certificate ${certCode} issued`,
+            changedByUserId: params.actor.id,
+          },
+        });
       }
 
-      await tx.insert(notifications).values({
-        id: `not-${crypto.randomUUID().slice(0, 8)}`,
-        userId: student.id,
-        kind: 'certificate',
-        title: `Certificate Issued · ${course.code}`,
-        message: `Congratulations! Official certificate ${certCode} has been issued for ${course.title} (Final Grade: ${weightedScore}% ${letterGrade}).`,
-        relatedCourseId: course.id,
-        read: false,
+      const notif = await tx.notification.create({
+        data: {
+          id: `not-${crypto.randomUUID().slice(0, 8)}`,
+          userId: student.id,
+          kind: 'certificate',
+          title: `Certificate Issued · ${course.code}`,
+          message: `Congratulations! Official certificate ${certCode} has been issued for ${course.title} (Final Grade: ${weightedScore}% ${letterGrade}).`,
+          relatedCourseId: course.id,
+          read: false,
+        },
+      });
+
+      await tx.deliveryLog.create({
+        data: {
+          id: `del-${crypto.randomUUID().slice(0, 8)}`,
+          notificationId: notif.id,
+          userId: student.id,
+          channel: 'in_app',
+          recipient: student.email,
+          status: 'Delivered',
+        },
       });
     });
 
@@ -1111,36 +1569,28 @@ export async function issueVerifiedCertificate(params: {
 }
 
 export async function verifyCertificateByCode(codeOrHash: string) {
-  await ensureDatabaseMigratedAndSeeded();
   const clean = codeOrHash.trim().toUpperCase();
   if (!clean) return null;
   try {
-    const rows = await db
-      .select()
-      .from(certificates)
-      .where(
-        clean.startsWith('INF-CERT')
-          ? eq(certificates.certificateCode, clean)
-          : eq(certificates.verificationHash, clean)
-      )
-      .limit(1);
-
-    const cert = rows[0];
+    const cert = await prisma.certificate.findFirst({
+      where: clean.startsWith('INF-CERT')
+        ? { certificateCode: clean }
+        : { verificationHash: clean },
+      include: {
+        student: { select: { name: true, studentCode: true } },
+        course: { select: { code: true, title: true } },
+      },
+    });
     if (!cert) return null;
-
-    const [studentRows, courseRows] = await Promise.all([
-      db.select().from(users).where(eq(users.id, cert.studentId)).limit(1),
-      db.select().from(courses).where(eq(courses.id, cert.courseId)).limit(1),
-    ]);
 
     return {
       certificateCode: cert.certificateCode,
       verificationHash: cert.verificationHash,
-      studentName: studentRows[0]?.name ?? 'Student',
-      studentCode: studentRows[0]?.studentCode ?? '',
-      courseCode: courseRows[0]?.code ?? '',
-      courseTitle: courseRows[0]?.title ?? '',
-      finalScore: String(cert.finalScore),
+      studentName: cert.student?.name ?? 'Student',
+      studentCode: cert.student?.studentCode ?? '',
+      courseCode: cert.course?.code ?? '',
+      courseTitle: cert.courseTitleSnapshot ?? cert.course?.title ?? '',
+      finalScore: cert.finalScore.toFixed(2),
       letterGrade: cert.letterGrade,
       attendanceRate: cert.attendanceRate,
       issuedByName: cert.issuedByName,
@@ -1160,31 +1610,50 @@ export async function markAttendanceAndNotify(params: {
   status: AttendanceStatus;
   note: string;
 }) {
-  await ensureDatabaseMigratedAndSeeded();
   try {
-    const [session] = await db
-      .select()
-      .from(classSessions)
-      .where(eq(classSessions.id, params.sessionId))
-      .limit(1);
-    if (!session) return { ok: false as const, error: 'Session not found.' };
+    const session = await prisma.classSession.findUnique({
+      where: { id: params.sessionId },
+    });
+    if (!session) return { ok: false as const, status: 404, error: 'Session not found.' };
 
-    const [course] = await db
-      .select()
-      .from(courses)
-      .where(eq(courses.id, session.courseId))
-      .limit(1);
-    const [student] = await db
-      .select()
-      .from(users)
-      .where(and(eq(users.id, params.studentId), eq(users.role, 'student')))
-      .limit(1);
+    if (params.actor.role === 'instructor') {
+      const assigned = await canInstructorAccessCourse(params.actor.id, session.courseId);
+      if (!assigned && session.instructorId !== params.actor.id) {
+        return {
+          ok: false as const,
+          status: 403,
+          error: 'You are not authorized to mark attendance for this session.',
+        };
+      }
+    }
+
+    const [course, student] = await Promise.all([
+      prisma.course.findUnique({ where: { id: session.courseId } }),
+      prisma.user.findFirst({ where: { id: params.studentId, role: 'student' } }),
+    ]);
     if (!course || !student) {
-      return { ok: false as const, error: 'Course or student not found.' };
+      return { ok: false as const, status: 404, error: 'Course or student not found.' };
+    }
+
+    const enrollment = await prisma.enrollment.findFirst({
+      where: {
+        studentId: student.id,
+        courseId: course.id,
+        cohort: session.cohort,
+        status: { in: ['Active', 'Completed', 'Waitlisted'] },
+      },
+    });
+
+    if (!enrollment) {
+      return {
+        ok: false as const,
+        status: 400,
+        error: 'Student does not have an active enrollment in this session cohort.',
+      };
     }
 
     const now = new Date();
-    const notif = buildAttendanceNotification({
+    const notifData = buildAttendanceNotification({
       id: `not-${crypto.randomUUID().slice(0, 8)}`,
       studentId: student.id,
       course: {
@@ -1195,7 +1664,7 @@ export async function markAttendanceAndNotify(params: {
         instructorId: course.instructorId,
         instructorName: params.actor.name,
         durationWeeks: course.durationWeeks,
-        tuitionFee: String(course.tuitionFee),
+        tuitionFee: course.tuitionFee.toFixed(2),
         modules: [],
       },
       session: {
@@ -1214,42 +1683,56 @@ export async function markAttendanceAndNotify(params: {
       createdAt: now.toISOString(),
     });
 
-    await db.transaction(async (tx) => {
-      const attId = `att-${crypto.randomUUID().slice(0, 8)}`;
-      await tx
-        .insert(attendanceRecords)
-        .values({
-          id: attId,
+    await prisma.$transaction(async (tx) => {
+      await tx.attendance.upsert({
+        where: {
+          sessionId_studentId: { sessionId: session.id, studentId: student.id },
+        },
+        update: {
+          status: params.status,
+          note: params.note.trim(),
+          enrollmentId: enrollment.id,
+          updatedAt: now,
+          updatedByUserId: params.actor.id,
+          updatedBy: params.actor.name,
+        },
+        create: {
+          id: `att-${crypto.randomUUID().slice(0, 8)}`,
           sessionId: session.id,
           courseId: course.id,
+          enrollmentId: enrollment.id,
           studentId: student.id,
           status: params.status,
           note: params.note.trim(),
           updatedAt: now,
           updatedByUserId: params.actor.id,
           updatedBy: params.actor.name,
-        })
-        .onConflictDoUpdate({
-          target: [attendanceRecords.sessionId, attendanceRecords.studentId],
-          set: {
-            status: params.status,
-            note: params.note.trim(),
-            updatedAt: now,
-            updatedByUserId: params.actor.id,
-            updatedBy: params.actor.name,
-          },
-        });
+        },
+      });
 
-      await tx.insert(notifications).values({
-        id: notif.id,
-        userId: notif.userId,
-        kind: notif.kind,
-        title: notif.title,
-        message: notif.message,
-        relatedCourseId: notif.relatedCourseId,
-        relatedSessionId: notif.relatedSessionId,
-        read: false,
-        createdAt: now,
+      const notif = await tx.notification.create({
+        data: {
+          id: notifData.id,
+          userId: notifData.userId,
+          kind: notifData.kind,
+          title: notifData.title,
+          message: notifData.message,
+          relatedCourseId: notifData.relatedCourseId,
+          relatedSessionId: notifData.relatedSessionId,
+          read: false,
+          createdAt: now,
+        },
+      });
+
+      await tx.deliveryLog.create({
+        data: {
+          id: `del-${crypto.randomUUID().slice(0, 8)}`,
+          notificationId: notif.id,
+          userId: student.id,
+          channel: 'in_app',
+          recipient: student.email,
+          status: 'Delivered',
+        },
       });
     });
 
@@ -1279,33 +1762,41 @@ export async function getActiveDocumentContent(
   docId: string,
   requester: UserPublic
 ) {
-  await ensureDatabaseMigratedAndSeeded();
   try {
-    const [doc] = await db
-      .select()
-      .from(documents)
-      .where(eq(documents.id, docId))
-      .limit(1);
+    const doc = await prisma.fileAsset.findUnique({ where: { id: docId } });
     if (!doc || doc.isArchived) return null;
 
     if (requester.role === 'student') {
       const isOwner = doc.ownerUserId === requester.id;
       let isSyllabusForEnrolledCourse = false;
       if (doc.category === 'Syllabus' && doc.courseId) {
-        const enrolled = await db
-          .select()
-          .from(enrollments)
-          .where(
-            and(
-              eq(enrollments.studentId, requester.id),
-              eq(enrollments.courseId, doc.courseId),
-              inArray(enrollments.status, ['Active', 'Completed'])
-            )
-          )
-          .limit(1);
-        isSyllabusForEnrolledCourse = enrolled.length > 0;
+        const enrolled = await prisma.enrollment.findFirst({
+          where: {
+            studentId: requester.id,
+            courseId: doc.courseId,
+            status: { in: ['Active', 'Completed'] },
+          },
+          select: { id: true },
+        });
+        isSyllabusForEnrolledCourse = Boolean(enrolled);
       }
       if (!isOwner && !isSyllabusForEnrolledCourse) {
+        return 'FORBIDDEN' as const;
+      }
+    } else if (requester.role === 'instructor') {
+      if (doc.category === 'Receipt') {
+        return 'FORBIDDEN' as const;
+      }
+      const isOwnerOrUploader =
+        doc.ownerUserId === requester.id || doc.uploadedByUserId === requester.id;
+      const inAssignedCourse = doc.courseId
+        ? await canInstructorAccessCourse(requester.id, doc.courseId)
+        : false;
+      const isAuthorizedStudent = await canInstructorAccessStudent(
+        requester.id,
+        doc.ownerUserId
+      );
+      if (!isOwnerOrUploader && !inAssignedCourse && !isAuthorizedStudent) {
         return 'FORBIDDEN' as const;
       }
     }
@@ -1314,3 +1805,798 @@ export async function getActiveDocumentContent(
     throw new Error('Failed to retrieve document content.', { cause: err });
   }
 }
+
+// ============================================================================
+// PHASE 4: ADMIN ANALYTICS, STUDENT/INSTRUCTOR DETAILS & ACADEMY SETTINGS
+// ============================================================================
+
+export async function computeAdminAnalyticsSummary(params: {
+  preset: AnalyticsPreset;
+  from?: string;
+  to?: string;
+}): Promise<AdminAnalyticsDetail> {
+  const window = resolveAnalyticsDateWindow(params.preset, params.from, params.to);
+  const inWindow = (dt: Date) => {
+    const ms = dt.getTime();
+    if (window.fromMs !== null && ms < window.fromMs) return false;
+    if (window.toMs !== null && ms > window.toMs) return false;
+    return true;
+  };
+
+  const [
+    academy,
+    users,
+    courses,
+    batches,
+    admissions,
+    enrollments,
+    sessions,
+    attendance,
+    invoices,
+    payments,
+    certificates,
+  ] = await Promise.all([
+    prisma.academy.findFirst({ orderBy: { createdAt: 'asc' } }),
+    prisma.user.findMany({ select: { id: true, name: true, role: true, status: true } }),
+    prisma.course.findMany({ select: { id: true, isArchived: true } }),
+    prisma.batch.findMany({ select: { id: true, status: true } }),
+    prisma.admissionApplication.findMany({ orderBy: { submittedAt: 'desc' } }),
+    prisma.enrollment.findMany({ orderBy: { enrolledAt: 'desc' } }),
+    prisma.classSession.findMany({ orderBy: { startIso: 'asc' } }),
+    prisma.attendance.findMany(),
+    prisma.invoice.findMany({
+      where: { isArchived: false, status: { not: 'Voided' } },
+      orderBy: { createdAt: 'desc' },
+    }),
+    prisma.payment.findMany({
+      include: {
+        invoice: { select: { invoiceNumber: true } },
+        student: { select: { name: true } },
+      },
+      orderBy: { paidAt: 'desc' },
+    }),
+    prisma.certificate.findMany(),
+  ]);
+
+  const activeStudents = users.filter((u) => u.role === 'student' && u.status === 'active').length;
+  const activeInstructors = users.filter(
+    (u) => u.role === 'instructor' && u.status === 'active'
+  ).length;
+  const admissionsPending = admissions.filter(
+    (a) => a.status === 'Submitted' || a.status === 'Under Review' || a.status === 'Accepted'
+  ).length;
+  const activeCourses = courses.filter((c) => !c.isArchived).length;
+  const totalBatches = batches.filter((b) => b.status !== 'Archived').length;
+
+  const tz = academy?.timezone || 'Asia/Kolkata';
+  const todayKey = new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(new Date());
+  const todaysClasses = sessions
+    .filter((s) => {
+      if (s.status === 'Cancelled') return false;
+      const sKey = new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(s.startIso);
+      return sKey === todayKey;
+    })
+    .map((s) => ({
+      id: s.id,
+      courseId: s.courseId,
+      cohortId: s.cohortId,
+      classroomId: s.classroomId,
+      cohort: s.cohort,
+      title: s.title,
+      topic: s.topic,
+      room: s.room,
+      instructorId: s.instructorId,
+      instructorName: s.instructorName,
+      startIso: s.startIso.toISOString(),
+      endIso: s.endIso.toISOString(),
+      status: s.status as 'Scheduled' | 'Completed' | 'Cancelled',
+    }));
+
+  const windowedAttendance = attendance
+    .filter((a) => inWindow(a.updatedAt))
+    .map((a) => ({
+      id: a.id,
+      sessionId: a.sessionId,
+      courseId: a.courseId,
+      studentId: a.studentId,
+      status: a.status as AttendanceStatus,
+      note: a.note,
+      updatedAt: a.updatedAt.toISOString(),
+      updatedBy: a.updatedBy,
+    }));
+  const attendanceOverview = calculateAttendanceStats(windowedAttendance);
+
+  let outstandingFeesCents = 0;
+  for (const inv of invoices) {
+    const due = toCents(inv.amountDue.toFixed(2));
+    const paid = toCents(inv.amountPaid.toFixed(2));
+    outstandingFeesCents += Math.max(0, due - paid);
+  }
+
+  const now = new Date();
+  const currentMonthStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
+  let monthlyRevenueCents = 0;
+  let totalCollectedCents = 0;
+
+  for (const pay of payments) {
+    const cents = toCents(pay.amount.toFixed(2));
+    if (inWindow(pay.paidAt)) {
+      totalCollectedCents += cents;
+    }
+    if (pay.paidAt.getTime() >= currentMonthStart) {
+      monthlyRevenueCents += cents;
+    }
+  }
+
+  const certificatesIssued = certificates.filter(
+    (c) => c.status === 'Issued' && inWindow(c.issuedAt)
+  ).length;
+
+  const mappedInvoices = invoices.map((inv) => ({
+    id: inv.id,
+    invoiceNumber: inv.invoiceNumber,
+    studentId: inv.studentId,
+    enrollmentId: inv.enrollmentId,
+    courseId: inv.courseId,
+    description: inv.description,
+    amountDue: inv.amountDue.toFixed(2),
+    amountPaid: inv.amountPaid.toFixed(2),
+    currency: inv.currency,
+    status: inv.status as 'Unpaid' | 'Partial' | 'Paid' | 'Voided',
+    dueDate: inv.dueDate.toISOString(),
+    isArchived: inv.isArchived,
+    createdAt: inv.createdAt.toISOString(),
+  }));
+
+  const mappedPayments = payments.map((p) => ({
+    amount: p.amount.toFixed(2),
+    paidAt: p.paidAt.toISOString(),
+  }));
+
+  const mappedEnrollments = enrollments.map((e) => ({
+    id: e.id,
+    studentId: e.studentId,
+    courseId: e.courseId,
+    cohortId: e.cohortId,
+    cohort: e.cohort,
+    status: e.status as EnrollmentStatus,
+    enrolledAt: e.enrolledAt.toISOString(),
+    completedModuleIds: Array.isArray(e.completedModuleIds)
+      ? (e.completedModuleIds as string[])
+      : [],
+  }));
+
+  const monthlyRevenueSeries = buildMonthlyRevenueSeries({
+    invoices: mappedInvoices,
+    payments: mappedPayments,
+    monthsCount: 6,
+  });
+
+  const enrollmentTrendSeries = buildEnrollmentTrendSeries({
+    enrollments: mappedEnrollments,
+    monthsCount: 6,
+  });
+
+  const recentTransactions = payments
+    .filter((p) => inWindow(p.paidAt))
+    .slice(0, 8)
+    .map((p) => ({
+      id: p.id,
+      receiptNumber: p.receiptNumber,
+      invoiceNumber: p.invoice?.invoiceNumber ?? '—',
+      studentName: p.student?.name ?? 'Student',
+      amount: p.amount.toFixed(2),
+      method: p.method as PaymentMethod,
+      paidAt: p.paidAt.toISOString(),
+    }));
+
+  const pendingActions: AdminAnalyticsDetail['pendingActions'] = [];
+  for (const adm of admissions) {
+    if (adm.status === 'Submitted' || adm.status === 'Under Review' || adm.status === 'Accepted') {
+      pendingActions.push({
+        id: `act-adm-${adm.id}`,
+        kind: 'admission',
+        title: `Admission ${adm.status}: ${adm.applicantName}`,
+        detail: `${adm.preferredCohort} · Submitted ${adm.submittedAt.toLocaleDateString('en-US')}`,
+        targetSection: 'admissions',
+      });
+    }
+  }
+  const userNameMap = new Map(users.map((u) => [u.id, u.name]));
+  for (const inv of invoices) {
+    const remaining = toCents(inv.amountDue.toFixed(2)) - toCents(inv.amountPaid.toFixed(2));
+    if (remaining > 0 && inv.dueDate.getTime() < Date.now()) {
+      pendingActions.push({
+        id: `act-inv-${inv.id}`,
+        kind: 'overdue_invoice',
+        title: `Overdue Invoice ${inv.invoiceNumber}`,
+        detail: `${userNameMap.get(inv.studentId) ?? 'Student'} · Balance $${fromCents(remaining)}`,
+        targetSection: 'finance',
+      });
+    }
+  }
+
+  return {
+    dateRange: {
+      preset: params.preset,
+      fromIso: window.fromIso,
+      toIso: window.toIso,
+    },
+    kpis: {
+      activeStudents,
+      activeInstructors,
+      admissionsPending,
+      activeCourses,
+      totalBatches,
+      todaysClassesCount: todaysClasses.length,
+      attendanceOverview,
+      outstandingFeesCents,
+      monthlyRevenueCents,
+      totalCollectedCents,
+      certificatesIssued,
+      pendingAdminActionsCount: pendingActions.length,
+    },
+    monthlyRevenueSeries,
+    enrollmentTrendSeries,
+    todaysClasses,
+    recentTransactions,
+    pendingActions: pendingActions.slice(0, 8),
+  };
+}
+
+export async function getStudentDetail(studentId: string): Promise<StudentDetailPayload | null> {
+  const user = await prisma.user.findFirst({
+    where: { id: studentId, role: 'student' },
+    include: {
+      studentProfile: { include: { department: true } },
+    },
+  });
+  if (!user) return null;
+
+  const [enrollments, grades, attendance, documents, certificates, invoices, payments] =
+    await Promise.all([
+      prisma.enrollment.findMany({
+        where: { studentId },
+        include: {
+          course: { include: { modules: { orderBy: { sortOrder: 'asc' } } } },
+          batch: true,
+          history: { orderBy: { changedAt: 'desc' } },
+        },
+        orderBy: { enrolledAt: 'desc' },
+      }),
+      prisma.grade.findMany({ where: { studentId } }),
+      prisma.attendance.findMany({ where: { studentId } }),
+      prisma.fileAsset.findMany({
+        where: { ownerUserId: studentId, isArchived: false },
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.certificate.findMany({
+        where: { studentId },
+        include: { course: { select: { code: true, title: true } } },
+        orderBy: { issuedAt: 'desc' },
+      }),
+      prisma.invoice.findMany({
+        where: { studentId, isArchived: false },
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.payment.findMany({
+        where: { studentId },
+        orderBy: { paidAt: 'desc' },
+      }),
+    ]);
+
+  const mappedAttendance = attendance.map((a) => ({
+    id: a.id,
+    sessionId: a.sessionId,
+    courseId: a.courseId,
+    studentId: a.studentId,
+    status: a.status as AttendanceStatus,
+    note: a.note,
+    updatedAt: a.updatedAt.toISOString(),
+    updatedBy: a.updatedBy,
+  }));
+  const overallAttStats = calculateAttendanceStats(mappedAttendance);
+
+  let totalBilledCents = 0;
+  let totalPaidCents = 0;
+  for (const inv of invoices) {
+    if (inv.status === 'Voided') continue;
+    totalBilledCents += toCents(inv.amountDue.toFixed(2));
+    totalPaidCents += Math.min(
+      toCents(inv.amountDue.toFixed(2)),
+      toCents(inv.amountPaid.toFixed(2))
+    );
+  }
+  const outstandingCents = Math.max(0, totalBilledCents - totalPaidCents);
+
+  const historyList = enrollments
+    .flatMap((e) =>
+      e.history.map((h) => ({
+        id: h.id,
+        enrollmentId: h.enrollmentId,
+        previousStatus: h.previousStatus,
+        newStatus: h.newStatus,
+        previousBatchId: h.previousBatchId,
+        newBatchId: h.newBatchId,
+        reason: h.reason,
+        changedByUserId: h.changedByUserId,
+        changedAt: h.changedAt.toISOString(),
+      }))
+    )
+    .sort((a, b) => Date.parse(b.changedAt) - Date.parse(a.changedAt));
+
+  return {
+    student: {
+      user: toPublicUser(user),
+      profile: user.studentProfile
+        ? {
+            id: user.studentProfile.id,
+            departmentId: user.studentProfile.departmentId,
+            departmentName: user.studentProfile.department?.name ?? null,
+            dateOfBirth: user.studentProfile.dateOfBirth
+              ? user.studentProfile.dateOfBirth.toISOString()
+              : null,
+            address: user.studentProfile.address,
+            emergencyContact: user.studentProfile.emergencyContact,
+            academicStanding: user.studentProfile.academicStanding,
+            enrollmentDate: user.studentProfile.enrollmentDate.toISOString(),
+          }
+        : null,
+      activeEnrollmentsCount: enrollments.filter((e) => e.status === 'Active').length,
+      completedCoursesCount: enrollments.filter((e) => e.status === 'Completed').length,
+      outstandingCents,
+      attendanceRate: overallAttStats.rate,
+    },
+    enrollments: enrollments.map((e) => {
+      const completedIds = Array.isArray(e.completedModuleIds)
+        ? (e.completedModuleIds as string[])
+        : [];
+      const completionPct = calculateCourseCompletion(completedIds, e.course.modules.length);
+      const gradedItems = e.course.modules
+        .map((m) => {
+          const gr = grades.find((g) => g.courseId === e.courseId && g.moduleId === m.id);
+          return gr ? { score: gr.score, weight: m.weight } : null;
+        })
+        .filter((x): x is { score: number; weight: number } => x !== null);
+      const weightedScore = calculateWeightedAverage(gradedItems);
+      const courseAtt = mappedAttendance.filter((a) => a.courseId === e.courseId);
+      return {
+        id: e.id,
+        studentId: e.studentId,
+        courseId: e.courseId,
+        cohortId: e.cohortId,
+        cohort: e.cohort,
+        status: e.status as EnrollmentStatus,
+        enrolledAt: e.enrolledAt.toISOString(),
+        completedModuleIds: completedIds,
+        courseCode: e.course.code,
+        courseTitle: e.course.title,
+        batchCode: e.batch?.code ?? null,
+        completionPct,
+        weightedScore,
+        letterGrade: calculateLetterGrade(weightedScore),
+        attendanceRate: calculateAttendanceStats(courseAtt).rate,
+      };
+    }),
+    enrollmentHistory: historyList,
+    documents: documents.map((d) => ({
+      id: d.id,
+      ownerUserId: d.ownerUserId,
+      courseId: d.courseId,
+      title: d.title,
+      category: d.category as DocumentRecord['category'],
+      fileName: d.fileName,
+      mimeType: d.mimeType,
+      sizeBytes: d.sizeBytes,
+      uploadedByUserId: d.uploadedByUserId,
+      isArchived: d.isArchived,
+      createdAt: d.createdAt.toISOString(),
+    })),
+    certificates: certificates.map((c) => ({
+      id: c.id,
+      certificateCode: c.certificateCode,
+      verificationHash: c.verificationHash,
+      studentId: c.studentId,
+      studentName: user.name,
+      courseId: c.courseId,
+      courseCode: c.course?.code,
+      courseTitle: c.courseTitleSnapshot ?? c.course?.title,
+      enrollmentId: c.enrollmentId,
+      finalScore: c.finalScore.toFixed(2),
+      letterGrade: c.letterGrade,
+      attendanceRate: c.attendanceRate,
+      issuedByName: c.issuedByName,
+      status: c.status as CertificateRecord['status'],
+      revokedReason: c.revokedReason,
+      issuedAt: c.issuedAt.toISOString(),
+    })),
+    feeStatement: {
+      totalBilledCents,
+      totalPaidCents,
+      outstandingCents,
+      invoices: invoices.map((inv) => ({
+        id: inv.id,
+        invoiceNumber: inv.invoiceNumber,
+        studentId: inv.studentId,
+        enrollmentId: inv.enrollmentId,
+        courseId: inv.courseId,
+        description: inv.description,
+        amountDue: inv.amountDue.toFixed(2),
+        amountPaid: inv.amountPaid.toFixed(2),
+        currency: inv.currency,
+        status: inv.status as 'Unpaid' | 'Partial' | 'Paid' | 'Voided',
+        dueDate: inv.dueDate.toISOString(),
+        isArchived: inv.isArchived,
+        createdAt: inv.createdAt.toISOString(),
+      })),
+      payments: payments.map((p) => ({
+        id: p.id,
+        receiptNumber: p.receiptNumber,
+        invoiceId: p.invoiceId,
+        studentId: p.studentId,
+        amount: p.amount.toFixed(2),
+        method: p.method as PaymentMethod,
+        referenceCode: p.referenceCode,
+        recordedByUserId: p.recordedByUserId,
+        notes: p.notes,
+        paidAt: p.paidAt.toISOString(),
+      })),
+    },
+  };
+}
+
+export async function listInstructorsWithMetrics(): Promise<InstructorDirectoryRow[]> {
+  const [instructors, courses, batches, assignments, enrollments, sessions, attendance, grades] =
+    await Promise.all([
+      prisma.user.findMany({
+        where: { role: 'instructor' },
+        include: {
+          instructorProfile: { include: { department: true } },
+        },
+        orderBy: { name: 'asc' },
+      }),
+      prisma.course.findMany(),
+      prisma.batch.findMany(),
+      prisma.instructorAssignment.findMany({ where: { isActive: true } }),
+      prisma.enrollment.findMany({ where: { status: { not: 'Dropped' } } }),
+      prisma.classSession.findMany(),
+      prisma.attendance.findMany(),
+      prisma.grade.findMany(),
+    ]);
+
+  const validPermSet = new Set<string>(DEFAULT_INSTRUCTOR_PERMISSIONS);
+  const nowMs = Date.now();
+
+  return instructors.map((ins) => {
+    const courseIds = new Set<string>(
+      courses.filter((c) => c.instructorId === ins.id).map((c) => c.id)
+    );
+    const batchIds = new Set<string>(
+      batches.filter((b) => b.instructorId === ins.id).map((b) => b.id)
+    );
+    for (const b of batches) {
+      if (b.instructorId === ins.id) courseIds.add(b.courseId);
+    }
+    for (const a of assignments) {
+      if (a.instructorId === ins.id) {
+        courseIds.add(a.courseId);
+        batchIds.add(a.batchId);
+      }
+    }
+
+    const assignedStudents = new Set<string>();
+    for (const e of enrollments) {
+      if (courseIds.has(e.courseId) || (e.cohortId && batchIds.has(e.cohortId))) {
+        assignedStudents.add(e.studentId);
+      }
+    }
+
+    const insSessions = sessions.filter(
+      (s) =>
+        s.status !== 'Cancelled' &&
+        (s.instructorId === ins.id ||
+          courseIds.has(s.courseId) ||
+          (s.cohortId && batchIds.has(s.cohortId)))
+    );
+    const sessionsTaughtCount = insSessions.filter(
+      (s) => s.status === 'Completed' || s.endIso.getTime() < nowMs
+    ).length;
+    const upcomingSessionsCount = insSessions.filter(
+      (s) => s.status === 'Scheduled' && s.startIso.getTime() >= nowMs
+    ).length;
+
+    const sessionIds = new Set(insSessions.map((s) => s.id));
+    const relevantAtt = attendance
+      .filter((a) => sessionIds.has(a.sessionId) || courseIds.has(a.courseId))
+      .map((a) => ({
+        id: a.id,
+        sessionId: a.sessionId,
+        courseId: a.courseId,
+        studentId: a.studentId,
+        status: a.status as AttendanceStatus,
+        note: a.note,
+        updatedAt: a.updatedAt.toISOString(),
+        updatedBy: a.updatedBy,
+      }));
+    const meanAttendanceRate = calculateAttendanceStats(relevantAtt).rate;
+
+    const relevantGrades = grades.filter(
+      (g) => g.gradedByUserId === ins.id || courseIds.has(g.courseId)
+    );
+    const meanGradedScore =
+      relevantGrades.length > 0
+        ? Math.round(
+            (relevantGrades.reduce((sum, g) => sum + g.score, 0) / relevantGrades.length) * 10
+          ) / 10
+        : null;
+
+    const profile = ins.instructorProfile;
+    const configured = Boolean(profile?.permissionsConfigured);
+    const rawPerms = Array.isArray(profile?.permissions) ? profile.permissions : [];
+    const permissions: InstructorPermissionKey[] = configured
+      ? rawPerms.filter(
+          (p): p is InstructorPermissionKey => typeof p === 'string' && validPermSet.has(p)
+        )
+      : [...DEFAULT_INSTRUCTOR_PERMISSIONS];
+
+    return {
+      user: toPublicUser(ins),
+      profile: {
+        id: profile?.id ?? `ip-${ins.id}`,
+        staffCode: profile?.staffCode ?? ins.staffCode ?? '',
+        departmentId: profile?.departmentId ?? null,
+        departmentName: profile?.department?.name ?? ins.department ?? null,
+        specialization: profile?.specialization ?? '',
+        qualification: profile?.qualification ?? '',
+        bio: profile?.bio ?? '',
+        hireDate: profile?.hireDate ? profile.hireDate.toISOString() : null,
+        permissionsConfigured: configured,
+        permissions,
+      },
+      assignedCoursesCount: courseIds.size,
+      assignedBatchesCount: batchIds.size,
+      assignedStudentsCount: assignedStudents.size,
+      sessionsTaughtCount,
+      upcomingSessionsCount,
+      meanAttendanceRate,
+      meanGradedScore,
+    };
+  });
+}
+
+export async function getInstructorDetail(
+  instructorId: string
+): Promise<InstructorDetailPayload | null> {
+  const list = await listInstructorsWithMetrics();
+  const row = list.find((r) => r.user.id === instructorId);
+  if (!row) return null;
+
+  const scope = await getInstructorScope(instructorId);
+  const courseIds = Array.from(scope.courseIds);
+  const batchIds = Array.from(scope.batchIds);
+
+  const [courses, batches, sessions, enrollments, departments, classrooms] = await Promise.all([
+    courseIds.length > 0
+      ? prisma.course.findMany({
+          where: { id: { in: courseIds } },
+          include: { modules: { orderBy: { sortOrder: 'asc' } }, instructor: true },
+        })
+      : [],
+    batchIds.length > 0 || courseIds.length > 0
+      ? prisma.batch.findMany({
+          where: {
+            OR: [
+              ...(batchIds.length > 0 ? [{ id: { in: batchIds } }] : []),
+              ...(courseIds.length > 0 ? [{ courseId: { in: courseIds } }] : []),
+            ],
+          },
+          include: { course: true, instructor: true },
+        })
+      : [],
+    prisma.classSession.findMany({
+      where: {
+        OR: [
+          { instructorId },
+          ...(courseIds.length > 0 ? [{ courseId: { in: courseIds } }] : []),
+        ],
+      },
+      orderBy: { startIso: 'desc' },
+      take: 40,
+    }),
+    prisma.enrollment.findMany({ where: { status: { not: 'Dropped' } } }),
+    prisma.department.findMany(),
+    prisma.classroom.findMany(),
+  ]);
+
+  const deptMap = new Map(departments.map((d) => [d.id, d.name]));
+  const roomMap = new Map(classrooms.map((r) => [r.id, r.name]));
+
+  return {
+    instructor: row,
+    assignedCourses: courses.map((c) => ({
+      id: c.id,
+      code: c.code,
+      title: c.title,
+      track: c.track,
+      category: c.category,
+      departmentId: c.departmentId,
+      departmentName: c.departmentId ? deptMap.get(c.departmentId) ?? null : null,
+      description: c.description,
+      prerequisites: c.prerequisites,
+      learningObjectives: Array.isArray(c.learningObjectives)
+        ? (c.learningObjectives as string[])
+        : [],
+      passingScore: c.passingScore,
+      minAttendanceRate: c.minAttendanceRate,
+      instructorId: c.instructorId,
+      instructorName: c.instructor?.name ?? row.user.name,
+      durationWeeks: c.durationWeeks,
+      tuitionFee: c.tuitionFee.toFixed(2),
+      isArchived: c.isArchived,
+      modules: c.modules.map((m) => ({
+        id: m.id,
+        code: m.code,
+        title: m.title,
+        weight: m.weight,
+        labHours: m.labHours,
+        sortOrder: m.sortOrder,
+      })),
+    })),
+    assignedBatches: batches.map((b) => ({
+      id: b.id,
+      code: b.code,
+      name: b.name,
+      courseId: b.courseId,
+      termId: b.termId,
+      instructorId: b.instructorId,
+      instructorName: b.instructor?.name ?? row.user.name,
+      classroomId: b.classroomId,
+      classroomName: b.classroomId ? roomMap.get(b.classroomId) ?? null : null,
+      capacity: b.capacity,
+      startDate: b.startDate.toISOString(),
+      endDate: b.endDate.toISOString(),
+      status: b.status as 'Planned' | 'Active' | 'Completed' | 'Archived',
+      courseCode: b.course.code,
+      courseTitle: b.course.title,
+      enrolledCount: enrollments.filter(
+        (e) => e.courseId === b.courseId && (e.cohortId === b.id || e.cohort === b.name)
+      ).length,
+    })),
+    sessions: sessions.map((s) => ({
+      id: s.id,
+      courseId: s.courseId,
+      cohortId: s.cohortId,
+      classroomId: s.classroomId,
+      cohort: s.cohort,
+      title: s.title,
+      topic: s.topic,
+      room: s.room,
+      instructorId: s.instructorId,
+      instructorName: s.instructorName,
+      startIso: s.startIso.toISOString(),
+      endIso: s.endIso.toISOString(),
+      status: s.status as 'Scheduled' | 'Completed' | 'Cancelled',
+    })),
+  };
+}
+
+export async function getAcademySettingsPayload(): Promise<AcademySettingsPayload> {
+  const [academy, settingsRows, certTemplate, years, terms, departments, classrooms, courses] =
+    await Promise.all([
+      prisma.academy.findFirst({ orderBy: { createdAt: 'asc' } }),
+      prisma.academySetting.findMany(),
+      prisma.certificateTemplate.findFirst({
+        where: { isActive: true },
+        orderBy: { createdAt: 'asc' },
+      }),
+      prisma.academicYear.findMany({ orderBy: { startDate: 'desc' } }),
+      prisma.academicTerm.findMany({ orderBy: { startDate: 'desc' } }),
+      prisma.department.findMany({ orderBy: { name: 'asc' } }),
+      prisma.classroom.findMany({ orderBy: { code: 'asc' } }),
+      prisma.course.findMany({ select: { departmentId: true } }),
+    ]);
+
+  const map = new Map(settingsRows.map((s) => [s.key, s.value]));
+  const num = (key: string, fallback: number) => {
+    const val = Number(map.get(key));
+    return Number.isFinite(val) ? val : fallback;
+  };
+  const yearMap = new Map(years.map((y) => [y.id, y.name]));
+
+  return {
+    academy: academy
+      ? {
+          id: academy.id,
+          code: academy.code,
+          name: academy.name,
+          legalName: academy.legalName,
+          email: academy.email,
+          phone: academy.phone,
+          website: academy.website,
+          address: academy.address,
+          logoDataUrl: academy.logoDataUrl,
+          timezone: academy.timezone || 'Asia/Kolkata',
+          currency: academy.currency || 'USD',
+        }
+      : {
+          id: 'acad-infocom',
+          code: 'INFOCOM-MAIN',
+          name: 'InfoCom Academy',
+          legalName: 'InfoCom Computer Training & Engineering Institute',
+          email: 'registrar@infocom.edu',
+          phone: '+91 80 4120 8800',
+          website: 'https://infocom.edu',
+          address: '420 Innovation Way, Suite 300, Bengaluru',
+          logoDataUrl: '',
+          timezone: 'Asia/Kolkata',
+          currency: 'USD',
+        },
+    policies: {
+      invoicePrefix: map.get('academy.invoice_prefix') || 'INV-2026',
+      invoiceNextSeq: num('academy.invoice_next_seq', 1050),
+      feeDueDays: num('academy.fee_due_days', 14),
+      lateFeePct: num('academy.late_fee_pct', 5),
+      passingScore: num('grading.passing_score', 60),
+      distinctionScore: num('grading.distinction_score', 90),
+      minAttendanceRatePct: num('attendance.min_rate_pct', 75),
+      lateWeightPct: num('attendance.late_weight_pct', 75),
+      reminderWindowHours: num('session.reminder_window_hours', 24),
+      certificateCodePrefix: map.get('certificate.code_prefix') || 'INF-CERT-2026',
+      certificateMinCompletionPct: num('certificate.min_completion_pct', 100),
+      certificateMinScore: num('certificate.min_weighted_score', 60),
+      certificateMinAttendancePct: num('certificate.min_attendance_pct', 75),
+    },
+    certificateTemplate: certTemplate
+      ? {
+          id: certTemplate.id,
+          code: certTemplate.code,
+          name: certTemplate.name,
+          titleFormat: certTemplate.titleFormat,
+          signatoryName: certTemplate.signatoryName,
+          signatoryTitle: certTemplate.signatoryTitle,
+          minCompletionPct: certTemplate.minCompletionPct,
+          minScore: certTemplate.minScore,
+          minAttendancePct: certTemplate.minAttendancePct,
+          isActive: certTemplate.isActive,
+        }
+      : null,
+    academicYears: years.map((y) => ({
+      id: y.id,
+      code: y.code,
+      name: y.name,
+      startDate: y.startDate.toISOString(),
+      endDate: y.endDate.toISOString(),
+      isCurrent: y.isCurrent,
+      status: y.status,
+    })),
+    academicTerms: terms.map((t) => ({
+      id: t.id,
+      academicYearId: t.academicYearId,
+      academicYearName: yearMap.get(t.academicYearId) ?? '',
+      code: t.code,
+      name: t.name,
+      startDate: t.startDate.toISOString(),
+      endDate: t.endDate.toISOString(),
+      isCurrent: t.isCurrent,
+      status: t.status,
+    })),
+    departments: departments.map((d) => ({
+      id: d.id,
+      code: d.code,
+      name: d.name,
+      headUserId: d.headUserId,
+      status: d.status,
+      courseCount: courses.filter((c) => c.departmentId === d.id).length,
+    })),
+    classrooms: classrooms.map((r) => ({
+      id: r.id,
+      code: r.code,
+      name: r.name,
+      building: r.building,
+      capacity: r.capacity,
+      equipment: r.equipment,
+      isActive: r.isActive,
+    })),
+  };
+}
+

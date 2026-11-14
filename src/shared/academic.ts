@@ -482,3 +482,158 @@ export function computeAcademyAnalytics(params: {
     meanAttendanceRate,
   };
 }
+
+// --- Phase 4 Analytics & Batch Helpers ---
+
+export function resolveAnalyticsDateWindow(
+  preset: '7d' | '30d' | '90d' | 'all' | 'custom',
+  fromIso?: string | null,
+  toIso?: string | null,
+  nowMs = Date.now()
+): { fromMs: number | null; toMs: number | null; fromIso: string | null; toIso: string | null } {
+  if (preset === 'all') {
+    return { fromMs: null, toMs: null, fromIso: null, toIso: null };
+  }
+  if (preset === 'custom') {
+    const parsedFrom = fromIso ? Date.parse(fromIso) : NaN;
+    const parsedTo = toIso ? Date.parse(toIso) : NaN;
+    const fMs = Number.isNaN(parsedFrom) ? null : parsedFrom;
+    const tMs = Number.isNaN(parsedTo) ? null : parsedTo + (24 * 60 * 60 * 1000 - 1);
+    return {
+      fromMs: fMs,
+      toMs: tMs,
+      fromIso: fMs !== null ? new Date(fMs).toISOString() : null,
+      toIso: tMs !== null ? new Date(tMs).toISOString() : null,
+    };
+  }
+  const days = preset === '7d' ? 7 : preset === '90d' ? 90 : 30;
+  const fromMs = nowMs - days * 24 * 60 * 60 * 1000;
+  return {
+    fromMs,
+    toMs: nowMs,
+    fromIso: new Date(fromMs).toISOString(),
+    toIso: new Date(nowMs).toISOString(),
+  };
+}
+
+export function buildMonthlyRevenueSeries(params: {
+  invoices: FeeInvoice[];
+  payments: Array<{ amount: string; paidAt: string }>;
+  monthsCount?: number;
+  nowMs?: number;
+}): Array<{ monthKey: string; label: string; collectedCents: number; billedCents: number }> {
+  const count = Math.max(1, Math.min(12, params.monthsCount ?? 6));
+  const now = new Date(params.nowMs ?? Date.now());
+  const buckets = new Map<string, { monthKey: string; label: string; collectedCents: number; billedCents: number }>();
+
+  for (let i = count - 1; i >= 0; i -= 1) {
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+    const label = d.toLocaleDateString('en-US', { month: 'short', year: '2-digit', timeZone: 'UTC' });
+    buckets.set(key, { monthKey: key, label, collectedCents: 0, billedCents: 0 });
+  }
+
+  for (const inv of params.invoices) {
+    if (inv.status === 'Voided' || inv.isArchived) continue;
+    const d = new Date(inv.createdAt);
+    if (Number.isNaN(d.getTime())) continue;
+    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+    const b = buckets.get(key);
+    if (b) {
+      b.billedCents += toCents(inv.amountDue);
+    }
+  }
+
+  for (const pay of params.payments) {
+    const d = new Date(pay.paidAt);
+    if (Number.isNaN(d.getTime())) continue;
+    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+    const b = buckets.get(key);
+    if (b) {
+      b.collectedCents += toCents(pay.amount);
+    }
+  }
+
+  return Array.from(buckets.values());
+}
+
+export function buildEnrollmentTrendSeries(params: {
+  enrollments: Enrollment[];
+  monthsCount?: number;
+  nowMs?: number;
+}): Array<{ monthKey: string; label: string; enrollments: number; completions: number }> {
+  const count = Math.max(1, Math.min(12, params.monthsCount ?? 6));
+  const now = new Date(params.nowMs ?? Date.now());
+  const buckets = new Map<string, { monthKey: string; label: string; enrollments: number; completions: number }>();
+
+  for (let i = count - 1; i >= 0; i -= 1) {
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+    const label = d.toLocaleDateString('en-US', { month: 'short', year: '2-digit', timeZone: 'UTC' });
+    buckets.set(key, { monthKey: key, label, enrollments: 0, completions: 0 });
+  }
+
+  for (const enr of params.enrollments) {
+    if (enr.status === 'Dropped') continue;
+    const d = new Date(enr.enrolledAt);
+    if (Number.isNaN(d.getTime())) continue;
+    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+    const b = buckets.get(key);
+    if (b) {
+      b.enrollments += 1;
+      if (enr.status === 'Completed') {
+        b.completions += 1;
+      }
+    }
+  }
+
+  return Array.from(buckets.values());
+}
+
+export function computeBatchMetrics(params: {
+  batchId: string;
+  batchName: string;
+  courseId: string;
+  capacity: number;
+  enrollments: Enrollment[];
+  attendance: AttendanceRecord[];
+  grades: ModuleGrade[];
+}) {
+  const batchEnrollments = params.enrollments.filter(
+    (e) =>
+      e.status !== 'Dropped' &&
+      e.courseId === params.courseId &&
+      (e.cohortId === params.batchId || e.cohort === params.batchName)
+  );
+  const studentIds = new Set(batchEnrollments.map((e) => e.studentId));
+  const batchAttendance = params.attendance.filter(
+    (a) => a.courseId === params.courseId && studentIds.has(a.studentId)
+  );
+  const batchGrades = params.grades.filter(
+    (g) => g.courseId === params.courseId && studentIds.has(g.studentId)
+  );
+  const attendanceStats = calculateAttendanceStats(batchAttendance);
+  const meanScore =
+    batchGrades.length > 0
+      ? Math.round(
+          (batchGrades.reduce((sum, g) => sum + g.score, 0) / batchGrades.length) * 10
+        ) / 10
+      : null;
+
+  return {
+    enrolledCount: batchEnrollments.length,
+    capacity: params.capacity,
+    utilizationPct:
+      params.capacity > 0
+        ? Math.min(100, Math.round((batchEnrollments.length / params.capacity) * 100))
+        : 0,
+    attendanceRate: attendanceStats.rate,
+    meanScore,
+  };
+}
+
+export function formatInvoiceNumber(prefix: string, seq: number): string {
+  const cleanPrefix = prefix.trim().replace(/[^A-Za-z0-9-]/g, '').toUpperCase() || 'INV-2026';
+  return `${cleanPrefix}-${String(seq).padStart(4, '0')}`;
+}
+
