@@ -5,15 +5,19 @@ import {
   Calendar,
   CheckCircle2,
   CreditCard,
+  Edit3,
   GraduationCap,
   Plus,
   Save,
   Settings,
   Sliders,
   Trash2,
+  X,
 } from 'lucide-react';
 import { formatInvoiceNumber } from '../shared/academic';
 import type {
+  AcademicTerm,
+  AcademicYear,
   AcademySettingsPayload,
   DashboardPayload,
   PortalActivationPolicy,
@@ -55,9 +59,10 @@ export function AcademySettingsView({
   const [address, setAddress] = useState('');
   const [logoDataUrl, setLogoDataUrl] = useState('');
   const [timezone, setTimezone] = useState('Asia/Kolkata');
-  const [currency, setCurrency] = useState('USD');
+  const [currency, setCurrency] = useState('INR');
 
   // Policies state
+  const [studentIdPrefix, setStudentIdPrefix] = useState('IGS');
   const [invoicePrefix, setInvoicePrefix] = useState('INV-2026');
   const [invoiceNextSeq, setInvoiceNextSeq] = useState('1001');
   const [feeDueDays, setFeeDueDays] = useState('14');
@@ -79,8 +84,8 @@ export function AcademySettingsView({
   const [tmplTitleFormat, setTmplTitleFormat] = useState(
     'Certificate of Technical Completion'
   );
-  const [tmplSigName, setTmplSigName] = useState('Academy Registrar');
-  const [tmplSigTitle, setTmplSigTitle] = useState('Academic Dean');
+  const [tmplSigName, setTmplSigName] = useState('Academy Director');
+  const [tmplSigTitle, setTmplSigTitle] = useState('Academic Head');
 
   // Academic Year / Term forms
   const [ayCode, setAyCode] = useState('');
@@ -98,6 +103,23 @@ export function AcademySettingsView({
   const [atCurrent, setAtCurrent] = useState(false);
   const [atSaving, setAtSaving] = useState(false);
 
+  // Edit Academic Year / Term modals
+  const [editingYear, setEditingYear] = useState<AcademicYear | null>(null);
+  const [editAyName, setEditAyName] = useState('');
+  const [editAyStart, setEditAyStart] = useState('');
+  const [editAyEnd, setEditAyEnd] = useState('');
+  const [editAyStatus, setEditAyStatus] = useState<'Planned' | 'Active' | 'Completed' | 'Archived'>('Active');
+  const [editAyCurrent, setEditAyCurrent] = useState(false);
+  const [editAySaving, setEditAySaving] = useState(false);
+
+  const [editingTerm, setEditingTerm] = useState<AcademicTerm | null>(null);
+  const [editAtName, setEditAtName] = useState('');
+  const [editAtStart, setEditAtStart] = useState('');
+  const [editAtEnd, setEditAtEnd] = useState('');
+  const [editAtStatus, setEditAtStatus] = useState<'Planned' | 'Active' | 'Completed' | 'Archived'>('Active');
+  const [editAtCurrent, setEditAtCurrent] = useState(false);
+  const [editAtSaving, setEditAtSaving] = useState(false);
+
   const hydrateFromPayload = useCallback((p: AcademySettingsPayload) => {
     setSettings(p);
     setName(p.academy.name);
@@ -108,8 +130,9 @@ export function AcademySettingsView({
     setAddress(p.academy.address);
     setLogoDataUrl(p.academy.logoDataUrl);
     setTimezone(p.academy.timezone || 'Asia/Kolkata');
-    setCurrency(p.academy.currency || 'USD');
+    setCurrency(p.academy.currency || 'INR');
 
+    setStudentIdPrefix(p.policies.studentIdPrefix || 'IGS');
     setInvoicePrefix(p.policies.invoicePrefix);
     setInvoiceNextSeq(String(p.policies.invoiceNextSeq));
     setFeeDueDays(String(p.policies.feeDueDays));
@@ -190,9 +213,10 @@ export function AcademySettingsView({
           address: address.trim(),
           logoDataUrl,
           timezone: timezone.trim() || 'Asia/Kolkata',
-          currency: currency.trim().toUpperCase() || 'USD',
+          currency: currency.trim().toUpperCase() || 'INR',
         },
         policies: {
+          studentIdPrefix: studentIdPrefix.trim().toUpperCase() || 'IGS',
           invoicePrefix: invoicePrefix.trim().toUpperCase(),
           invoiceNextSeq: Number(invoiceNextSeq) || 1001,
           feeDueDays: Number(feeDueDays) || 14,
@@ -294,6 +318,80 @@ export function AcademySettingsView({
       setNotice('Current academic term updated.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to update term.');
+    }
+  }
+
+  function openEditYear(ay: AcademicYear) {
+    setEditingYear(ay);
+    setEditAyName(ay.name);
+    setEditAyStart(ay.startDate ? ay.startDate.slice(0, 10) : '');
+    setEditAyEnd(ay.endDate ? ay.endDate.slice(0, 10) : '');
+    const st = (['Planned', 'Active', 'Completed', 'Archived'].includes(ay.status)
+      ? ay.status
+      : 'Active') as 'Planned' | 'Active' | 'Completed' | 'Archived';
+    setEditAyStatus(st);
+    setEditAyCurrent(ay.isCurrent);
+    setError('');
+  }
+
+  async function handleSaveEditYear(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editingYear) return;
+    setError('');
+    setEditAySaving(true);
+    try {
+      const res = await api.updateAcademicYear(editingYear.id, {
+        name: editAyName.trim(),
+        startDate: new Date(editAyStart).toISOString(),
+        endDate: new Date(editAyEnd).toISOString(),
+        status: editAyStatus,
+        isCurrent: editAyCurrent,
+      });
+      hydrateFromPayload(res.settings);
+      onDashboardUpdate(res.dashboard);
+      setEditingYear(null);
+      setNotice('Academic year updated.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to update academic year.');
+    } finally {
+      setEditAySaving(false);
+    }
+  }
+
+  function openEditTerm(at: AcademicTerm) {
+    setEditingTerm(at);
+    setEditAtName(at.name);
+    setEditAtStart(at.startDate ? at.startDate.slice(0, 10) : '');
+    setEditAtEnd(at.endDate ? at.endDate.slice(0, 10) : '');
+    const st = (['Planned', 'Active', 'Completed', 'Archived'].includes(at.status)
+      ? at.status
+      : 'Active') as 'Planned' | 'Active' | 'Completed' | 'Archived';
+    setEditAtStatus(st);
+    setEditAtCurrent(at.isCurrent);
+    setError('');
+  }
+
+  async function handleSaveEditTerm(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editingTerm) return;
+    setError('');
+    setEditAtSaving(true);
+    try {
+      const res = await api.updateAcademicTerm(editingTerm.id, {
+        name: editAtName.trim(),
+        startDate: new Date(editAtStart).toISOString(),
+        endDate: new Date(editAtEnd).toISOString(),
+        status: editAtStatus,
+        isCurrent: editAtCurrent,
+      });
+      hydrateFromPayload(res.settings);
+      onDashboardUpdate(res.dashboard);
+      setEditingTerm(null);
+      setNotice('Academic term updated.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to update academic term.');
+    } finally {
+      setEditAtSaving(false);
     }
   }
 
@@ -425,21 +523,32 @@ export function AcademySettingsView({
                           <span className="font-mono text-slate-500">({ay.code})</span>
                         </div>
                         <div className="font-mono text-[11px] text-slate-500 mt-0.5 tabular-nums">
-                          {new Date(ay.startDate).toLocaleDateString('en-US')} –{' '}
-                          {new Date(ay.endDate).toLocaleDateString('en-US')}
+                          {new Date(ay.startDate).toLocaleDateString('en-IN')} –{' '}
+                          {new Date(ay.endDate).toLocaleDateString('en-IN')} · {ay.status}
                         </div>
                       </div>
-                      {ay.isCurrent ? (
-                        <span className="font-semibold text-emerald-700">Current</span>
-                      ) : (
+                      <div className="flex items-center gap-2 shrink-0">
+                        {ay.isCurrent ? (
+                          <span className="font-semibold text-emerald-700">Current</span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleSetCurrentYear(ay.id)}
+                            className="px-2.5 py-1 font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded cursor-pointer whitespace-nowrap"
+                          >
+                            Set Current
+                          </button>
+                        )}
                         <button
                           type="button"
-                          onClick={() => handleSetCurrentYear(ay.id)}
-                          className="px-2.5 py-1 font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded cursor-pointer"
+                          onClick={() => openEditYear(ay)}
+                          aria-label={`Edit academic year ${ay.name}`}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded cursor-pointer whitespace-nowrap"
                         >
-                          Set Current
+                          <Edit3 className="w-3 h-3" />
+                          <span>Edit</span>
                         </button>
-                      )}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -548,21 +657,32 @@ export function AcademySettingsView({
                         </div>
                         <div className="text-[11px] text-slate-500 mt-0.5">
                           {at.academicYearName} ·{' '}
-                          {new Date(at.startDate).toLocaleDateString('en-US')} –{' '}
-                          {new Date(at.endDate).toLocaleDateString('en-US')}
+                          {new Date(at.startDate).toLocaleDateString('en-IN')} –{' '}
+                          {new Date(at.endDate).toLocaleDateString('en-IN')} · {at.status}
                         </div>
                       </div>
-                      {at.isCurrent ? (
-                        <span className="font-semibold text-emerald-700">Current</span>
-                      ) : (
+                      <div className="flex items-center gap-2 shrink-0">
+                        {at.isCurrent ? (
+                          <span className="font-semibold text-emerald-700">Current</span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleSetCurrentTerm(at.id)}
+                            className="px-2.5 py-1 font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded cursor-pointer whitespace-nowrap"
+                          >
+                            Set Current
+                          </button>
+                        )}
                         <button
                           type="button"
-                          onClick={() => handleSetCurrentTerm(at.id)}
-                          className="px-2.5 py-1 font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded cursor-pointer"
+                          onClick={() => openEditTerm(at)}
+                          aria-label={`Edit academic term ${at.name}`}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded cursor-pointer whitespace-nowrap"
                         >
-                          Set Current
+                          <Edit3 className="w-3 h-3" />
+                          <span>Edit</span>
                         </button>
-                      )}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -933,7 +1053,21 @@ export function AcademySettingsView({
                   <h3 className="font-display text-sm font-semibold text-slate-900 mb-3">
                     Fee & Invoice Numbering Settings
                   </h3>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4">
+                    <div>
+                      <label htmlFor="pol-stu-prefix" className="block text-xs font-medium text-slate-700 mb-1">
+                        Student ID Prefix
+                      </label>
+                      <input
+                        id="pol-stu-prefix"
+                        type="text"
+                        required
+                        maxLength={10}
+                        value={studentIdPrefix}
+                        onChange={(e) => setStudentIdPrefix(e.target.value.toUpperCase())}
+                        className="w-full px-3 py-2 text-sm font-mono border border-slate-300 rounded-lg"
+                      />
+                    </div>
                     <div>
                       <label htmlFor="pol-currency" className="block text-xs font-medium text-slate-700 mb-1">
                         Currency
@@ -944,8 +1078,8 @@ export function AcademySettingsView({
                         onChange={(e) => setCurrency(e.target.value)}
                         className="w-full px-3 py-2 text-sm font-mono border border-slate-300 rounded-lg"
                       >
-                        <option value="USD">USD ($)</option>
                         <option value="INR">INR (₹)</option>
+                        <option value="USD">USD ($)</option>
                         <option value="EUR">EUR (€)</option>
                         <option value="GBP">GBP (£)</option>
                         <option value="SGD">SGD (S$)</option>
@@ -1147,6 +1281,232 @@ export function AcademySettingsView({
           </form>
         )}
       </div>
+
+      {/* Edit Academic Year Modal */}
+      {editingYear && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="edit-ay-title"
+          className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
+        >
+          <div className="w-full max-w-md bg-white border border-slate-200 rounded-xl overflow-hidden">
+            <div className="px-5 py-3.5 border-b border-slate-200 flex items-center justify-between">
+              <h3 id="edit-ay-title" className="font-display text-sm font-semibold text-slate-900">
+                Edit Academic Year · <span className="font-mono">{editingYear.code}</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setEditingYear(null)}
+                aria-label="Close edit academic year dialog"
+                className="p-1 text-slate-500 hover:text-slate-800 rounded cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <form onSubmit={handleSaveEditYear} className="p-5 space-y-3">
+              <div>
+                <label htmlFor="edit-ay-name" className="block text-xs font-medium text-slate-700 mb-1">
+                  Academic Year Name
+                </label>
+                <input
+                  id="edit-ay-name"
+                  type="text"
+                  required
+                  value={editAyName}
+                  onChange={(e) => setEditAyName(e.target.value)}
+                  className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label htmlFor="edit-ay-start" className="block text-xs font-medium text-slate-700 mb-1">
+                    Start Date
+                  </label>
+                  <input
+                    id="edit-ay-start"
+                    type="date"
+                    required
+                    value={editAyStart}
+                    onChange={(e) => setEditAyStart(e.target.value)}
+                    className="w-full px-3 py-2 text-xs font-mono bg-white border border-slate-300 rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="edit-ay-end" className="block text-xs font-medium text-slate-700 mb-1">
+                    End Date
+                  </label>
+                  <input
+                    id="edit-ay-end"
+                    type="date"
+                    required
+                    value={editAyEnd}
+                    onChange={(e) => setEditAyEnd(e.target.value)}
+                    className="w-full px-3 py-2 text-xs font-mono bg-white border border-slate-300 rounded-lg"
+                  />
+                </div>
+              </div>
+              <div>
+                <label htmlFor="edit-ay-status" className="block text-xs font-medium text-slate-700 mb-1">
+                  Status
+                </label>
+                <select
+                  id="edit-ay-status"
+                  value={editAyStatus}
+                  onChange={(e) =>
+                    setEditAyStatus(
+                      e.target.value as 'Planned' | 'Active' | 'Completed' | 'Archived'
+                    )
+                  }
+                  className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg"
+                >
+                  <option value="Planned">Planned</option>
+                  <option value="Active">Active</option>
+                  <option value="Completed">Completed</option>
+                  <option value="Archived">Archived</option>
+                </select>
+              </div>
+              <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={editAyCurrent}
+                  onChange={(e) => setEditAyCurrent(e.target.checked)}
+                />
+                <span>Mark as current academic year</span>
+              </label>
+              <div className="pt-2 flex items-center justify-end gap-2 border-t border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => setEditingYear(null)}
+                  className="px-3.5 py-2 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={editAySaving}
+                  className="px-3.5 py-2 text-xs font-medium text-white bg-blue-700 hover:bg-blue-800 disabled:opacity-60 rounded-lg cursor-pointer"
+                >
+                  {editAySaving ? 'Saving...' : 'Save Year'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Academic Term Modal */}
+      {editingTerm && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="edit-at-title"
+          className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
+        >
+          <div className="w-full max-w-md bg-white border border-slate-200 rounded-xl overflow-hidden">
+            <div className="px-5 py-3.5 border-b border-slate-200 flex items-center justify-between">
+              <h3 id="edit-at-title" className="font-display text-sm font-semibold text-slate-900">
+                Edit Academic Term · <span className="font-mono">{editingTerm.code}</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setEditingTerm(null)}
+                aria-label="Close edit academic term dialog"
+                className="p-1 text-slate-500 hover:text-slate-800 rounded cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <form onSubmit={handleSaveEditTerm} className="p-5 space-y-3">
+              <div>
+                <label htmlFor="edit-at-name" className="block text-xs font-medium text-slate-700 mb-1">
+                  Term Name
+                </label>
+                <input
+                  id="edit-at-name"
+                  type="text"
+                  required
+                  value={editAtName}
+                  onChange={(e) => setEditAtName(e.target.value)}
+                  className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label htmlFor="edit-at-start" className="block text-xs font-medium text-slate-700 mb-1">
+                    Start Date
+                  </label>
+                  <input
+                    id="edit-at-start"
+                    type="date"
+                    required
+                    value={editAtStart}
+                    onChange={(e) => setEditAtStart(e.target.value)}
+                    className="w-full px-3 py-2 text-xs font-mono bg-white border border-slate-300 rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="edit-at-end" className="block text-xs font-medium text-slate-700 mb-1">
+                    End Date
+                  </label>
+                  <input
+                    id="edit-at-end"
+                    type="date"
+                    required
+                    value={editAtEnd}
+                    onChange={(e) => setEditAtEnd(e.target.value)}
+                    className="w-full px-3 py-2 text-xs font-mono bg-white border border-slate-300 rounded-lg"
+                  />
+                </div>
+              </div>
+              <div>
+                <label htmlFor="edit-at-status" className="block text-xs font-medium text-slate-700 mb-1">
+                  Status
+                </label>
+                <select
+                  id="edit-at-status"
+                  value={editAtStatus}
+                  onChange={(e) =>
+                    setEditAtStatus(
+                      e.target.value as 'Planned' | 'Active' | 'Completed' | 'Archived'
+                    )
+                  }
+                  className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg"
+                >
+                  <option value="Planned">Planned</option>
+                  <option value="Active">Active</option>
+                  <option value="Completed">Completed</option>
+                  <option value="Archived">Archived</option>
+                </select>
+              </div>
+              <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={editAtCurrent}
+                  onChange={(e) => setEditAtCurrent(e.target.checked)}
+                />
+                <span>Mark as current term</span>
+              </label>
+              <div className="pt-2 flex items-center justify-end gap-2 border-t border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => setEditingTerm(null)}
+                  className="px-3.5 py-2 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={editAtSaving}
+                  className="px-3.5 py-2 text-xs font-medium text-white bg-blue-700 hover:bg-blue-800 disabled:opacity-60 rounded-lg cursor-pointer"
+                >
+                  {editAtSaving ? 'Saving...' : 'Save Term'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

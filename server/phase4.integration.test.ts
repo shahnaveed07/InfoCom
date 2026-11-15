@@ -156,7 +156,7 @@ test('Phase 4 Administrative & Master Data Integration Suite', async (t) => {
       createdStudentId = stuUser.id;
       createdUserIds.push(createdStudentId);
       assert.ok(stuUser.id);
-      assert.match(stuUser.studentCode, /^NTA-\d{4}-/);
+      assert.match(stuUser.studentCode, /^IGS-\d{4}-/);
 
       // Search & paginate
       const listRes = await apiFetch(
@@ -287,7 +287,7 @@ test('Phase 4 Administrative & Master Data Integration Suite', async (t) => {
       const insUser = createIns.json?.instructor as { id: string; staffCode: string };
       createdInstructorId = insUser.id;
       createdUserIds.push(createdInstructorId);
-      assert.match(insUser.staffCode, /^INF-STF-/);
+      assert.match(insUser.staffCode, /^IGS-STF-/);
 
       const insLogin = await apiFetch('/api/auth/login', {
         method: 'POST',

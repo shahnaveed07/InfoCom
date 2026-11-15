@@ -1,13 +1,22 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
+  AlertCircle,
   BellRing,
   CheckCircle2,
   Clock,
+  History,
   Send,
+  ShieldCheck,
+  Users,
   XCircle,
 } from 'lucide-react';
 import { isInactiveEnrollmentStatus } from '../shared/academic';
-import type { AttendanceStatus, DashboardPayload } from '../shared/types';
+import type {
+  AttendanceAuditEntry,
+  AttendanceStatus,
+  DashboardPayload,
+} from '../shared/types';
+import { api } from '../utils/api';
 
 interface AttendanceAlertsViewProps {
   data: DashboardPayload;
@@ -17,12 +26,24 @@ interface AttendanceAlertsViewProps {
     status: AttendanceStatus;
     note: string;
   }) => Promise<void>;
+  onBulkMarkAttendance: (payload: {
+    sessionId: string;
+    entries: Array<{ studentId: string; status: AttendanceStatus; note: string }>;
+  }) => Promise<number>;
   onRunReminders: () => Promise<number>;
 }
+
+const ATTENDANCE_STATUSES: AttendanceStatus[] = [
+  'Present',
+  'Late',
+  'Absent',
+  'Excused',
+];
 
 export function AttendanceAlertsView({
   data,
   onMarkAttendance,
+  onBulkMarkAttendance,
   onRunReminders,
 }: AttendanceAlertsViewProps) {
   const sortedSessions = [...data.sessions].sort(
@@ -32,8 +53,17 @@ export function AttendanceAlertsView({
     sortedSessions[0]?.id ?? ''
   );
   const [notesByStudent, setNotesByStudent] = useState<Record<string, string>>({});
+  const [bulkMode, setBulkMode] = useState(false);
+  const [bulkDraftStatus, setBulkDraftStatus] = useState<
+    Record<string, AttendanceStatus>
+  >({});
+  const [savingBulk, setSavingBulk] = useState(false);
   const [statusBanner, setStatusBanner] = useState('');
+  const [errorBanner, setErrorBanner] = useState('');
   const [runningSweep, setRunningSweep] = useState(false);
+
+  const [historyEntries, setHistoryEntries] = useState<AttendanceAuditEntry[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
 
   const selectedSession =
     sortedSessions.find((s) => s.id === selectedSessionId) ?? sortedSessions[0];
@@ -51,23 +81,156 @@ export function AttendanceAlertsView({
       )
     : [];
 
+  const loadHistory = useCallback(async (sessionId: string) => {
+    if (!sessionId) {
+      setHistoryEntries([]);
+      return;
+    }
+    setHistoryLoading(true);
+    try {
+      const res = await api.getAttendanceHistory(sessionId);
+      setHistoryEntries(res.entries);
+    } catch {
+      setHistoryEntries([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (selectedSession?.id) {
+      loadHistory(selectedSession.id);
+    }
+  }, [selectedSession?.id, loadHistory]);
+
   async function handleStatusClick(studentId: string, status: AttendanceStatus) {
     if (!selectedSession) return;
+    if (bulkMode) {
+      setBulkDraftStatus((prev) => ({ ...prev, [studentId]: status }));
+      return;
+    }
+    setErrorBanner('');
     const student = data.students.find((s) => s.id === studentId);
     const note = notesByStudent[studentId] ?? '';
-    await onMarkAttendance({
-      sessionId: selectedSession.id,
-      studentId,
-      status,
-      note,
-    });
-    setStatusBanner(
-      `Attendance saved as ${status} for ${student?.name ?? 'student'} — automated notification dispatched.`
-    );
+    try {
+      await onMarkAttendance({
+        sessionId: selectedSession.id,
+        studentId,
+        status,
+        note,
+      });
+      setStatusBanner(
+        `Attendance saved as ${status} for ${student?.name ?? 'student'} — automated notification dispatched.`
+      );
+      await loadHistory(selectedSession.id);
+    } catch (err) {
+      setErrorBanner(
+        err instanceof Error ? err.message : 'Unable to save attendance.'
+      );
+    }
+  }
+
+  async function handleMarkAllUnmarkedPresent() {
+    if (!selectedSession) return;
+    setErrorBanner('');
+    setStatusBanner('');
+    const unmarkedEntries = rosterEnrollments
+      .filter(
+        (enr) =>
+          !data.attendance.some(
+            (a) =>
+              a.sessionId === selectedSession.id &&
+              a.studentId === enr.studentId
+          )
+      )
+      .map((enr) => ({
+        studentId: enr.studentId,
+        status: 'Present' as AttendanceStatus,
+        note: notesByStudent[enr.studentId] ?? '',
+      }));
+
+    if (unmarkedEntries.length === 0) {
+      setStatusBanner('All students in this session already have recorded attendance.');
+      return;
+    }
+
+    setSavingBulk(true);
+    try {
+      const count = await onBulkMarkAttendance({
+        sessionId: selectedSession.id,
+        entries: unmarkedEntries,
+      });
+      setStatusBanner(
+        `Bulk roll saved: marked ${count} unmarked student${count === 1 ? '' : 's'} Present and dispatched notifications.`
+      );
+      await loadHistory(selectedSession.id);
+    } catch (err) {
+      setErrorBanner(
+        err instanceof Error ? err.message : 'Unable to save bulk attendance.'
+      );
+    } finally {
+      setSavingBulk(false);
+    }
+  }
+
+  async function handleSaveBulkDraft() {
+    if (!selectedSession) return;
+    setErrorBanner('');
+    setStatusBanner('');
+
+    const entries: Array<{
+      studentId: string;
+      status: AttendanceStatus;
+      note: string;
+    }> = [];
+
+    for (const enr of rosterEnrollments) {
+      const existing = data.attendance.find(
+        (a) =>
+          a.sessionId === selectedSession.id && a.studentId === enr.studentId
+      );
+      const nextStatus = bulkDraftStatus[enr.studentId] ?? existing?.status;
+      if (!nextStatus) continue;
+      const nextNote = notesByStudent[enr.studentId] ?? existing?.note ?? '';
+      if (!existing || existing.status !== nextStatus || existing.note !== nextNote) {
+        entries.push({
+          studentId: enr.studentId,
+          status: nextStatus,
+          note: nextNote,
+        });
+      }
+    }
+
+    if (entries.length === 0) {
+      setStatusBanner('No attendance changes detected in draft.');
+      setBulkMode(false);
+      return;
+    }
+
+    setSavingBulk(true);
+    try {
+      const count = await onBulkMarkAttendance({
+        sessionId: selectedSession.id,
+        entries,
+      });
+      setStatusBanner(
+        `Bulk attendance saved for ${count} student${count === 1 ? '' : 's'} with audit trail & alerts.`
+      );
+      setBulkDraftStatus({});
+      setBulkMode(false);
+      await loadHistory(selectedSession.id);
+    } catch (err) {
+      setErrorBanner(
+        err instanceof Error ? err.message : 'Unable to save bulk attendance.'
+      );
+    } finally {
+      setSavingBulk(false);
+    }
   }
 
   async function handleRunReminderSweep() {
     setRunningSweep(true);
+    setErrorBanner('');
     try {
       const count = await onRunReminders();
       setStatusBanner(
@@ -101,13 +264,16 @@ export function AttendanceAlertsView({
               value={selectedSession?.id ?? ''}
               onChange={(e) => {
                 setSelectedSessionId(e.target.value);
+                setBulkDraftStatus({});
+                setBulkMode(false);
                 setStatusBanner('');
+                setErrorBanner('');
               }}
               className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
             >
               {sortedSessions.map((s) => {
                 const c = data.courses.find((cr) => cr.id === s.courseId);
-                const dt = new Date(s.startIso).toLocaleString('en-US', {
+                const dt = new Date(s.startIso).toLocaleString('en-IN', {
                   month: 'short',
                   day: 'numeric',
                   hour: 'numeric',
@@ -144,24 +310,89 @@ export function AttendanceAlertsView({
             <span>{statusBanner}</span>
           </div>
         )}
+
+        {errorBanner && (
+          <div
+            role="alert"
+            className="mt-4 flex items-center gap-2 px-3.5 py-2.5 rounded-lg bg-red-50 border border-red-200 text-xs font-medium text-red-800"
+          >
+            <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+            <span>{errorBanner}</span>
+          </div>
+        )}
       </section>
 
       {/* Attendance Roster Table */}
       <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
+        <div className="px-5 py-4 border-b border-slate-200 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
           <div>
             <h2 className="font-display text-base font-semibold text-slate-900">
               {selectedSession ? selectedSession.title : 'Session Roster'}
             </h2>
             {selectedSession && (
               <p className="text-xs text-slate-500 mt-0.5">
-                {course?.code} · {selectedSession.cohort} · {selectedSession.room} · Updating status automatically sends an alert to the student
+                {course?.code} · {selectedSession.cohort} · {selectedSession.room} ·{' '}
+                {rosterEnrollments.length} enrolled · Excused absences do not penalize attendance rate
               </p>
             )}
           </div>
-          <span className="font-mono text-xs text-slate-500 tabular-nums">
-            {rosterEnrollments.length} enrolled students
-          </span>
+
+          {rosterEnrollments.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                disabled={savingBulk}
+                onClick={handleMarkAllUnmarkedPresent}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-emerald-800 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 disabled:opacity-60 rounded-lg cursor-pointer whitespace-nowrap"
+              >
+                <Users className="w-3.5 h-3.5" />
+                <span>Mark All Unmarked Present</span>
+              </button>
+
+              {!bulkMode ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const init: Record<string, AttendanceStatus> = {};
+                    for (const enr of rosterEnrollments) {
+                      const existing = data.attendance.find(
+                        (a) =>
+                          a.sessionId === selectedSession?.id &&
+                          a.studentId === enr.studentId
+                      );
+                      if (existing) init[enr.studentId] = existing.status;
+                    }
+                    setBulkDraftStatus(init);
+                    setBulkMode(true);
+                  }}
+                  className="px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg cursor-pointer whitespace-nowrap"
+                >
+                  Bulk Edit Draft
+                </button>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    disabled={savingBulk}
+                    onClick={handleSaveBulkDraft}
+                    className="px-3 py-1.5 text-xs font-medium text-white bg-blue-700 hover:bg-blue-800 disabled:opacity-60 rounded-lg cursor-pointer whitespace-nowrap"
+                  >
+                    {savingBulk ? 'Saving Bulk...' : 'Save Bulk Attendance'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBulkMode(false);
+                      setBulkDraftStatus({});
+                    }}
+                    className="px-3 py-1.5 text-xs font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer whitespace-nowrap"
+                  >
+                    Cancel Draft
+                  </button>
+                </>
+              )}
+            </div>
+          )}
         </div>
 
         {rosterEnrollments.length === 0 ? (
@@ -176,7 +407,9 @@ export function AttendanceAlertsView({
                   <th className="py-2.5 px-5">Student</th>
                   <th className="py-2.5 px-4">Current Record</th>
                   <th className="py-2.5 px-4">Optional Note</th>
-                  <th className="py-2.5 px-5 text-right">Mark Attendance</th>
+                  <th className="py-2.5 px-5 text-right">
+                    {bulkMode ? 'Draft Status' : 'Mark Attendance'}
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 text-sm">
@@ -189,6 +422,9 @@ export function AttendanceAlertsView({
                       a.sessionId === selectedSession?.id &&
                       a.studentId === student.id
                   );
+                  const activeStatus = bulkMode
+                    ? bulkDraftStatus[student.id] ?? record?.status
+                    : record?.status;
 
                   return (
                     <tr key={enr.id} className="hover:bg-slate-50/70">
@@ -212,6 +448,11 @@ export function AttendanceAlertsView({
                             <span className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-700">
                               <Clock className="w-3.5 h-3.5" />
                               Late
+                            </span>
+                          ) : record.status === 'Excused' ? (
+                            <span className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-700">
+                              <ShieldCheck className="w-3.5 h-3.5" />
+                              Excused
                             </span>
                           ) : (
                             <span className="inline-flex items-center gap-1.5 text-xs font-medium text-red-700">
@@ -242,8 +483,8 @@ export function AttendanceAlertsView({
 
                       <td className="py-3 px-5 text-right">
                         <div className="inline-flex items-center gap-1 p-1 bg-slate-100 rounded-lg">
-                          {(['Present', 'Late', 'Absent'] as const).map((st) => {
-                            const active = record?.status === st;
+                          {ATTENDANCE_STATUSES.map((st) => {
+                            const active = activeStatus === st;
                             return (
                               <button
                                 key={st}
@@ -255,7 +496,9 @@ export function AttendanceAlertsView({
                                       ? 'bg-emerald-700 text-white'
                                       : st === 'Late'
                                         ? 'bg-amber-600 text-white'
-                                        : 'bg-red-700 text-white'
+                                        : st === 'Excused'
+                                          ? 'bg-blue-700 text-white'
+                                          : 'bg-red-700 text-white'
                                     : 'text-slate-700 hover:bg-white'
                                 }`}
                               >
@@ -270,6 +513,57 @@ export function AttendanceAlertsView({
                 })}
               </tbody>
             </table>
+          </div>
+        )}
+      </section>
+
+      {/* Session Attendance Audit History */}
+      <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <History className="w-4 h-4 text-blue-700" />
+            <h2 className="font-display text-sm font-semibold text-slate-900">
+              Session Attendance Audit History
+            </h2>
+          </div>
+          <span className="font-mono text-xs text-slate-500 tabular-nums">
+            {historyLoading ? 'Loading...' : `${historyEntries.length} events`}
+          </span>
+        </div>
+
+        {historyEntries.length === 0 ? (
+          <div className="p-6 text-center text-xs text-slate-500">
+            No attendance change logs recorded yet for this session.
+          </div>
+        ) : (
+          <div className="divide-y divide-slate-200 max-h-72 overflow-y-auto">
+            {historyEntries.map((entry) => (
+              <div
+                key={entry.id}
+                className="px-5 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+              >
+                <div>
+                  <div className="text-xs text-slate-700 font-medium">
+                    {entry.studentName}{' '}
+                    <span className="font-mono text-slate-500 ml-1">
+                      ({entry.previousStatus ?? 'Unmarked'} → {entry.newStatus})
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Updated by {entry.actorEmail} ({entry.actorRole})
+                    {entry.newNote ? ` · Note: ${entry.newNote}` : ''}
+                  </p>
+                </div>
+                <span className="font-mono text-[11px] text-slate-400 whitespace-nowrap shrink-0 tabular-nums">
+                  {new Date(entry.createdAt).toLocaleString('en-IN', {
+                    month: 'short',
+                    day: 'numeric',
+                    hour: 'numeric',
+                    minute: '2-digit',
+                  })}
+                </span>
+              </div>
+            ))}
           </div>
         )}
       </section>
@@ -302,7 +596,7 @@ export function AttendanceAlertsView({
                   <p className="text-sm text-slate-700 mt-0.5">{n.message}</p>
                 </div>
                 <span className="font-mono text-[11px] text-slate-400 whitespace-nowrap shrink-0 tabular-nums">
-                  {new Date(n.createdAt).toLocaleString('en-US', {
+                  {new Date(n.createdAt).toLocaleString('en-IN', {
                     month: 'short',
                     day: 'numeric',
                     hour: 'numeric',

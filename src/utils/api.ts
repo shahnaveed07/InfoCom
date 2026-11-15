@@ -7,6 +7,9 @@ import type {
   AdmissionDocumentStatus,
   AdmissionStatus,
   AnalyticsPreset,
+  AssessmentRecord,
+  AssessmentType,
+  AttendanceAuditEntry,
   AttendanceStatus,
   Classroom,
   CohortStatus,
@@ -19,6 +22,7 @@ import type {
   InstructorDetailPayload,
   InstructorDirectoryRow,
   InstructorPermissionKey,
+  InvoiceDetailPayload,
   PaginatedStudentsResult,
   PaymentMethod,
   StudentDetailPayload,
@@ -41,6 +45,30 @@ export interface VerifiedCertificateInfo {
   status: string;
   revokedReason?: string | null;
   issuedAt: string;
+}
+
+export interface PublicAdmissionCatalog {
+  academyName: string;
+  currency: string;
+  courses: Array<{
+    id: string;
+    code: string;
+    title: string;
+    track: string;
+    category: string;
+    durationWeeks: number;
+    tuitionFee: string;
+  }>;
+  batches: Array<{
+    id: string;
+    code: string;
+    name: string;
+    courseId: string;
+    startDate: string;
+    endDate: string;
+    status: string;
+  }>;
+  feePlans: FeePlanSummary[];
 }
 
 async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
@@ -73,12 +101,6 @@ export const api = {
       body: JSON.stringify({ email, password }),
     }),
 
-  loginWithFirebase: (idToken: string) =>
-    requestJson<{ user: UserPublic }>('/api/auth/firebase', {
-      method: 'POST',
-      body: JSON.stringify({ idToken }),
-    }),
-
   register: (payload: {
     name: string;
     email: string;
@@ -94,7 +116,7 @@ export const api = {
     requestJson<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
 
   changePassword: (payload: { currentPassword: string; newPassword: string }) =>
-    requestJson<{ ok: boolean; message: string }>('/api/auth/change-password', {
+    requestJson<{ ok: boolean; message: string; user: UserPublic }>('/api/auth/change-password', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
@@ -120,11 +142,29 @@ export const api = {
     role: UserRole;
     department?: string;
     phone?: string;
-    password: string;
+    password?: string;
+    requirePasswordChange?: boolean;
   }) =>
-    requestJson<{ user: UserPublic; dashboard: DashboardPayload }>('/api/users', {
+    requestJson<{
+      user: UserPublic;
+      onboardingToken?: string;
+      onboardingPath?: string;
+      onboardingExpiresAt?: string;
+      dashboard: DashboardPayload;
+    }>('/api/users', {
       method: 'POST',
       body: JSON.stringify(payload),
+    }),
+
+  issueUserResetToken: (userId: string) =>
+    requestJson<{
+      ok: boolean;
+      onboardingToken: string;
+      onboardingPath: string;
+      onboardingExpiresAt: string;
+      user: UserPublic;
+    }>(`/api/users/${userId}/reset-token`, {
+      method: 'POST',
     }),
 
   updateUser: (
@@ -162,6 +202,9 @@ export const api = {
 
   fetchAdmissionDetail: (id: string) =>
     requestJson<AdmissionDetailPayload>(`/api/admissions/${id}`),
+
+  fetchPublicAdmissionCatalog: () =>
+    requestJson<PublicAdmissionCatalog>('/api/admissions/public/catalog'),
 
   submitPublicAdmission: (payload: Record<string, unknown>) =>
     requestJson<{ admissionId: string; applicationNumber: string; status: AdmissionStatus }>(
@@ -346,6 +389,9 @@ export const api = {
       batchName: string;
       portalActivated: boolean;
       portalActivationPolicy: string;
+      onboardingToken?: string;
+      onboardingPath?: string;
+      onboardingExpiresAt?: string;
       detail: AdmissionDetailPayload;
       dashboard: DashboardPayload;
     }>(`/api/admissions/${id}/approve`, {
@@ -580,6 +626,61 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  listAssessments: (courseId?: string) =>
+    requestJson<{ assessments: AssessmentRecord[] }>(
+      `/api/assessments${courseId ? `?courseId=${encodeURIComponent(courseId)}` : ''}`
+    ),
+
+  createAssessment: (payload: {
+    courseId: string;
+    moduleId?: string | null;
+    batchId?: string | null;
+    title: string;
+    assessmentType: AssessmentType;
+    maxScore: number;
+    weight: number;
+    dueDate?: string | null;
+  }) =>
+    requestJson<{ assessmentId: string; dashboard: DashboardPayload }>('/api/assessments', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  updateAssessment: (
+    assessmentId: string,
+    payload: {
+      title?: string;
+      assessmentType?: AssessmentType;
+      moduleId?: string | null;
+      batchId?: string | null;
+      maxScore?: number;
+      weight?: number;
+      dueDate?: string | null;
+    }
+  ) =>
+    requestJson<{ dashboard: DashboardPayload }>(`/api/assessments/${assessmentId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
+  deleteAssessment: (assessmentId: string) =>
+    requestJson<{ dashboard: DashboardPayload }>(`/api/assessments/${assessmentId}`, {
+      method: 'DELETE',
+    }),
+
+  saveAssessmentGrade: (
+    assessmentId: string,
+    payload: {
+      studentId: string;
+      score: number;
+      feedback: string;
+    }
+  ) =>
+    requestJson<{ dashboard: DashboardPayload }>(`/api/assessments/${assessmentId}/grades`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+
   saveProgressRemark: (payload: {
     studentId: string;
     courseId: string;
@@ -600,6 +701,23 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+
+  bulkMarkAttendance: (payload: {
+    sessionId: string;
+    entries: Array<{ studentId: string; status: AttendanceStatus; note: string }>;
+  }) =>
+    requestJson<{ updatedCount: number; dashboard: DashboardPayload }>(
+      '/api/attendance/bulk',
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }
+    ),
+
+  getAttendanceHistory: (sessionId: string) =>
+    requestJson<{ entries: AttendanceAuditEntry[] }>(
+      `/api/attendance/history?sessionId=${encodeURIComponent(sessionId)}`
+    ),
 
   createSession: (payload: {
     courseId: string;
@@ -636,17 +754,21 @@ export const api = {
     studentId: string;
     courseId: string;
     enrollmentId?: string;
+    feeStructureId?: string | null;
     description: string;
     amountDue: string;
     dueDate: string;
   }) =>
-    requestJson<{ invoiceNumber: string; dashboard: DashboardPayload }>(
+    requestJson<{ invoiceId?: string; invoiceNumber: string; dashboard: DashboardPayload }>(
       '/api/invoices',
       {
         method: 'POST',
         body: JSON.stringify(payload),
       }
     ),
+
+  getInvoiceDetail: (invoiceId: string) =>
+    requestJson<InvoiceDetailPayload>(`/api/invoices/${invoiceId}`),
 
   voidInvoice: (invoiceId: string) =>
     requestJson<{ dashboard: DashboardPayload }>(`/api/invoices/${invoiceId}/void`, {
@@ -669,6 +791,157 @@ export const api = {
         body: JSON.stringify(payload),
       }
     ),
+
+  applyInvoiceAdjustment: (
+    invoiceId: string,
+    payload: {
+      kind: 'discount' | 'scholarship';
+      targetId: string;
+      notes?: string;
+    }
+  ) =>
+    requestJson<{ adjustmentCents: number; dashboard: DashboardPayload }>(
+      `/api/invoices/${invoiceId}/adjustments`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }
+    ),
+
+  refundPayment: (
+    paymentId: string,
+    payload: {
+      amount: string;
+      reason: string;
+    }
+  ) =>
+    requestJson<{ refundNumber: string; dashboard: DashboardPayload }>(
+      `/api/payments/${paymentId}/refund`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }
+    ),
+
+  createFeePlan: (payload: {
+    code: string;
+    name: string;
+    description?: string;
+    installmentCount: number;
+    isActive?: boolean;
+  }) =>
+    requestJson<{ feePlanId: string; dashboard: DashboardPayload }>('/api/fee-plans', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  updateFeePlan: (
+    id: string,
+    payload: {
+      code?: string;
+      name?: string;
+      description?: string;
+      installmentCount?: number;
+      isActive?: boolean;
+    }
+  ) =>
+    requestJson<{ dashboard: DashboardPayload }>(`/api/fee-plans/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
+  createFeeStructure: (payload: {
+    courseId: string;
+    batchId?: string | null;
+    feePlanId?: string | null;
+    tuitionAmount: string;
+    registrationFee?: string;
+    labFee?: string;
+    isActive?: boolean;
+  }) =>
+    requestJson<{ feeStructureId: string; dashboard: DashboardPayload }>('/api/fee-structures', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  updateFeeStructure: (
+    id: string,
+    payload: {
+      courseId?: string;
+      batchId?: string | null;
+      feePlanId?: string | null;
+      tuitionAmount?: string;
+      registrationFee?: string;
+      labFee?: string;
+      isActive?: boolean;
+    }
+  ) =>
+    requestJson<{ dashboard: DashboardPayload }>(`/api/fee-structures/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
+  createDiscount: (payload: {
+    code: string;
+    name: string;
+    discountType: 'Percentage' | 'Fixed';
+    value: string;
+    isActive?: boolean;
+    validFrom?: string | null;
+    validTo?: string | null;
+  }) =>
+    requestJson<{ discountId: string; dashboard: DashboardPayload }>('/api/discounts', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  updateDiscount: (
+    id: string,
+    payload: {
+      name?: string;
+      discountType?: 'Percentage' | 'Fixed';
+      value?: string;
+      isActive?: boolean;
+      validFrom?: string | null;
+      validTo?: string | null;
+    }
+  ) =>
+    requestJson<{ dashboard: DashboardPayload }>(`/api/discounts/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
+  createScholarship: (payload: {
+    code: string;
+    name: string;
+    sponsorName?: string;
+    coverageType: 'Percentage' | 'Fixed';
+    coverageValue: string;
+    maxRecipients: number;
+    academicYearId?: string | null;
+    isActive?: boolean;
+  }) =>
+    requestJson<{ scholarshipId: string; dashboard: DashboardPayload }>('/api/scholarships', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  updateScholarship: (
+    id: string,
+    payload: {
+      name?: string;
+      sponsorName?: string;
+      coverageType?: 'Percentage' | 'Fixed';
+      coverageValue?: string;
+      maxRecipients?: number;
+      academicYearId?: string | null;
+      isActive?: boolean;
+    }
+  ) =>
+    requestJson<{ dashboard: DashboardPayload }>(`/api/scholarships/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
 
   // Documents
   uploadDocument: (payload: {
@@ -780,7 +1053,8 @@ export const api = {
     name: string;
     email: string;
     phone?: string;
-    password: string;
+    password?: string;
+    requirePasswordChange?: boolean;
     departmentId?: string | null;
     dateOfBirth?: string | null;
     address?: string;
@@ -789,7 +1063,13 @@ export const api = {
     initialCourseId?: string;
     initialCohortId?: string;
   }) =>
-    requestJson<{ student: UserPublic; dashboard: DashboardPayload }>(
+    requestJson<{
+      student: UserPublic;
+      onboardingToken?: string;
+      onboardingPath?: string;
+      onboardingExpiresAt?: string;
+      dashboard: DashboardPayload;
+    }>(
       '/api/students',
       {
         method: 'POST',
@@ -830,7 +1110,8 @@ export const api = {
     name: string;
     email: string;
     phone?: string;
-    password: string;
+    password?: string;
+    requirePasswordChange?: boolean;
     departmentId?: string | null;
     specialization?: string;
     qualification?: string;
@@ -842,6 +1123,9 @@ export const api = {
   }) =>
     requestJson<{
       instructor: UserPublic;
+      onboardingToken?: string;
+      onboardingPath?: string;
+      onboardingExpiresAt?: string;
       items: InstructorDirectoryRow[];
       dashboard: DashboardPayload;
     }>('/api/instructors', {

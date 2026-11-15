@@ -63,7 +63,9 @@ export default function App() {
         if (!active) return;
         if (res.user) {
           setUser(res.user);
-          await loadWorkspace(res.user);
+          if (!res.user.mustChangePassword) {
+            await loadWorkspace(res.user);
+          }
         } else {
           setUser(null);
           setDashboard(null);
@@ -84,7 +86,9 @@ export default function App() {
 
   async function handleAuthenticated(loggedInUser: UserPublic) {
     setUser(loggedInUser);
-    await loadWorkspace(loggedInUser);
+    if (!loggedInUser.mustChangePassword) {
+      await loadWorkspace(loggedInUser);
+    }
   }
 
   async function handleLogout() {
@@ -120,11 +124,16 @@ export default function App() {
     }
     setPasswordSaving(true);
     try {
+      const wasMandatory = Boolean(user?.mustChangePassword);
       const res = await api.changePassword({ currentPassword, newPassword });
       setPasswordNotice(res.message);
       setCurrentPassword('');
       setNewPassword('');
       setConfirmNewPassword('');
+      setUser(res.user);
+      if (wasMandatory) {
+        await loadWorkspace(res.user);
+      }
     } catch (err) {
       setPasswordError(
         err instanceof Error ? err.message : 'Unable to change password.'
@@ -148,6 +157,123 @@ export default function App() {
 
   if (!user) {
     return <AuthView onAuthenticated={handleAuthenticated} />;
+  }
+
+  if (user.mustChangePassword) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+        <div className="w-full max-w-md bg-white border border-slate-200 rounded-xl p-6 sm:p-8 shadow-sm">
+          <div className="flex items-start justify-between gap-4 border-b border-slate-200 pb-4">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-lg bg-amber-50 border border-amber-200 flex items-center justify-center shrink-0">
+                <KeyRound className="w-4 h-4 text-amber-700" />
+              </div>
+              <div>
+                <h1 className="font-display text-lg font-semibold text-slate-900">
+                  Set Your New Account Password
+                </h1>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  IGS — InfoCom Global Services · Required before portal access
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <p className="mt-4 text-xs text-slate-600 leading-relaxed">
+            Signed in as <strong className="text-slate-900">{user.email}</strong>. Your account was provisioned with a temporary password and must be updated before viewing academic, admissions, or financial records.
+          </p>
+
+          {passwordError && (
+            <div
+              role="alert"
+              className="mt-4 flex items-start gap-2 p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-800"
+            >
+              <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+              <span>{passwordError}</span>
+            </div>
+          )}
+
+          {passwordNotice && (
+            <div
+              role="status"
+              className="mt-4 flex items-start gap-2 p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-800"
+            >
+              <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
+              <span>{passwordNotice}</span>
+            </div>
+          )}
+
+          <form onSubmit={handleChangePasswordSubmit} className="mt-4 space-y-3.5">
+            <div>
+              <label
+                htmlFor="gate-current-password"
+                className="block text-xs font-medium text-slate-700 mb-1"
+              >
+                Temporary / Current Password
+              </label>
+              <input
+                id="gate-current-password"
+                type="password"
+                required
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
+                className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg text-slate-900"
+              />
+            </div>
+            <div>
+              <label
+                htmlFor="gate-new-password"
+                className="block text-xs font-medium text-slate-700 mb-1"
+              >
+                New Password (minimum 8 characters)
+              </label>
+              <input
+                id="gate-new-password"
+                type="password"
+                required
+                minLength={8}
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg text-slate-900"
+              />
+            </div>
+            <div>
+              <label
+                htmlFor="gate-confirm-password"
+                className="block text-xs font-medium text-slate-700 mb-1"
+              >
+                Confirm New Password
+              </label>
+              <input
+                id="gate-confirm-password"
+                type="password"
+                required
+                minLength={8}
+                value={confirmNewPassword}
+                onChange={(e) => setConfirmNewPassword(e.target.value)}
+                className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg text-slate-900"
+              />
+            </div>
+            <div className="pt-2 flex items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={handleLogout}
+                className="px-4 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 cursor-pointer"
+              >
+                Sign Out
+              </button>
+              <button
+                type="submit"
+                disabled={passwordSaving}
+                className="px-4 py-2 text-xs font-medium text-white bg-blue-700 hover:bg-blue-800 disabled:opacity-60 rounded-lg cursor-pointer"
+              >
+                {passwordSaving ? 'Updating...' : 'Set Password & Enter Portal'}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    );
   }
 
   const unreadCount = dashboard
@@ -271,6 +397,18 @@ export default function App() {
                   onCreateUser={async (payload) => {
                     const res = await api.createUser(payload);
                     setDashboard(res.dashboard);
+                    return {
+                      onboardingPath: res.onboardingPath,
+                      onboardingExpiresAt: res.onboardingExpiresAt,
+                    };
+                  }}
+                  onIssueResetToken={async (userId) => {
+                    const res = await api.issueUserResetToken(userId);
+                    return {
+                      onboardingPath: res.onboardingPath,
+                      onboardingExpiresAt: res.onboardingExpiresAt,
+                      userName: res.user.name,
+                    };
                   }}
                   onUpdateUser={async (userId, payload) => {
                     const res = await api.updateUser(userId, payload);
@@ -319,6 +457,7 @@ export default function App() {
                     const res = await api.saveGrade(payload);
                     setDashboard(res.dashboard);
                   }}
+                  onDashboardUpdate={setDashboard}
                 />
               )}
 
@@ -328,6 +467,11 @@ export default function App() {
                   onMarkAttendance={async (payload) => {
                     const res = await api.markAttendance(payload);
                     setDashboard(res.dashboard);
+                  }}
+                  onBulkMarkAttendance={async (payload) => {
+                    const res = await api.bulkMarkAttendance(payload);
+                    setDashboard(res.dashboard);
+                    return res.updatedCount;
                   }}
                   onRunReminders={async () => {
                     const res = await api.runSessionReminders();
@@ -368,6 +512,7 @@ export default function App() {
                 <FinanceView
                   data={dashboard}
                   isAdmin={isAdmin}
+                  onDashboardUpdate={setDashboard}
                   onCreateInvoice={
                     isAdmin
                       ? async (payload) => {

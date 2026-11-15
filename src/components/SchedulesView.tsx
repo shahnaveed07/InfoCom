@@ -185,18 +185,18 @@ export function SchedulesView({
                   <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-6 text-xs text-slate-600 shrink-0">
                     <span className="inline-flex items-center gap-1.5 font-mono tabular-nums">
                       <CalendarClock className="w-3.5 h-3.5 text-slate-400" />
-                      {start.toLocaleDateString('en-US', {
+                      {start.toLocaleDateString('en-IN', {
                         weekday: 'short',
                         month: 'short',
                         day: 'numeric',
                       })}{' '}
                       ·{' '}
-                      {start.toLocaleTimeString('en-US', {
+                      {start.toLocaleTimeString('en-IN', {
                         hour: 'numeric',
                         minute: '2-digit',
                       })}{' '}
                       –{' '}
-                      {end.toLocaleTimeString('en-US', {
+                      {end.toLocaleTimeString('en-IN', {
                         hour: 'numeric',
                         minute: '2-digit',
                       })}

@@ -9,41 +9,56 @@ import {
   calculateLetterGrade,
   calculateWeightedAverage,
   computeAcademyAnalytics,
+  computeAdjustmentCents,
   computeCertificateEligibility,
   computeInvoiceStatus,
+  computeRefundableCents,
   findUpcomingSessionsNeedingReminders,
+  formatCents,
   formatInvoiceNumber,
   fromCents,
   isInactiveEnrollmentStatus,
   isPendingAdmissionStatus,
+  recalculateInvoiceTotals,
   resolveAnalyticsDateWindow,
   shouldActivatePortalOnPayment,
   toCents,
 } from '../src/shared/academic.ts';
 import type {
+  AcademyPolicySummary,
   AcademySettingsPayload,
   AdminAnalyticsDetail,
   AdmissionApplication,
   AdmissionStatus,
   AnalyticsPreset,
+  AssessmentGradeRecord,
+  AssessmentRecord,
+  AssessmentType,
+  AttendanceAuditEntry,
   AttendanceStatus,
   CertificateRecord,
   Course,
   DashboardPayload,
+  DiscountRecord,
   DocumentRecord,
   EnrollmentStatus,
   FeePlanSummary,
+  FeeStructureRecord,
   InstructorDetailPayload,
   InstructorDirectoryRow,
   InstructorPermissionKey,
+  InvoiceDetailPayload,
+  ModuleGrade,
   NotificationItem,
   PaymentMethod,
   PortalActivationPolicy,
+  RefundRecord,
+  ScholarshipRecord,
   StudentDetailPayload,
   UserPublic,
   UserRole,
 } from '../src/shared/types.ts';
-import { hashPassword } from './auth.ts';
+import { generatePasswordResetToken, hashPassword } from './auth.ts';
 import { prisma } from './db/prisma.ts';
 import {
   DEFAULT_INSTRUCTOR_PERMISSIONS,
@@ -55,30 +70,54 @@ import {
 type PrismaDbClient = Prisma.TransactionClient | typeof prisma;
 
 export async function generateUniqueStudentCode(db: PrismaDbClient = prisma): Promise<string> {
+  // Acquire transaction-scoped advisory lock when inside $transaction so concurrent student creations never collide
+  await db.$executeRaw`SELECT pg_advisory_xact_lock(7249103)`;
   const year = new Date().getUTCFullYear();
-  for (let i = 0; i < 12; i += 1) {
-    const suffix = crypto.randomInt(1000, 9999);
-    const candidate = `NTA-${year}-${suffix}`;
-    const exists = await db.user.findUnique({
-      where: { studentCode: candidate },
-      select: { id: true },
-    });
-    if (!exists) return candidate;
+  const prefixRow = await db.academySetting.findFirst({
+    where: { key: 'academy.student_id_prefix' },
+    select: { value: true },
+  });
+  const prefix = (prefixRow?.value || 'IGS').trim().toUpperCase().replace(/[^A-Z0-9-]/g, '') || 'IGS';
+  const yearPrefix = `${prefix}-${year}-`;
+
+  const existingCodes = await db.user.findMany({
+    where: { studentCode: { startsWith: yearPrefix } },
+    select: { studentCode: true },
+  });
+
+  let maxSeq = 0;
+  for (const row of existingCodes) {
+    const code = row.studentCode ?? '';
+    const suffixPart = code.slice(yearPrefix.length);
+    if (/^\d{1,7}$/.test(suffixPart)) {
+      const n = Number(suffixPart);
+      if (n > maxSeq) maxSeq = n;
+    }
   }
-  return `NTA-${year}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+
+  for (let attempt = 1; attempt <= 25; attempt += 1) {
+    const seqNum = maxSeq + attempt;
+    const candidate = `${yearPrefix}${String(seqNum).padStart(5, '0')}`;
+    const [existsUser, existsProfile] = await Promise.all([
+      db.user.findUnique({ where: { studentCode: candidate }, select: { id: true } }),
+      db.studentProfile.findUnique({ where: { studentCode: candidate }, select: { id: true } }),
+    ]);
+    if (!existsUser && !existsProfile) return candidate;
+  }
+  return `${yearPrefix}${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
 }
 
 export async function generateUniqueStaffCode(db: PrismaDbClient = prisma): Promise<string> {
   for (let i = 0; i < 12; i += 1) {
     const suffix = crypto.randomInt(1000, 9999);
-    const candidate = `INF-STF-${suffix}`;
+    const candidate = `IGS-STF-${suffix}`;
     const exists = await db.user.findUnique({
       where: { staffCode: candidate },
       select: { id: true },
     });
     if (!exists) return candidate;
   }
-  return `INF-STF-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+  return `IGS-STF-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
 }
 
 export async function generateNextInvoiceNumber(db: PrismaDbClient = prisma): Promise<string> {
@@ -122,6 +161,19 @@ export async function generateUniqueReceiptNumber(db: PrismaDbClient = prisma): 
   return `RCPT-${year}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
 }
 
+export async function generateUniqueRefundNumber(db: PrismaDbClient = prisma): Promise<string> {
+  const year = new Date().getUTCFullYear();
+  for (let i = 0; i < 12; i += 1) {
+    const candidate = `REF-${year}-${crypto.randomInt(10000, 99999)}`;
+    const exists = await db.refund.findUnique({
+      where: { refundNumber: candidate },
+      select: { id: true },
+    });
+    if (!exists) return candidate;
+  }
+  return `REF-${year}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+}
+
 export async function generateUniqueApplicationNumber(db: PrismaDbClient = prisma): Promise<string> {
   const year = new Date().getUTCFullYear();
   for (let i = 0; i < 12; i += 1) {
@@ -154,6 +206,41 @@ export async function getPortalActivationPolicy(
   return 'on_approval';
 }
 
+export async function loadAcademyPoliciesSummary(
+  db: PrismaDbClient = prisma
+): Promise<AcademyPolicySummary> {
+  const rows = await db.academySetting.findMany({
+    where: {
+      key: {
+        in: [
+          'grading.passing_score',
+          'grading.distinction_score',
+          'attendance.min_rate_pct',
+          'attendance.late_weight_pct',
+          'certificate.min_completion_pct',
+          'certificate.min_weighted_score',
+          'certificate.min_attendance_pct',
+        ],
+      },
+    },
+    select: { key: true, value: true },
+  });
+  const map = new Map(rows.map((r) => [r.key, r.value]));
+  const num = (key: string, fallback: number) => {
+    const parsed = Number(map.get(key));
+    return Number.isFinite(parsed) ? parsed : fallback;
+  };
+  return {
+    passingScore: num('grading.passing_score', 60),
+    distinctionScore: num('grading.distinction_score', 90),
+    minAttendanceRatePct: num('attendance.min_rate_pct', 75),
+    lateWeightPct: num('attendance.late_weight_pct', 75),
+    certificateMinCompletionPct: num('certificate.min_completion_pct', 100),
+    certificateMinScore: num('certificate.min_weighted_score', 60),
+    certificateMinAttendancePct: num('certificate.min_attendance_pct', 75),
+  };
+}
+
 export function toPublicUser(u: PrismaUser): UserPublic {
   return {
     id: u.id,
@@ -165,7 +252,43 @@ export function toPublicUser(u: PrismaUser): UserPublic {
     staffCode: u.staffCode,
     department: u.department,
     phone: u.phone,
+    mustChangePassword: u.mustChangePassword,
     createdAt: u.createdAt.toISOString(),
+  };
+}
+
+export async function issueAccountSetupToken(
+  db: PrismaDbClient,
+  params: {
+    userId: string;
+    createdByUserId?: string | null;
+    ttlHours?: number;
+  }
+): Promise<{ rawToken: string; onboardingPath: string; expiresAt: string }> {
+  const ttlHours = params.ttlHours ?? 72;
+  const { rawToken, tokenHash } = generatePasswordResetToken();
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + ttlHours * 60 * 60 * 1000);
+
+  await db.passwordResetToken.updateMany({
+    where: { userId: params.userId, usedAt: null },
+    data: { usedAt: now },
+  });
+
+  await db.passwordResetToken.create({
+    data: {
+      id: `prt-${crypto.randomUUID()}`,
+      userId: params.userId,
+      tokenHash,
+      expiresAt,
+      createdByUserId: params.createdByUserId ?? null,
+    },
+  });
+
+  return {
+    rawToken,
+    onboardingPath: `/?setupToken=${encodeURIComponent(rawToken)}`,
+    expiresAt: expiresAt.toISOString(),
   };
 }
 
@@ -216,92 +339,6 @@ export async function findUserByEmail(email: string): Promise<PrismaUser | null>
   }
 }
 
-export async function syncFirebaseUser(params: {
-  uid: string;
-  email: string;
-  name: string;
-}): Promise<PrismaUser> {
-  const normalizedEmail = params.email.trim().toLowerCase();
-  try {
-    const existingByUid = await prisma.user.findUnique({
-      where: { firebaseUid: params.uid },
-    });
-    if (existingByUid) return existingByUid;
-
-    const existingByEmail = await prisma.user.findUnique({
-      where: { email: normalizedEmail },
-    });
-    if (existingByEmail) {
-      return await prisma.user.update({
-        where: { id: existingByEmail.id },
-        data: { firebaseUid: params.uid },
-      });
-    }
-
-    // Public Google SSO provisioning is strictly restricted to the student role.
-    // Admin and Instructor roles must be granted via bootstrap CLI or an existing Admin.
-    const newId = `stu-${crypto.randomUUID().slice(0, 8)}`;
-    const studentCode = await generateUniqueStudentCode();
-    const roleCode = 'student';
-
-    const user = await prisma.$transaction(async (tx) => {
-      const upserted = await tx.user.upsert({
-        where: { email: normalizedEmail },
-        update: { firebaseUid: params.uid },
-        create: {
-          id: newId,
-          firebaseUid: params.uid,
-          name: params.name.trim() || normalizedEmail.split('@')[0],
-          email: normalizedEmail,
-          role: roleCode,
-          status: 'active',
-          studentCode,
-          staffCode: null,
-          department: null,
-        },
-      });
-
-      const roleRow = await tx.role.findUnique({ where: { code: upserted.role } });
-      if (roleRow) {
-        await tx.userRole.upsert({
-          where: { userId_roleId: { userId: upserted.id, roleId: roleRow.id } },
-          update: {},
-          create: {
-            id: `ur-${upserted.id}-${roleRow.code}`,
-            userId: upserted.id,
-            roleId: roleRow.id,
-          },
-        });
-      }
-
-      if (upserted.role === 'student' && upserted.studentCode) {
-        await tx.studentProfile.upsert({
-          where: { userId: upserted.id },
-          update: {},
-          create: {
-            id: `sp-${upserted.id}`,
-            userId: upserted.id,
-            studentCode: upserted.studentCode,
-          },
-        });
-      }
-
-      return upserted;
-    });
-
-    await recordAuditLog({
-      actor: { id: user.id, email: user.email, role: user.role },
-      action: 'USER_SSO_PROVISIONED',
-      entityType: 'user',
-      entityId: user.id,
-      summary: `Provisioned ${user.role} account via Google Sign-In for ${user.email}.`,
-    });
-    return user;
-  } catch (err) {
-    throw new Error('Failed to synchronize authenticated user.', { cause: err });
-  }
-}
-
 export async function registerStudentAccount(params: {
   name: string;
   email: string;
@@ -314,11 +351,12 @@ export async function registerStudentAccount(params: {
     return { ok: false, error: 'An account with this email already exists.' };
   }
 
-  const studentCode = await generateUniqueStudentCode();
   const newId = `stu-${crypto.randomUUID().slice(0, 8)}`;
+  const passwordHash = await hashPassword(params.password);
 
   try {
     const createdUser = await prisma.$transaction(async (tx) => {
+      const studentCode = await generateUniqueStudentCode(tx);
       const inserted = await tx.user.create({
         data: {
           id: newId,
@@ -328,7 +366,7 @@ export async function registerStudentAccount(params: {
           status: 'active',
           studentCode,
           phone: params.phone?.trim() || null,
-          passwordHash: await hashPassword(params.password),
+          passwordHash,
           passwordUpdatedAt: new Date(),
         },
       });
@@ -579,11 +617,16 @@ export async function buildDashboardForUser(userRow: PrismaUser): Promise<Dashbo
 
     const [
       academyRow,
+      policies,
       allDepartments,
       allClassrooms,
       allAcademicYears,
       allAcademicTerms,
       allFeePlans,
+      allFeeStructures,
+      allDiscounts,
+      allScholarships,
+      allRefunds,
       allUsers,
       allCourses,
       allModules,
@@ -593,6 +636,7 @@ export async function buildDashboardForUser(userRow: PrismaUser): Promise<Dashbo
       allEnrollments,
       allSessions,
       allAttendance,
+      allAssessments,
       allGrades,
       allRemarks,
       allInvoices,
@@ -603,11 +647,16 @@ export async function buildDashboardForUser(userRow: PrismaUser): Promise<Dashbo
       recentAudits,
     ] = await Promise.all([
       prisma.academy.findFirst({ orderBy: { createdAt: 'asc' } }),
+      loadAcademyPoliciesSummary(),
       prisma.department.findMany({ orderBy: { name: 'asc' } }),
       prisma.classroom.findMany({ orderBy: { code: 'asc' } }),
       prisma.academicYear.findMany({ orderBy: { startDate: 'desc' } }),
       prisma.academicTerm.findMany({ orderBy: { startDate: 'desc' } }),
-      prisma.feePlan.findMany({ where: { isActive: true }, orderBy: { code: 'asc' } }),
+      prisma.feePlan.findMany({ orderBy: { code: 'asc' } }),
+      prisma.feeStructure.findMany({ orderBy: { createdAt: 'desc' } }),
+      prisma.discount.findMany({ orderBy: { createdAt: 'desc' } }),
+      prisma.scholarship.findMany({ orderBy: { createdAt: 'desc' } }),
+      prisma.refund.findMany({ orderBy: { processedAt: 'desc' } }),
       prisma.user.findMany(),
       prisma.course.findMany(),
       prisma.courseModule.findMany({ orderBy: { sortOrder: 'asc' } }),
@@ -617,6 +666,7 @@ export async function buildDashboardForUser(userRow: PrismaUser): Promise<Dashbo
       prisma.enrollment.findMany({ orderBy: { enrolledAt: 'desc' } }),
       prisma.classSession.findMany(),
       prisma.attendance.findMany(),
+      prisma.assessment.findMany({ orderBy: { createdAt: 'asc' } }),
       prisma.grade.findMany(),
       prisma.progressRemark.findMany(),
       prisma.invoice.findMany({ orderBy: { createdAt: 'desc' } }),
@@ -796,16 +846,55 @@ export async function buildDashboardForUser(userRow: PrismaUser): Promise<Dashbo
       updatedBy: a.updatedBy,
     }));
 
-    const mappedGrades = allGrades.map((g) => ({
-      id: g.id,
-      studentId: g.studentId,
-      courseId: g.courseId,
-      moduleId: g.moduleId,
-      score: g.score,
-      feedback: g.feedback,
-      gradedAt: g.gradedAt.toISOString(),
-      gradedBy: g.gradedBy,
+    const assessmentMap = new Map(allAssessments.map((a) => [a.id, a]));
+    const mappedAssessments: AssessmentRecord[] = allAssessments.map((a) => ({
+      id: a.id,
+      courseId: a.courseId,
+      moduleId: a.moduleId,
+      batchId: a.batchId,
+      title: a.title,
+      assessmentType: a.assessmentType as AssessmentType,
+      maxScore: a.maxScore,
+      weight: a.weight,
+      dueDate: a.dueDate ? a.dueDate.toISOString() : null,
+      createdAt: a.createdAt.toISOString(),
     }));
+
+    const mappedAssessmentGrades: AssessmentGradeRecord[] = allGrades.map((g) => {
+      const asmt = assessmentMap.get(g.assessmentId);
+      const maxScore = asmt?.maxScore ?? g.maxScore ?? 100;
+      return {
+        id: g.id,
+        assessmentId: g.assessmentId,
+        studentId: g.studentId,
+        courseId: g.courseId,
+        moduleId: g.moduleId,
+        score: g.score,
+        maxScore,
+        percentage: Math.round((g.score / Math.max(1, maxScore)) * 1000) / 10,
+        feedback: g.feedback,
+        gradedAt: g.gradedAt.toISOString(),
+        gradedBy: g.gradedBy,
+      };
+    });
+
+    const mappedGrades: ModuleGrade[] = allGrades
+      .filter((g) => {
+        if (!g.moduleId) return false;
+        const asmt = assessmentMap.get(g.assessmentId);
+        return !asmt || asmt.assessmentType === 'Module Assessment';
+      })
+      .map((g) => ({
+        id: g.id,
+        studentId: g.studentId,
+        courseId: g.courseId,
+        moduleId: g.moduleId!,
+        assessmentId: g.assessmentId,
+        score: g.score,
+        feedback: g.feedback,
+        gradedAt: g.gradedAt.toISOString(),
+        gradedBy: g.gradedBy,
+      }));
 
     const mappedRemarks = allRemarks.map((r) => ({
       id: r.id,
@@ -816,13 +905,27 @@ export async function buildDashboardForUser(userRow: PrismaUser): Promise<Dashbo
       updatedBy: r.updatedBy,
     }));
 
+    const refundedByPaymentCents = new Map<string, number>();
+    for (const ref of allRefunds) {
+      if (ref.status === 'Cancelled') continue;
+      const amtCents = toCents(ref.amount.toFixed(2));
+      refundedByPaymentCents.set(
+        ref.paymentId,
+        (refundedByPaymentCents.get(ref.paymentId) ?? 0) + amtCents
+      );
+    }
+
     const mappedInvoices = allInvoices.map((inv) => ({
       id: inv.id,
       invoiceNumber: inv.invoiceNumber,
       studentId: inv.studentId,
       enrollmentId: inv.enrollmentId,
       courseId: inv.courseId,
+      feeStructureId: inv.feeStructureId,
       description: inv.description,
+      subtotal: (inv.subtotal ?? inv.amountDue).toFixed(2),
+      discountTotal: inv.discountTotal.toFixed(2),
+      scholarshipTotal: inv.scholarshipTotal.toFixed(2),
       amountDue: inv.amountDue.toFixed(2),
       amountPaid: inv.amountPaid.toFixed(2),
       currency: inv.currency,
@@ -838,6 +941,7 @@ export async function buildDashboardForUser(userRow: PrismaUser): Promise<Dashbo
       invoiceId: p.invoiceId,
       studentId: p.studentId,
       amount: p.amount.toFixed(2),
+      refundedAmount: fromCents(refundedByPaymentCents.get(p.id) ?? 0),
       method: p.method as PaymentMethod,
       referenceCode: p.referenceCode,
       recordedByUserId: p.recordedByUserId,
@@ -940,6 +1044,10 @@ export async function buildDashboardForUser(userRow: PrismaUser): Promise<Dashbo
       };
     });
 
+    const feePlanMap = new Map(allFeePlans.map((fp) => [fp.id, fp]));
+    const invoiceMap = new Map(allInvoices.map((i) => [i.id, i]));
+    const paymentMap = new Map(allPayments.map((p) => [p.id, p]));
+
     const mappedFeePlans: FeePlanSummary[] = allFeePlans.map((fp) => ({
       id: fp.id,
       code: fp.code,
@@ -948,6 +1056,73 @@ export async function buildDashboardForUser(userRow: PrismaUser): Promise<Dashbo
       installmentCount: fp.installmentCount,
       currency: fp.currency,
       isActive: fp.isActive,
+    }));
+
+    const mappedFeeStructures: FeeStructureRecord[] = allFeeStructures.map((fs) => {
+      const c = courseMap.get(fs.courseId);
+      const fp = fs.feePlanId ? feePlanMap.get(fs.feePlanId) : undefined;
+      const totalCents =
+        toCents(fs.tuitionAmount.toFixed(2)) +
+        toCents(fs.registrationFee.toFixed(2)) +
+        toCents(fs.labFee.toFixed(2));
+      return {
+        id: fs.id,
+        courseId: fs.courseId,
+        courseCode: c?.code,
+        courseTitle: c?.title,
+        batchId: fs.batchId,
+        feePlanId: fs.feePlanId,
+        feePlanName: fp?.name ?? null,
+        tuitionAmount: fs.tuitionAmount.toFixed(2),
+        registrationFee: fs.registrationFee.toFixed(2),
+        labFee: fs.labFee.toFixed(2),
+        totalAmount: fromCents(totalCents),
+        effectiveFrom: fs.effectiveFrom.toISOString(),
+        isActive: fs.isActive,
+        createdAt: fs.createdAt.toISOString(),
+      };
+    });
+
+    const mappedDiscounts: DiscountRecord[] = allDiscounts.map((d) => ({
+      id: d.id,
+      code: d.code,
+      name: d.name,
+      discountType: d.discountType as 'Percentage' | 'Fixed',
+      value: d.value.toFixed(2),
+      isActive: d.isActive,
+      validFrom: d.validFrom ? d.validFrom.toISOString() : null,
+      validTo: d.validTo ? d.validTo.toISOString() : null,
+      createdAt: d.createdAt.toISOString(),
+    }));
+
+    const mappedScholarships: ScholarshipRecord[] = allScholarships.map((s) => ({
+      id: s.id,
+      code: s.code,
+      name: s.name,
+      sponsorName: s.sponsorName,
+      coverageType: s.coverageType as 'Percentage' | 'Fixed',
+      coverageValue: s.coverageValue.toFixed(2),
+      maxRecipients: s.maxRecipients,
+      academicYearId: s.academicYearId,
+      isActive: s.isActive,
+      createdAt: s.createdAt.toISOString(),
+    }));
+
+    const mappedRefunds: RefundRecord[] = allRefunds.map((r) => ({
+      id: r.id,
+      refundNumber: r.refundNumber,
+      paymentId: r.paymentId,
+      receiptNumber: paymentMap.get(r.paymentId)?.receiptNumber,
+      invoiceId: r.invoiceId,
+      invoiceNumber: invoiceMap.get(r.invoiceId)?.invoiceNumber,
+      studentId: r.studentId,
+      studentName: userMap.get(r.studentId)?.name,
+      amount: r.amount.toFixed(2),
+      reason: r.reason,
+      status: r.status as 'Pending' | 'Processed' | 'Cancelled',
+      processedByUserId: r.processedByUserId,
+      processedByName: userMap.get(r.processedByUserId)?.name,
+      processedAt: r.processedAt.toISOString(),
     }));
 
     const analytics = computeAcademyAnalytics({
@@ -963,11 +1138,16 @@ export async function buildDashboardForUser(userRow: PrismaUser): Promise<Dashbo
       return {
         user: publicUser,
         academy: mappedAcademy,
+        policies,
         departments: mappedDepartments,
         classrooms: mappedClassrooms,
         academicYears: mappedYears,
         academicTerms: mappedTerms,
         feePlans: mappedFeePlans,
+        feeStructures: mappedFeeStructures,
+        discounts: mappedDiscounts,
+        scholarships: mappedScholarships,
+        refunds: mappedRefunds,
         courses: mappedCourses,
         cohorts: mappedCohorts,
         users: publicUsers,
@@ -976,6 +1156,8 @@ export async function buildDashboardForUser(userRow: PrismaUser): Promise<Dashbo
         enrollments: mappedEnrollments,
         sessions: mappedSessions,
         attendance: mappedAttendance,
+        assessments: mappedAssessments,
+        assessmentGrades: mappedAssessmentGrades,
         grades: mappedGrades,
         remarks: mappedRemarks,
         invoices: mappedInvoices,
@@ -1055,9 +1237,17 @@ export async function buildDashboardForUser(userRow: PrismaUser): Promise<Dashbo
         attendance: scopedAttendance,
       });
 
+      const scopedAssessments = mappedAssessments.filter((a) =>
+        scope.courseIds.has(a.courseId)
+      );
+      const scopedAssessmentGrades = mappedAssessmentGrades.filter(
+        (g) => scope.courseIds.has(g.courseId) && scopedStudentIds.has(g.studentId)
+      );
+
       return {
         user: publicUser,
         academy: mappedAcademy,
+        policies,
         departments: mappedDepartments,
         classrooms: mappedClassrooms,
         courses: scopedCourses,
@@ -1068,6 +1258,8 @@ export async function buildDashboardForUser(userRow: PrismaUser): Promise<Dashbo
         enrollments: scopedEnrollments,
         sessions: scopedSessions,
         attendance: scopedAttendance,
+        assessments: scopedAssessments,
+        assessmentGrades: scopedAssessmentGrades,
         grades: scopedGrades,
         remarks: scopedRemarks,
         invoices: [],
@@ -1089,10 +1281,12 @@ export async function buildDashboardForUser(userRow: PrismaUser): Promise<Dashbo
     // Student strictly scoped view
     const myEnrollments = mappedEnrollments.filter((e) => e.studentId === publicUser.id);
     const myCourseIds = new Set(myEnrollments.map((e) => e.courseId));
+    const myAttendance = mappedAttendance.filter((a) => a.studentId === publicUser.id);
 
     return {
       user: publicUser,
       academy: mappedAcademy,
+      policies,
       courses: mappedCourses,
       cohorts: mappedCohorts.filter((coh) => myCourseIds.has(coh.courseId)),
       users: [publicUser],
@@ -1100,11 +1294,14 @@ export async function buildDashboardForUser(userRow: PrismaUser): Promise<Dashbo
       admissions: [],
       enrollments: myEnrollments,
       sessions: mappedSessions.filter((s) => myCourseIds.has(s.courseId)),
-      attendance: mappedAttendance.filter((a) => a.studentId === publicUser.id),
+      attendance: myAttendance,
+      assessments: mappedAssessments.filter((a) => myCourseIds.has(a.courseId)),
+      assessmentGrades: mappedAssessmentGrades.filter((g) => g.studentId === publicUser.id),
       grades: mappedGrades.filter((g) => g.studentId === publicUser.id),
       remarks: mappedRemarks.filter((r) => r.studentId === publicUser.id),
       invoices: mappedInvoices.filter((i) => i.studentId === publicUser.id && !i.isArchived),
       payments: mappedPayments.filter((p) => p.studentId === publicUser.id),
+      refunds: mappedRefunds.filter((r) => r.studentId === publicUser.id),
       documents: mappedDocs.filter(
         (d) =>
           !d.isArchived &&
@@ -1127,9 +1324,9 @@ export async function buildDashboardForUser(userRow: PrismaUser): Promise<Dashbo
         certificatesIssued: mappedCerts.filter(
           (c) => c.studentId === publicUser.id && c.status === 'Issued'
         ).length,
-        meanAttendanceRate: calculateAttendanceStats(
-          mappedAttendance.filter((a) => a.studentId === publicUser.id)
-        ).rate,
+        meanAttendanceRate: calculateAttendanceStats(myAttendance, {
+          lateWeightPct: policies.lateWeightPct,
+        }).rate,
       },
     };
   } catch (err) {
@@ -1262,6 +1459,7 @@ export async function createEnrollmentWithOptionalInvoice(params: {
         const invNum = await generateNextInvoiceNumber(tx);
         const desc = `${course.code} ${course.title} Tuition (${params.cohort})`;
 
+        const acadRow = await tx.academy.findFirst({ select: { currency: true } });
         await tx.invoice.create({
           data: {
             id: invId,
@@ -1274,7 +1472,7 @@ export async function createEnrollmentWithOptionalInvoice(params: {
             subtotal: course.tuitionFee,
             amountDue: course.tuitionFee,
             amountPaid: '0.00',
-            currency: 'USD',
+            currency: acadRow?.currency || 'INR',
             status: 'Unpaid',
             dueDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
             issuedByUserId: params.actor.id,
@@ -1347,7 +1545,7 @@ export async function recordInvoicePayment(params: {
         return {
           ok: false as const,
           status: 400,
-          error: `Payment exceeds remaining balance ($${fromCents(remainingCents)}).`,
+          error: `Payment exceeds remaining balance (${formatCents(remainingCents, invoice.currency || 'INR')}).`,
         };
       }
 
@@ -1394,7 +1592,7 @@ export async function recordInvoicePayment(params: {
           userId: invoice.studentId,
           kind: 'finance',
           title: `Payment Receipt · ${receiptNumber}`,
-          message: `Payment of $${formattedPay} via ${params.method} applied to invoice ${invoice.invoiceNumber}. Status: ${newStatus}.`,
+          message: `Payment of ${formatCents(payCents, invoice.currency || 'INR')} via ${params.method} applied to invoice ${invoice.invoiceNumber}. Status: ${newStatus}.`,
           relatedCourseId: invoice.courseId,
           read: false,
         },
@@ -1475,6 +1673,8 @@ export async function recordInvoicePayment(params: {
         receiptNumber,
         newStatus,
         invoiceNumber: invoice.invoiceNumber,
+        currency: invoice.currency || 'INR',
+        payCents,
         portalAutoActivated,
         studentId: invoice.studentId,
       };
@@ -1486,7 +1686,7 @@ export async function recordInvoicePayment(params: {
         action: 'PAYMENT_RECORDED',
         entityType: 'payment',
         entityId: result.paymentId,
-        summary: `Recorded $${params.amount} payment (${result.receiptNumber}) on ${result.invoiceNumber} -> ${result.newStatus}.`,
+        summary: `Recorded ${formatCents(result.payCents, result.currency)} payment (${result.receiptNumber}) on ${result.invoiceNumber} -> ${result.newStatus}.`,
       });
       if (result.portalAutoActivated) {
         await recordAuditLog({
@@ -1502,6 +1702,448 @@ export async function recordInvoicePayment(params: {
   } catch (err) {
     throw new Error('Failed to record payment.', { cause: err });
   }
+}
+
+export async function applyInvoiceAdjustment(params: {
+  actor: UserPublic;
+  invoiceId: string;
+  kind: 'discount' | 'scholarship';
+  targetId: string;
+  notes?: string;
+}) {
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const invoice = await tx.invoice.findUnique({
+        where: { id: params.invoiceId },
+        include: { student: { select: { id: true, name: true, email: true } } },
+      });
+      if (!invoice) {
+        return { ok: false as const, status: 404, error: 'Invoice not found.' };
+      }
+      if (invoice.status === 'Voided' || invoice.isArchived) {
+        return {
+          ok: false as const,
+          status: 400,
+          error: 'Cannot apply adjustments to a voided or archived invoice.',
+        };
+      }
+      if (invoice.status === 'Paid') {
+        return {
+          ok: false as const,
+          status: 409,
+          error: 'Cannot apply a discount or scholarship to an already paid invoice.',
+        };
+      }
+
+      const subtotalCents = toCents((invoice.subtotal ?? invoice.amountDue).toFixed(2));
+      const existingDiscountCents = toCents(invoice.discountTotal.toFixed(2));
+      const existingScholarshipCents = toCents(invoice.scholarshipTotal.toFixed(2));
+      const currentDueCents = toCents(invoice.amountDue.toFixed(2));
+      const paidCents = toCents(invoice.amountPaid.toFixed(2));
+      const remainingPayableCents = Math.max(0, currentDueCents - paidCents);
+
+      if (remainingPayableCents <= 0) {
+        return {
+          ok: false as const,
+          status: 409,
+          error: 'Invoice has no remaining balance eligible for reduction.',
+        };
+      }
+
+      let label = '';
+      let adjustmentCents = 0;
+      const now = new Date();
+
+      if (params.kind === 'discount') {
+        const discount = await tx.discount.findUnique({ where: { id: params.targetId } });
+        if (!discount || !discount.isActive) {
+          return { ok: false as const, status: 400, error: 'Selected discount is inactive or not found.' };
+        }
+        if (discount.validFrom && discount.validFrom.getTime() > now.getTime()) {
+          return { ok: false as const, status: 400, error: 'Discount validity period has not started yet.' };
+        }
+        if (discount.validTo && discount.validTo.getTime() < now.getTime()) {
+          return { ok: false as const, status: 400, error: 'Discount has expired.' };
+        }
+        adjustmentCents = computeAdjustmentCents({
+          baseCents: subtotalCents,
+          type: discount.discountType as 'Percentage' | 'Fixed',
+          value: discount.value.toFixed(2),
+          maxAllowedCents: remainingPayableCents,
+        });
+        label = `Discount (${discount.code}): ${discount.name}`;
+      } else {
+        const scholarship = await tx.scholarship.findUnique({ where: { id: params.targetId } });
+        if (!scholarship || !scholarship.isActive) {
+          return { ok: false as const, status: 400, error: 'Selected scholarship is inactive or not found.' };
+        }
+        adjustmentCents = computeAdjustmentCents({
+          baseCents: subtotalCents,
+          type: scholarship.coverageType as 'Percentage' | 'Fixed',
+          value: scholarship.coverageValue.toFixed(2),
+          maxAllowedCents: remainingPayableCents,
+        });
+        label = `Scholarship (${scholarship.code}): ${scholarship.name}`;
+      }
+
+      if (adjustmentCents <= 0) {
+        return {
+          ok: false as const,
+          status: 400,
+          error: 'Calculated adjustment amount is zero.',
+        };
+      }
+
+      const newDiscountCents =
+        params.kind === 'discount' ? existingDiscountCents + adjustmentCents : existingDiscountCents;
+      const newScholarshipCents =
+        params.kind === 'scholarship'
+          ? existingScholarshipCents + adjustmentCents
+          : existingScholarshipCents;
+
+      const { netDueCents, status: newStatus } = recalculateInvoiceTotals({
+        subtotalCents,
+        discountTotalCents: newDiscountCents,
+        scholarshipTotalCents: newScholarshipCents,
+        paidCents,
+      });
+
+      const negativeStr = `-${fromCents(adjustmentCents)}`;
+      const lineDesc = params.notes?.trim() ? `${label} — ${params.notes.trim()}` : label;
+
+      await tx.invoiceItem.create({
+        data: {
+          id: `item-${crypto.randomUUID().slice(0, 8)}`,
+          invoiceId: invoice.id,
+          itemType: params.kind === 'discount' ? 'Discount' : 'Scholarship',
+          description: lineDesc,
+          quantity: 1,
+          unitPrice: negativeStr,
+          lineTotal: negativeStr,
+        },
+      });
+
+      await tx.invoice.update({
+        where: { id: invoice.id },
+        data: {
+          subtotal: fromCents(subtotalCents),
+          discountTotal: fromCents(newDiscountCents),
+          scholarshipTotal: fromCents(newScholarshipCents),
+          amountDue: fromCents(netDueCents),
+          status: newStatus,
+        },
+      });
+
+      const formattedAdj = formatCents(adjustmentCents, invoice.currency || 'INR');
+      const notif = await tx.notification.create({
+        data: {
+          id: `not-${crypto.randomUUID().slice(0, 8)}`,
+          userId: invoice.studentId,
+          kind: 'finance',
+          title: `${params.kind === 'discount' ? 'Fee Discount' : 'Scholarship'} Applied · ${invoice.invoiceNumber}`,
+          message: `${label} (-${formattedAdj}) was applied to invoice ${invoice.invoiceNumber}. Updated balance due: ${formatCents(Math.max(0, netDueCents - paidCents), invoice.currency || 'INR')}.`,
+          relatedCourseId: invoice.courseId,
+          read: false,
+        },
+      });
+
+      await tx.deliveryLog.create({
+        data: {
+          id: `del-${crypto.randomUUID().slice(0, 8)}`,
+          notificationId: notif.id,
+          userId: invoice.studentId,
+          channel: 'in_app',
+          recipient: invoice.student?.email ?? invoice.studentId,
+          status: 'Delivered',
+        },
+      });
+
+      return {
+        ok: true as const,
+        invoiceId: invoice.id,
+        invoiceNumber: invoice.invoiceNumber,
+        adjustmentCents,
+        formattedAdj,
+        newStatus,
+        label,
+      };
+    });
+
+    if (result.ok) {
+      await recordAuditLog({
+        actor: params.actor,
+        action:
+          params.kind === 'discount'
+            ? 'INVOICE_DISCOUNT_APPLIED'
+            : 'INVOICE_SCHOLARSHIP_APPLIED',
+        entityType: 'fee_invoice',
+        entityId: result.invoiceId,
+        summary: `Applied ${result.label} (-${result.formattedAdj}) to ${result.invoiceNumber} -> ${result.newStatus}.`,
+      });
+    }
+    return result;
+  } catch (err) {
+    throw new Error('Failed to apply invoice adjustment.', { cause: err });
+  }
+}
+
+export async function processPaymentRefund(params: {
+  actor: UserPublic;
+  paymentId: string;
+  amount: string;
+  reason: string;
+}) {
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const payment = await tx.payment.findUnique({
+        where: { id: params.paymentId },
+        include: {
+          invoice: true,
+          refunds: true,
+          student: { select: { id: true, name: true, email: true } },
+        },
+      });
+      if (!payment) {
+        return { ok: false as const, status: 404, error: 'Payment receipt not found.' };
+      }
+      if (payment.invoice.status === 'Voided' || payment.invoice.isArchived) {
+        return {
+          ok: false as const,
+          status: 400,
+          error: 'Cannot refund a payment belonging to a voided or archived invoice.',
+        };
+      }
+
+      const activePriorRefunds = payment.refunds
+        .filter((r) => r.status !== 'Cancelled')
+        .map((r) => r.amount.toFixed(2));
+      const refundableCents = computeRefundableCents(
+        payment.amount.toFixed(2),
+        activePriorRefunds
+      );
+      const refundCents = toCents(params.amount);
+
+      if (refundCents <= 0) {
+        return { ok: false as const, status: 400, error: 'Refund amount must be positive.' };
+      }
+      if (refundCents > refundableCents) {
+        return {
+          ok: false as const,
+          status: 400,
+          error: `Refund exceeds refundable payment balance (${formatCents(refundableCents, payment.invoice.currency || 'INR')}).`,
+        };
+      }
+
+      const paidCents = toCents(payment.invoice.amountPaid.toFixed(2));
+      const newPaidCents = Math.max(0, paidCents - refundCents);
+      const newPaidStr = fromCents(newPaidCents);
+      const newStatus = computeInvoiceStatus(payment.invoice.amountDue.toFixed(2), newPaidStr);
+      const refundId = `ref-${crypto.randomUUID().slice(0, 8)}`;
+      const refundNumber = await generateUniqueRefundNumber(tx);
+      const formattedRefund = fromCents(refundCents);
+
+      await tx.refund.create({
+        data: {
+          id: refundId,
+          refundNumber,
+          paymentId: payment.id,
+          invoiceId: payment.invoiceId,
+          studentId: payment.studentId,
+          amount: formattedRefund,
+          reason: params.reason,
+          status: 'Processed',
+          processedByUserId: params.actor.id,
+        },
+      });
+
+      await tx.invoice.update({
+        where: { id: payment.invoiceId },
+        data: {
+          amountPaid: newPaidStr,
+          status: newStatus,
+        },
+      });
+
+      const displayAmt = formatCents(refundCents, payment.invoice.currency || 'INR');
+      const notif = await tx.notification.create({
+        data: {
+          id: `not-${crypto.randomUUID().slice(0, 8)}`,
+          userId: payment.studentId,
+          kind: 'finance',
+          title: `Refund Processed · ${refundNumber}`,
+          message: `A refund of ${displayAmt} against receipt ${payment.receiptNumber} (${payment.invoice.invoiceNumber}) was processed: ${params.reason}`,
+          relatedCourseId: payment.invoice.courseId,
+          read: false,
+        },
+      });
+
+      await tx.deliveryLog.create({
+        data: {
+          id: `del-${crypto.randomUUID().slice(0, 8)}`,
+          notificationId: notif.id,
+          userId: payment.studentId,
+          channel: 'in_app',
+          recipient: payment.student?.email ?? payment.studentId,
+          status: 'Delivered',
+        },
+      });
+
+      return {
+        ok: true as const,
+        refundId,
+        refundNumber,
+        displayAmt,
+        receiptNumber: payment.receiptNumber,
+        invoiceNumber: payment.invoice.invoiceNumber,
+        newStatus,
+      };
+    });
+
+    if (result.ok) {
+      await recordAuditLog({
+        actor: params.actor,
+        action: 'PAYMENT_REFUNDED',
+        entityType: 'refund',
+        entityId: result.refundId,
+        summary: `Processed refund ${result.refundNumber} (${result.displayAmt}) on receipt ${result.receiptNumber} (${result.invoiceNumber} -> ${result.newStatus}).`,
+      });
+    }
+    return result;
+  } catch (err) {
+    throw new Error('Failed to process refund.', { cause: err });
+  }
+}
+
+export async function getInvoiceDetailForUser(
+  invoiceId: string,
+  actor: UserPublic
+): Promise<InvoiceDetailPayload | null | 'FORBIDDEN'> {
+  const [invoice, academyRow] = await Promise.all([
+    prisma.invoice.findUnique({
+      where: { id: invoiceId },
+      include: {
+        student: { select: { id: true, name: true, email: true, studentCode: true, phone: true } },
+        course: { select: { id: true, code: true, title: true } },
+        items: { orderBy: { createdAt: 'asc' } },
+        paymentAllocations: {
+          orderBy: { allocatedAt: 'asc' },
+          include: {
+            payment: {
+              select: {
+                id: true,
+                receiptNumber: true,
+                method: true,
+                referenceCode: true,
+              },
+            },
+          },
+        },
+        refunds: {
+          orderBy: { processedAt: 'desc' },
+          include: {
+            payment: { select: { receiptNumber: true } },
+            processedBy: { select: { name: true } },
+          },
+        },
+      },
+    }),
+    prisma.academy.findFirst({ orderBy: { createdAt: 'asc' } }),
+  ]);
+
+  if (!invoice) return null;
+  if (actor.role === 'instructor') return 'FORBIDDEN';
+  if (actor.role === 'student' && invoice.studentId !== actor.id) return 'FORBIDDEN';
+
+  return {
+    invoice: {
+      id: invoice.id,
+      invoiceNumber: invoice.invoiceNumber,
+      studentId: invoice.studentId,
+      enrollmentId: invoice.enrollmentId,
+      courseId: invoice.courseId,
+      feeStructureId: invoice.feeStructureId,
+      description: invoice.description,
+      subtotal: (invoice.subtotal ?? invoice.amountDue).toFixed(2),
+      discountTotal: invoice.discountTotal.toFixed(2),
+      scholarshipTotal: invoice.scholarshipTotal.toFixed(2),
+      amountDue: invoice.amountDue.toFixed(2),
+      amountPaid: invoice.amountPaid.toFixed(2),
+      currency: invoice.currency,
+      status: invoice.status as 'Unpaid' | 'Partial' | 'Paid' | 'Voided',
+      dueDate: invoice.dueDate.toISOString(),
+      isArchived: invoice.isArchived,
+      createdAt: invoice.createdAt.toISOString(),
+    },
+    student: {
+      id: invoice.student.id,
+      name: invoice.student.name,
+      email: invoice.student.email,
+      studentCode: invoice.student.studentCode,
+      phone: invoice.student.phone,
+    },
+    course: {
+      id: invoice.course.id,
+      code: invoice.course.code,
+      title: invoice.course.title,
+    },
+    academy: academyRow
+      ? {
+          name: academyRow.name,
+          legalName: academyRow.legalName,
+          email: academyRow.email,
+          phone: academyRow.phone,
+          website: academyRow.website,
+          address: academyRow.address,
+          logoDataUrl: academyRow.logoDataUrl,
+          currency: academyRow.currency,
+        }
+      : {
+          name: 'IGS — InfoCom Global Services',
+          legalName: 'InfoCom Global Services — Computer Institute',
+          email: '',
+          phone: '',
+          website: '',
+          address:
+            'Downtown Sopore, Opposite Hassan Motors Petrol Pump, Sopore, Jammu and Kashmir, India.',
+          logoDataUrl: '',
+          currency: 'INR',
+        },
+    items: invoice.items.map((item) => ({
+      id: item.id,
+      invoiceId: item.invoiceId,
+      itemType: item.itemType as 'Tuition' | 'Registration' | 'Lab' | 'Discount' | 'Scholarship' | 'Other',
+      description: item.description,
+      quantity: item.quantity,
+      unitPrice: item.unitPrice.toFixed(2),
+      lineTotal: item.lineTotal.toFixed(2),
+      createdAt: item.createdAt.toISOString(),
+    })),
+    allocations: invoice.paymentAllocations.map((al) => ({
+      id: al.id,
+      paymentId: al.paymentId,
+      receiptNumber: al.payment.receiptNumber,
+      method: al.payment.method as PaymentMethod,
+      referenceCode: al.payment.referenceCode,
+      allocatedAmount: al.allocatedAmount.toFixed(2),
+      allocatedAt: al.allocatedAt.toISOString(),
+    })),
+    refunds: invoice.refunds.map((r) => ({
+      id: r.id,
+      refundNumber: r.refundNumber,
+      paymentId: r.paymentId,
+      receiptNumber: r.payment.receiptNumber,
+      invoiceId: r.invoiceId,
+      invoiceNumber: invoice.invoiceNumber,
+      studentId: r.studentId,
+      studentName: invoice.student.name,
+      amount: r.amount.toFixed(2),
+      reason: r.reason,
+      status: r.status as 'Pending' | 'Processed' | 'Cancelled',
+      processedByUserId: r.processedByUserId,
+      processedByName: r.processedBy.name,
+      processedAt: r.processedAt.toISOString(),
+    })),
+  };
 }
 
 export async function issueVerifiedCertificate(params: {
@@ -1558,8 +2200,10 @@ export async function issueVerifiedCertificate(params: {
       };
     }
 
-    const [mods, grades, att, template] = await Promise.all([
+    const [policies, mods, assessments, grades, att, template] = await Promise.all([
+      loadAcademyPoliciesSummary(),
       prisma.courseModule.findMany({ where: { courseId: course.id } }),
+      prisma.assessment.findMany({ where: { courseId: course.id } }),
       prisma.grade.findMany({
         where: { studentId: student.id, courseId: course.id },
       }),
@@ -1577,14 +2221,29 @@ export async function issueVerifiedCertificate(params: {
       : [];
     const completionPct = calculateCourseCompletion(completedIds, mods.length);
 
-    const weightedScore = calculateWeightedAverage(
-      mods
-        .map((m) => {
-          const g = grades.find((gr) => gr.moduleId === m.id);
-          return g ? { score: g.score, weight: m.weight } : null;
-        })
-        .filter((x): x is { score: number; weight: number } => x !== null)
+    const eligibleAssessments = assessments.filter(
+      (a) => !a.batchId || a.batchId === enrollment.cohortId
     );
+    const gradedAssessmentPairs = eligibleAssessments
+      .map((a) => {
+        const g = grades.find((gr) => gr.assessmentId === a.id);
+        if (!g) return null;
+        const pct = Math.round((g.score / Math.max(1, a.maxScore)) * 1000) / 10;
+        return { score: pct, weight: a.weight };
+      })
+      .filter((x): x is { score: number; weight: number } => x !== null);
+
+    const weightedScore =
+      gradedAssessmentPairs.length > 0
+        ? calculateWeightedAverage(gradedAssessmentPairs)
+        : calculateWeightedAverage(
+            mods
+              .map((m) => {
+                const g = grades.find((gr) => gr.moduleId === m.id);
+                return g ? { score: g.score, weight: m.weight } : null;
+              })
+              .filter((x): x is { score: number; weight: number } => x !== null)
+          );
 
     const attendanceStats = calculateAttendanceStats(
       att.map((a) => ({
@@ -1596,7 +2255,8 @@ export async function issueVerifiedCertificate(params: {
         note: a.note,
         updatedAt: a.updatedAt.toISOString(),
         updatedBy: a.updatedBy,
-      }))
+      })),
+      { lateWeightPct: policies.lateWeightPct }
     );
 
     const eligibility = computeCertificateEligibility({
@@ -1604,6 +2264,15 @@ export async function issueVerifiedCertificate(params: {
       completionPct,
       weightedScore,
       attendanceRate: attendanceStats.rate,
+      minCompletionPct: policies.certificateMinCompletionPct ?? template?.minCompletionPct ?? 100,
+      minScore:
+        course.passingScore > policies.certificateMinScore
+          ? course.passingScore
+          : policies.certificateMinScore,
+      minAttendancePct:
+        course.minAttendanceRate > policies.certificateMinAttendancePct
+          ? course.minAttendanceRate
+          : policies.certificateMinAttendancePct,
     });
 
     if (!eligibility.eligible || weightedScore === null) {
@@ -1808,7 +2477,15 @@ export async function markAttendanceAndNotify(params: {
       };
     }
 
+    const previousRecord = await prisma.attendance.findUnique({
+      where: {
+        sessionId_studentId: { sessionId: session.id, studentId: student.id },
+      },
+      select: { status: true, note: true },
+    });
+
     const now = new Date();
+    const trimmedNote = params.note.trim();
     const notifData = buildAttendanceNotification({
       id: `not-${crypto.randomUUID().slice(0, 8)}`,
       studentId: student.id,
@@ -1835,7 +2512,7 @@ export async function markAttendanceAndNotify(params: {
         endIso: session.endIso.toISOString(),
       },
       status: params.status,
-      note: params.note,
+      note: trimmedNote,
       createdAt: now.toISOString(),
     });
 
@@ -1846,7 +2523,7 @@ export async function markAttendanceAndNotify(params: {
         },
         update: {
           status: params.status,
-          note: params.note.trim(),
+          note: trimmedNote,
           enrollmentId: enrollment.id,
           updatedAt: now,
           updatedByUserId: params.actor.id,
@@ -1859,7 +2536,7 @@ export async function markAttendanceAndNotify(params: {
           enrollmentId: enrollment.id,
           studentId: student.id,
           status: params.status,
-          note: params.note.trim(),
+          note: trimmedNote,
           updatedAt: now,
           updatedByUserId: params.actor.id,
           updatedBy: params.actor.name,
@@ -1897,13 +2574,264 @@ export async function markAttendanceAndNotify(params: {
       action: 'ATTENDANCE_RECORDED',
       entityType: 'attendance',
       entityId: `${session.id}:${student.id}`,
-      summary: `Marked ${student.name} as ${params.status} for "${session.title}".`,
+      summary: previousRecord
+        ? `Updated ${student.name} attendance from ${previousRecord.status} to ${params.status} for "${session.title}".`
+        : `Marked ${student.name} as ${params.status} for "${session.title}".`,
+      metadata: {
+        sessionId: session.id,
+        studentId: student.id,
+        studentName: student.name,
+        previousStatus: previousRecord?.status ?? null,
+        newStatus: params.status,
+        previousNote: previousRecord?.note ?? '',
+        newNote: trimmedNote,
+      },
     });
 
     return { ok: true as const };
   } catch (err) {
     throw new Error('Failed to record attendance.', { cause: err });
   }
+}
+
+export async function bulkMarkAttendanceAndNotify(params: {
+  actor: UserPublic;
+  sessionId: string;
+  entries: Array<{ studentId: string; status: AttendanceStatus; note: string }>;
+}) {
+  try {
+    const session = await prisma.classSession.findUnique({
+      where: { id: params.sessionId },
+    });
+    if (!session) return { ok: false as const, status: 404, error: 'Session not found.' };
+
+    if (params.actor.role === 'instructor') {
+      const assigned = await canInstructorAccessCourse(params.actor.id, session.courseId);
+      if (!assigned && session.instructorId !== params.actor.id) {
+        return {
+          ok: false as const,
+          status: 403,
+          error: 'You are not authorized to mark attendance for this session.',
+        };
+      }
+    }
+
+    const course = await prisma.course.findUnique({ where: { id: session.courseId } });
+    if (!course) return { ok: false as const, status: 404, error: 'Course not found.' };
+
+    const deduplicated = new Map<string, { studentId: string; status: AttendanceStatus; note: string }>();
+    for (const entry of params.entries) {
+      deduplicated.set(entry.studentId, {
+        studentId: entry.studentId,
+        status: entry.status,
+        note: entry.note.trim(),
+      });
+    }
+    const targetIds = Array.from(deduplicated.keys());
+
+    const [enrollments, students, existingRecords] = await Promise.all([
+      prisma.enrollment.findMany({
+        where: {
+          studentId: { in: targetIds },
+          courseId: course.id,
+          cohort: session.cohort,
+          status: { in: ['Active', 'Completed', 'Waitlisted'] },
+        },
+      }),
+      prisma.user.findMany({
+        where: { id: { in: targetIds }, role: 'student' },
+      }),
+      prisma.attendance.findMany({
+        where: { sessionId: session.id, studentId: { in: targetIds } },
+      }),
+    ]);
+
+    const enrollmentMap = new Map(enrollments.map((e) => [e.studentId, e]));
+    const studentMap = new Map(students.map((s) => [s.id, s]));
+    const existingMap = new Map(existingRecords.map((r) => [r.studentId, r]));
+
+    for (const sid of targetIds) {
+      if (!studentMap.has(sid) || !enrollmentMap.has(sid)) {
+        return {
+          ok: false as const,
+          status: 400,
+          error: `Student ${sid} does not have an active enrollment in this session cohort.`,
+        };
+      }
+    }
+
+    const changedEntries = Array.from(deduplicated.values()).filter((entry) => {
+      const prev = existingMap.get(entry.studentId);
+      if (!prev) return true;
+      return prev.status !== entry.status || (prev.note ?? '') !== entry.note;
+    });
+
+    if (changedEntries.length === 0) {
+      return { ok: true as const, updatedCount: 0 };
+    }
+
+    const now = new Date();
+    const mappedCourse: Course = {
+      id: course.id,
+      code: course.code,
+      title: course.title,
+      track: course.track,
+      instructorId: course.instructorId,
+      instructorName: params.actor.name,
+      durationWeeks: course.durationWeeks,
+      tuitionFee: course.tuitionFee.toFixed(2),
+      modules: [],
+    };
+    const mappedSession = {
+      id: session.id,
+      courseId: session.courseId,
+      cohort: session.cohort,
+      title: session.title,
+      topic: session.topic,
+      room: session.room,
+      instructorName: session.instructorName,
+      startIso: session.startIso.toISOString(),
+      endIso: session.endIso.toISOString(),
+    };
+
+    await prisma.$transaction(async (tx) => {
+      for (const entry of changedEntries) {
+        const student = studentMap.get(entry.studentId)!;
+        const enrollment = enrollmentMap.get(entry.studentId)!;
+        await tx.attendance.upsert({
+          where: {
+            sessionId_studentId: { sessionId: session.id, studentId: student.id },
+          },
+          update: {
+            status: entry.status,
+            note: entry.note,
+            enrollmentId: enrollment.id,
+            updatedAt: now,
+            updatedByUserId: params.actor.id,
+            updatedBy: params.actor.name,
+          },
+          create: {
+            id: `att-${crypto.randomUUID().slice(0, 8)}`,
+            sessionId: session.id,
+            courseId: course.id,
+            enrollmentId: enrollment.id,
+            studentId: student.id,
+            status: entry.status,
+            note: entry.note,
+            updatedAt: now,
+            updatedByUserId: params.actor.id,
+            updatedBy: params.actor.name,
+          },
+        });
+
+        const notifData = buildAttendanceNotification({
+          id: `not-${crypto.randomUUID().slice(0, 8)}`,
+          studentId: student.id,
+          course: mappedCourse,
+          session: mappedSession,
+          status: entry.status,
+          note: entry.note,
+          createdAt: now.toISOString(),
+        });
+
+        const notif = await tx.notification.create({
+          data: {
+            id: notifData.id,
+            userId: notifData.userId,
+            kind: notifData.kind,
+            title: notifData.title,
+            message: notifData.message,
+            relatedCourseId: notifData.relatedCourseId,
+            relatedSessionId: notifData.relatedSessionId,
+            read: false,
+            createdAt: now,
+          },
+        });
+
+        await tx.deliveryLog.create({
+          data: {
+            id: `del-${crypto.randomUUID().slice(0, 8)}`,
+            notificationId: notif.id,
+            userId: student.id,
+            channel: 'in_app',
+            recipient: student.email,
+            status: 'Delivered',
+          },
+        });
+      }
+    });
+
+    for (const entry of changedEntries) {
+      const student = studentMap.get(entry.studentId)!;
+      const prev = existingMap.get(entry.studentId);
+      await recordAuditLog({
+        actor: params.actor,
+        action: 'ATTENDANCE_BULK_RECORDED',
+        entityType: 'attendance',
+        entityId: `${session.id}:${student.id}`,
+        summary: prev
+          ? `Bulk updated ${student.name} attendance from ${prev.status} to ${entry.status} for "${session.title}".`
+          : `Bulk marked ${student.name} as ${entry.status} for "${session.title}".`,
+        metadata: {
+          sessionId: session.id,
+          studentId: student.id,
+          studentName: student.name,
+          previousStatus: prev?.status ?? null,
+          newStatus: entry.status,
+          previousNote: prev?.note ?? '',
+          newNote: entry.note,
+        },
+      });
+    }
+
+    return { ok: true as const, updatedCount: changedEntries.length };
+  } catch (err) {
+    throw new Error('Failed to record bulk attendance.', { cause: err });
+  }
+}
+
+export async function listSessionAttendanceHistory(
+  sessionId: string
+): Promise<AttendanceAuditEntry[]> {
+  const logs = await prisma.auditLog.findMany({
+    where: {
+      entityType: 'attendance',
+      OR: [
+        { entityId: sessionId },
+        { entityId: { startsWith: `${sessionId}:` } },
+      ],
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 60,
+  });
+
+  return logs.map((log) => {
+    const meta =
+      log.metadata && typeof log.metadata === 'object'
+        ? (log.metadata as Record<string, unknown>)
+        : {};
+    const [, sidFromEntity] = log.entityId.split(':');
+    return {
+      id: log.id,
+      sessionId: typeof meta.sessionId === 'string' ? meta.sessionId : sessionId,
+      studentId: typeof meta.studentId === 'string' ? meta.studentId : sidFromEntity ?? '',
+      studentName: typeof meta.studentName === 'string' ? meta.studentName : 'Student',
+      previousStatus:
+        typeof meta.previousStatus === 'string'
+          ? (meta.previousStatus as AttendanceStatus)
+          : null,
+      newStatus:
+        typeof meta.newStatus === 'string'
+          ? (meta.newStatus as AttendanceStatus)
+          : 'Present',
+      previousNote: typeof meta.previousNote === 'string' ? meta.previousNote : '',
+      newNote: typeof meta.newNote === 'string' ? meta.newNote : '',
+      actorEmail: log.actorEmail,
+      actorRole: log.actorRole,
+      summary: log.summary,
+      createdAt: log.createdAt.toISOString(),
+    };
+  });
 }
 
 export async function getUserDashboardById(userId: string): Promise<DashboardPayload> {
@@ -2045,6 +2973,7 @@ export async function computeAdminAnalyticsSummary(params: {
       status: s.status as 'Scheduled' | 'Completed' | 'Cancelled',
     }));
 
+  const policies = await loadAcademyPoliciesSummary();
   const windowedAttendance = attendance
     .filter((a) => inWindow(a.updatedAt))
     .map((a) => ({
@@ -2057,7 +2986,9 @@ export async function computeAdminAnalyticsSummary(params: {
       updatedAt: a.updatedAt.toISOString(),
       updatedBy: a.updatedBy,
     }));
-  const attendanceOverview = calculateAttendanceStats(windowedAttendance);
+  const attendanceOverview = calculateAttendanceStats(windowedAttendance, {
+    lateWeightPct: policies.lateWeightPct,
+  });
 
   let outstandingFeesCents = 0;
   for (const inv of invoices) {
@@ -2150,7 +3081,7 @@ export async function computeAdminAnalyticsSummary(params: {
         id: `act-adm-${adm.id}`,
         kind: 'admission',
         title: `Admission ${adm.status}: ${adm.applicantName}`,
-        detail: `${adm.preferredCohort} · Submitted ${adm.submittedAt.toLocaleDateString('en-US')}`,
+        detail: `${adm.preferredCohort} · Submitted ${adm.submittedAt.toLocaleDateString('en-IN')}`,
         targetSection: 'admissions',
       });
     }
@@ -2163,7 +3094,7 @@ export async function computeAdminAnalyticsSummary(params: {
         id: `act-inv-${inv.id}`,
         kind: 'overdue_invoice',
         title: `Overdue Invoice ${inv.invoiceNumber}`,
-        detail: `${userNameMap.get(inv.studentId) ?? 'Student'} · Balance $${fromCents(remaining)}`,
+        detail: `${userNameMap.get(inv.studentId) ?? 'Student'} · Balance ${formatCents(remaining, inv.currency || 'INR')}`,
         targetSection: 'finance',
       });
     }
@@ -2669,22 +3600,24 @@ export async function getAcademySettingsPayload(): Promise<AcademySettingsPayloa
           address: academy.address,
           logoDataUrl: academy.logoDataUrl,
           timezone: academy.timezone || 'Asia/Kolkata',
-          currency: academy.currency || 'USD',
+          currency: academy.currency || 'INR',
         }
       : {
           id: 'acad-infocom',
           code: 'INFOCOM-MAIN',
-          name: 'InfoCom Academy',
-          legalName: 'InfoCom Computer Training & Engineering Institute',
-          email: 'registrar@infocom.edu',
-          phone: '+91 80 4120 8800',
-          website: 'https://infocom.edu',
-          address: '420 Innovation Way, Suite 300, Bengaluru',
+          name: 'IGS — InfoCom Global Services',
+          legalName: 'InfoCom Global Services — Computer Institute',
+          email: '',
+          phone: '',
+          website: '',
+          address:
+            'Downtown Sopore, Opposite Hassan Motors Petrol Pump, Sopore, Jammu and Kashmir, India.',
           logoDataUrl: '',
           timezone: 'Asia/Kolkata',
-          currency: 'USD',
+          currency: 'INR',
         },
     policies: {
+      studentIdPrefix: map.get('academy.student_id_prefix') || 'IGS',
       invoicePrefix: map.get('academy.invoice_prefix') || 'INV-2026',
       invoiceNextSeq: num('academy.invoice_next_seq', 1050),
       feeDueDays: num('academy.fee_due_days', 14),

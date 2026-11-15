@@ -64,7 +64,7 @@ export function CoursesCohortsView({
   onDashboardUpdate,
 }: CoursesCohortsViewProps) {
   const isAdmin = data.user.role === 'admin';
-  const currency = data.academy?.currency || 'USD';
+  const currency = data.academy?.currency || 'INR';
   const departments = data.departments ?? [];
   const instructors = data.users.filter(
     (u) => u.role === 'instructor' || u.role === 'admin'
@@ -642,8 +642,8 @@ export function CoursesCohortsView({
                       {filled} / {coh.capacity}
                     </td>
                     <td className="py-3 px-4 font-mono text-xs text-slate-500 tabular-nums">
-                      {new Date(coh.startDate).toLocaleDateString('en-US')} –{' '}
-                      {new Date(coh.endDate).toLocaleDateString('en-US')}
+                      {new Date(coh.startDate).toLocaleDateString('en-IN')} –{' '}
+                      {new Date(coh.endDate).toLocaleDateString('en-IN')}
                     </td>
                     <td className="py-3 px-5 text-right text-xs font-medium text-emerald-700">
                       {coh.status}

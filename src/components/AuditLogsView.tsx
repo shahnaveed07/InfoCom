@@ -82,7 +82,7 @@ export function AuditLogsView({ data }: AuditLogsViewProps) {
               {filtered.map((log) => (
                 <tr key={log.id} className="hover:bg-slate-50/70">
                   <td className="py-3 px-5 font-mono text-slate-500 whitespace-nowrap tabular-nums">
-                    {new Date(log.createdAt).toLocaleString('en-US')}
+                    {new Date(log.createdAt).toLocaleString('en-IN')}
                   </td>
                   <td className="py-3 px-4">
                     <div className="font-medium text-slate-900">{log.actorEmail}</div>

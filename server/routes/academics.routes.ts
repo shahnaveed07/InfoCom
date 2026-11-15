@@ -7,19 +7,25 @@ import {
 } from '../../src/shared/academic.ts';
 import type { EnrollmentStatus } from '../../src/shared/types.ts';
 import {
+  bulkAttendanceSchema,
+  createAssessmentSchema,
   createCohortSchema,
   createCourseSchema,
   createEnrollmentSchema,
   createSessionSchema,
   markAttendanceSchema,
+  saveAssessmentGradeSchema,
   saveGradeSchema,
   saveRemarkSchema,
   toggleModuleSchema,
+  updateAssessmentSchema,
   updateEnrollmentStatusSchema,
 } from '../../src/shared/validation.ts';
 import {
+  bulkMarkAttendanceAndNotify,
   createEnrollmentWithOptionalInvoice,
   getUserDashboardById,
+  listSessionAttendanceHistory,
   markAttendanceAndNotify,
   recordAuditLog,
   runSessionReminderSweep,
@@ -673,7 +679,7 @@ academicsRouter.put('/grades', ...staffGuard, async (req: AuthenticatedRequest, 
 
     await prisma.$transaction(async (tx) => {
       let assessment = await tx.assessment.findFirst({
-        where: { courseId, moduleId },
+        where: { courseId, moduleId, assessmentType: 'Module Assessment' },
       });
       if (!assessment) {
         assessment = await tx.assessment.create({
@@ -692,13 +698,13 @@ academicsRouter.put('/grades', ...staffGuard, async (req: AuthenticatedRequest, 
 
       await tx.grade.upsert({
         where: {
-          studentId_courseId_moduleId: { studentId, courseId, moduleId },
+          studentId_assessmentId: { studentId, assessmentId: assessment.id },
         },
         update: {
           score: roundedScore,
           feedback,
+          moduleId: mod.id,
           enrollmentId: activeEnrollment.id,
-          assessmentId: assessment.id,
           gradedAt: now,
           gradedByUserId: req.authUser!.id,
           gradedBy: req.authUser!.name,
@@ -707,11 +713,11 @@ academicsRouter.put('/grades', ...staffGuard, async (req: AuthenticatedRequest, 
           id: `grd-${crypto.randomUUID().slice(0, 8)}`,
           studentId,
           courseId,
-          moduleId,
+          moduleId: mod.id,
           enrollmentId: activeEnrollment.id,
           assessmentId: assessment.id,
           score: roundedScore,
-          maxScore: 100,
+          maxScore: assessment.maxScore,
           feedback,
           gradedAt: now,
           gradedByUserId: req.authUser!.id,
@@ -757,6 +763,414 @@ academicsRouter.put('/grades', ...staffGuard, async (req: AuthenticatedRequest, 
   } catch (err) {
     console.error('PUT /api/grades error:', err);
     res.status(500).json({ error: 'Failed to save module grade.' });
+  }
+});
+
+academicsRouter.get('/assessments', ...staffGuard, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const courseId =
+      typeof req.query.courseId === 'string' && req.query.courseId.trim()
+        ? req.query.courseId.trim()
+        : undefined;
+
+    let scopedCourseIds: string[] | undefined;
+    if (req.authUser!.role === 'instructor') {
+      const scope = await getInstructorScope(req.authUser!.id);
+      if (courseId && !scope.courseIds.has(courseId)) {
+        res.status(403).json({ error: 'Access denied. You are not assigned to this course.' });
+        return;
+      }
+      scopedCourseIds = Array.from(scope.courseIds);
+    }
+
+    const rows = await prisma.assessment.findMany({
+      where: courseId
+        ? { courseId }
+        : scopedCourseIds
+          ? { courseId: { in: scopedCourseIds } }
+          : undefined,
+      orderBy: { createdAt: 'asc' },
+    });
+
+    res.json({
+      assessments: rows.map((a) => ({
+        id: a.id,
+        courseId: a.courseId,
+        moduleId: a.moduleId,
+        batchId: a.batchId,
+        title: a.title,
+        assessmentType: a.assessmentType,
+        maxScore: a.maxScore,
+        weight: a.weight,
+        dueDate: a.dueDate ? a.dueDate.toISOString() : null,
+        createdAt: a.createdAt.toISOString(),
+      })),
+    });
+  } catch (err) {
+    console.error('GET /api/assessments error:', err);
+    res.status(500).json({ error: 'Failed to load assessments.' });
+  }
+});
+
+academicsRouter.post('/assessments', ...staffGuard, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    if (req.authUser!.role === 'instructor') {
+      const permitted = await hasInstructorPermission(req.authUser!, 'grades:manage');
+      if (!permitted) {
+        res.status(403).json({ error: 'Your instructor permissions do not allow creating assessments.' });
+        return;
+      }
+    }
+
+    const parsed = createAssessmentSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid assessment input.' });
+      return;
+    }
+
+    const input = parsed.data;
+    if (req.authUser!.role === 'instructor') {
+      const allowed = await canInstructorAccessCourse(req.authUser!.id, input.courseId);
+      if (!allowed) {
+        res.status(403).json({ error: 'You are not assigned to manage assessments for this course.' });
+        return;
+      }
+    }
+
+    const course = await prisma.course.findUnique({ where: { id: input.courseId } });
+    if (!course) {
+      res.status(404).json({ error: 'Course not found.' });
+      return;
+    }
+
+    if (input.moduleId) {
+      const mod = await prisma.courseModule.findFirst({
+        where: { id: input.moduleId, courseId: course.id },
+        select: { id: true },
+      });
+      if (!mod) {
+        res.status(400).json({ error: 'Selected module does not belong to this course.' });
+        return;
+      }
+    }
+
+    if (input.batchId) {
+      const batch = await prisma.batch.findFirst({
+        where: { id: input.batchId, courseId: course.id },
+        select: { id: true },
+      });
+      if (!batch) {
+        res.status(400).json({ error: 'Selected batch does not belong to this course.' });
+        return;
+      }
+    }
+
+    const assessmentId = `asmt-${crypto.randomUUID().slice(0, 8)}`;
+    await prisma.assessment.create({
+      data: {
+        id: assessmentId,
+        courseId: course.id,
+        moduleId: input.moduleId || null,
+        batchId: input.batchId || null,
+        title: input.title,
+        assessmentType: input.assessmentType,
+        maxScore: input.maxScore,
+        weight: input.weight,
+        dueDate: input.dueDate ? new Date(input.dueDate) : null,
+        createdByUserId: req.authUser!.id,
+      },
+    });
+
+    await recordAuditLog({
+      actor: req.authUser!,
+      action: 'ASSESSMENT_CREATED',
+      entityType: 'assessment',
+      entityId: assessmentId,
+      summary: `Created ${input.assessmentType} "${input.title}" (max ${input.maxScore}, weight ${input.weight}%) for ${course.code}.`,
+    });
+
+    const dashboard = await getUserDashboardById(req.authUser!.id);
+    res.status(201).json({ assessmentId, dashboard });
+  } catch (err) {
+    console.error('POST /api/assessments error:', err);
+    res.status(500).json({ error: 'Failed to create assessment.' });
+  }
+});
+
+academicsRouter.patch('/assessments/:id', ...staffGuard, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    if (req.authUser!.role === 'instructor') {
+      const permitted = await hasInstructorPermission(req.authUser!, 'grades:manage');
+      if (!permitted) {
+        res.status(403).json({ error: 'Your instructor permissions do not allow updating assessments.' });
+        return;
+      }
+    }
+
+    const parsed = updateAssessmentSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid assessment update payload.' });
+      return;
+    }
+
+    const existing = await prisma.assessment.findUnique({ where: { id: req.params.id } });
+    if (!existing) {
+      res.status(404).json({ error: 'Assessment not found.' });
+      return;
+    }
+
+    if (req.authUser!.role === 'instructor') {
+      const allowed = await canInstructorAccessCourse(req.authUser!.id, existing.courseId);
+      if (!allowed) {
+        res.status(403).json({ error: 'You are not assigned to update assessments for this course.' });
+        return;
+      }
+    }
+
+    const input = parsed.data;
+    if (input.moduleId) {
+      const mod = await prisma.courseModule.findFirst({
+        where: { id: input.moduleId, courseId: existing.courseId },
+        select: { id: true },
+      });
+      if (!mod) {
+        res.status(400).json({ error: 'Selected module does not belong to this course.' });
+        return;
+      }
+    }
+    if (input.batchId) {
+      const batch = await prisma.batch.findFirst({
+        where: { id: input.batchId, courseId: existing.courseId },
+        select: { id: true },
+      });
+      if (!batch) {
+        res.status(400).json({ error: 'Selected batch does not belong to this course.' });
+        return;
+      }
+    }
+
+    await prisma.assessment.update({
+      where: { id: existing.id },
+      data: {
+        ...(input.title !== undefined ? { title: input.title } : {}),
+        ...(input.assessmentType !== undefined ? { assessmentType: input.assessmentType } : {}),
+        ...(input.moduleId !== undefined ? { moduleId: input.moduleId || null } : {}),
+        ...(input.batchId !== undefined ? { batchId: input.batchId || null } : {}),
+        ...(input.maxScore !== undefined ? { maxScore: input.maxScore } : {}),
+        ...(input.weight !== undefined ? { weight: input.weight } : {}),
+        ...(input.dueDate !== undefined
+          ? { dueDate: input.dueDate ? new Date(input.dueDate) : null }
+          : {}),
+      },
+    });
+
+    await recordAuditLog({
+      actor: req.authUser!,
+      action: 'ASSESSMENT_UPDATED',
+      entityType: 'assessment',
+      entityId: existing.id,
+      summary: `Updated assessment "${input.title ?? existing.title}".`,
+    });
+
+    const dashboard = await getUserDashboardById(req.authUser!.id);
+    res.json({ dashboard });
+  } catch (err) {
+    console.error('PATCH /api/assessments/:id error:', err);
+    res.status(500).json({ error: 'Failed to update assessment.' });
+  }
+});
+
+academicsRouter.delete('/assessments/:id', ...staffGuard, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    if (req.authUser!.role === 'instructor') {
+      const permitted = await hasInstructorPermission(req.authUser!, 'grades:manage');
+      if (!permitted) {
+        res.status(403).json({ error: 'Your instructor permissions do not allow removing assessments.' });
+        return;
+      }
+    }
+
+    const existing = await prisma.assessment.findUnique({
+      where: { id: req.params.id },
+      include: { _count: { select: { grades: true } } },
+    });
+    if (!existing) {
+      res.status(404).json({ error: 'Assessment not found.' });
+      return;
+    }
+
+    if (req.authUser!.role === 'instructor') {
+      const allowed = await canInstructorAccessCourse(req.authUser!.id, existing.courseId);
+      if (!allowed) {
+        res.status(403).json({ error: 'You are not assigned to delete assessments for this course.' });
+        return;
+      }
+    }
+
+    if (existing.assessmentType === 'Module Assessment') {
+      res.status(400).json({ error: 'Primary module assessments cannot be deleted directly.' });
+      return;
+    }
+
+    if (existing._count.grades > 0) {
+      res.status(409).json({
+        error: `Cannot delete "${existing.title}" because ${existing._count.grades} grade record(s) already exist.`,
+      });
+      return;
+    }
+
+    await prisma.assessment.delete({ where: { id: existing.id } });
+    await recordAuditLog({
+      actor: req.authUser!,
+      action: 'ASSESSMENT_DELETED',
+      entityType: 'assessment',
+      entityId: existing.id,
+      summary: `Deleted assessment "${existing.title}".`,
+    });
+
+    const dashboard = await getUserDashboardById(req.authUser!.id);
+    res.json({ dashboard });
+  } catch (err) {
+    console.error('DELETE /api/assessments/:id error:', err);
+    res.status(500).json({ error: 'Failed to delete assessment.' });
+  }
+});
+
+academicsRouter.put('/assessments/:id/grades', ...staffGuard, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    if (req.authUser!.role === 'instructor') {
+      const permitted = await hasInstructorPermission(req.authUser!, 'grades:manage');
+      if (!permitted) {
+        res.status(403).json({ error: 'Your instructor permissions do not allow grading assessments.' });
+        return;
+      }
+    }
+
+    const parsed = saveAssessmentGradeSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid assessment grade.' });
+      return;
+    }
+
+    const assessment = await prisma.assessment.findUnique({
+      where: { id: req.params.id },
+      include: { course: true },
+    });
+    if (!assessment) {
+      res.status(404).json({ error: 'Assessment not found.' });
+      return;
+    }
+
+    if (req.authUser!.role === 'instructor') {
+      const allowed = await canInstructorAccessCourse(req.authUser!.id, assessment.courseId);
+      if (!allowed) {
+        res.status(403).json({ error: 'You are not assigned to grade assessments for this course.' });
+        return;
+      }
+    }
+
+    const { studentId, score, feedback } = parsed.data;
+    if (score > assessment.maxScore) {
+      res.status(400).json({
+        error: `Score (${score}) cannot exceed assessment max score (${assessment.maxScore}).`,
+      });
+      return;
+    }
+
+    const student = await prisma.user.findFirst({ where: { id: studentId, role: 'student' } });
+    if (!student) {
+      res.status(404).json({ error: 'Student not found.' });
+      return;
+    }
+
+    const activeEnrollment = await prisma.enrollment.findFirst({
+      where: {
+        studentId,
+        courseId: assessment.courseId,
+        status: { in: ['Active', 'Completed', 'Waitlisted'] },
+        ...(assessment.batchId ? { cohortId: assessment.batchId } : {}),
+      },
+    });
+    if (!activeEnrollment) {
+      res.status(400).json({
+        error: 'Student does not have an eligible enrollment for this assessment.',
+      });
+      return;
+    }
+
+    const roundedScore = Math.round(score);
+    const pct = Math.round((roundedScore / Math.max(1, assessment.maxScore)) * 1000) / 10;
+    const now = new Date();
+
+    await prisma.$transaction(async (tx) => {
+      await tx.grade.upsert({
+        where: {
+          studentId_assessmentId: { studentId, assessmentId: assessment.id },
+        },
+        update: {
+          score: roundedScore,
+          maxScore: assessment.maxScore,
+          feedback,
+          moduleId: assessment.moduleId,
+          enrollmentId: activeEnrollment.id,
+          gradedAt: now,
+          gradedByUserId: req.authUser!.id,
+          gradedBy: req.authUser!.name,
+        },
+        create: {
+          id: `grd-${crypto.randomUUID().slice(0, 8)}`,
+          studentId,
+          courseId: assessment.courseId,
+          moduleId: assessment.moduleId,
+          enrollmentId: activeEnrollment.id,
+          assessmentId: assessment.id,
+          score: roundedScore,
+          maxScore: assessment.maxScore,
+          feedback,
+          gradedAt: now,
+          gradedByUserId: req.authUser!.id,
+          gradedBy: req.authUser!.name,
+        },
+      });
+
+      const notif = await tx.notification.create({
+        data: {
+          id: `not-${crypto.randomUUID().slice(0, 8)}`,
+          userId: studentId,
+          kind: 'grade',
+          title: `${assessment.assessmentType} Graded · ${assessment.course.code}`,
+          message: `Score ${roundedScore}/${assessment.maxScore} (${pct}%) recorded for "${assessment.title}" by ${req.authUser!.name}.`,
+          relatedCourseId: assessment.courseId,
+          read: false,
+          createdAt: now,
+        },
+      });
+
+      await tx.deliveryLog.create({
+        data: {
+          id: `del-${crypto.randomUUID().slice(0, 8)}`,
+          notificationId: notif.id,
+          userId: student.id,
+          channel: 'in_app',
+          recipient: student.email,
+          status: 'Delivered',
+        },
+      });
+    });
+
+    await recordAuditLog({
+      actor: req.authUser!,
+      action: 'ASSESSMENT_GRADE_RECORDED',
+      entityType: 'grade',
+      entityId: `${studentId}:${assessment.id}`,
+      summary: `Recorded ${roundedScore}/${assessment.maxScore} (${pct}%) for ${student.name} on "${assessment.title}".`,
+    });
+
+    const dashboard = await getUserDashboardById(req.authUser!.id);
+    res.json({ dashboard });
+  } catch (err) {
+    console.error('PUT /api/assessments/:id/grades error:', err);
+    res.status(500).json({ error: 'Failed to save assessment grade.' });
   }
 });
 
@@ -1007,5 +1421,71 @@ academicsRouter.post('/attendance', ...staffGuard, async (req: AuthenticatedRequ
   } catch (err) {
     console.error('POST /api/attendance error:', err);
     res.status(500).json({ error: 'Failed to record attendance.' });
+  }
+});
+
+academicsRouter.post('/attendance/bulk', ...staffGuard, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    if (req.authUser!.role === 'instructor') {
+      const permitted = await hasInstructorPermission(req.authUser!, 'attendance:manage');
+      if (!permitted) {
+        res.status(403).json({ error: 'Your instructor permissions do not allow marking attendance.' });
+        return;
+      }
+    }
+
+    const parsed = bulkAttendanceSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid bulk attendance payload.' });
+      return;
+    }
+
+    const result = await bulkMarkAttendanceAndNotify({
+      actor: req.authUser!,
+      ...parsed.data,
+    });
+    if (!result.ok) {
+      res.status(result.status ?? 400).json({ error: result.error });
+      return;
+    }
+
+    const dashboard = await getUserDashboardById(req.authUser!.id);
+    res.json({ updatedCount: result.updatedCount, dashboard });
+  } catch (err) {
+    console.error('POST /api/attendance/bulk error:', err);
+    res.status(500).json({ error: 'Failed to record bulk attendance.' });
+  }
+});
+
+academicsRouter.get('/attendance/history', ...staffGuard, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const sessionId =
+      typeof req.query.sessionId === 'string' ? req.query.sessionId.trim() : '';
+    if (!sessionId) {
+      res.status(400).json({ error: 'sessionId query parameter is required.' });
+      return;
+    }
+
+    const session = await prisma.classSession.findUnique({ where: { id: sessionId } });
+    if (!session) {
+      res.status(404).json({ error: 'Session not found.' });
+      return;
+    }
+
+    if (req.authUser!.role === 'instructor') {
+      const allowed =
+        session.instructorId === req.authUser!.id ||
+        (await canInstructorAccessCourse(req.authUser!.id, session.courseId));
+      if (!allowed) {
+        res.status(403).json({ error: 'Access denied to session attendance history.' });
+        return;
+      }
+    }
+
+    const entries = await listSessionAttendanceHistory(sessionId);
+    res.json({ entries });
+  } catch (err) {
+    console.error('GET /api/attendance/history error:', err);
+    res.status(500).json({ error: 'Failed to load attendance history.' });
   }
 });

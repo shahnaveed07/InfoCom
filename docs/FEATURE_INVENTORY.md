@@ -1,45 +1,38 @@
-# InfoCom AMS — Feature Inventory & Verification Matrix (Phase 1)
+# InfoCom AMS — Feature Inventory & Verification Matrix
 
-This document catalogs every feature currently present in InfoCom AMS, mapping UI components to API routes, server business logic, and PostgreSQL tables, along with verified working status and identified gaps.
+This matrix reflects the verified implementation state of every module across UI, API, business logic, and PostgreSQL/Prisma persistence.
+
+Status Legend:
+- **Working**: Implemented end-to-end across UI, API, and database.
+- **Partial**: Core flow works; specific sub-features or UI wiring remain incomplete.
+- **Broken**: Runtime or contract mismatch breaks the implemented flow.
+- **Schema Only**: Database table(s) exist in `prisma/schema.prisma`, with no runtime API/UI.
+- **Not Implemented**: Missing across schema, backend, and UI.
 
 ---
 
-## 1. Feature Status Matrix
-
-| Domain | Feature | UI Component | API Endpoint(s) | Status | Notes / Gaps |
+| Domain | Feature | UI Component | API / Service | Status | Verified Notes & Gaps |
 | --- | --- | --- | --- | --- | --- |
-| **Authentication** | Email & password sign-in | `AuthView.tsx` | `POST /api/auth/login` | Working | Rate-limited (Phase 1), `scrypt` verified, audit-logged. |
-| **Authentication** | Student self-registration | `AuthView.tsx` | `POST /api/auth/register` | Working (Caveat) | Hardcodes `role: 'student'`. Silently auto-enrolls into first course (`Cohort A · Autumn`) instead of selecting course/admissions flow. |
-| **Authentication** | Google Sign-In (Firebase SSO) | `AuthView.tsx` | `POST /api/auth/firebase` | Working | Server verifies Firebase ID token via `firebase-admin`. Restricted admin bootstrap to owner email. |
-| **Authentication** | Session hydration & logout | `App.tsx`, `Sidebar.tsx` | `GET /api/auth/me`, `POST /api/auth/logout` | Working | Phase 1 added server-side `jti` revocation on logout. |
-| **Role Dashboards** | Admin Academy Overview | `AdminOverview.tsx` | `GET /api/dashboard` | Working | Live PostgreSQL metrics via `computeAcademyAnalytics()`. Minor copy references internal DB engine name. |
-| **Role Dashboards** | Instructor Overview | `InstructorOverview.tsx` | `GET /api/dashboard` | Working (Broad Scope) | Instructors currently view all courses/sessions/enrollments across the academy rather than strictly assigned courses. |
-| **Role Dashboards** | Student Dashboard | `StudentDashboard.tsx` | `GET /api/dashboard` | Working | Strictly scoped to authenticated `studentId`: enrolled courses, module grades, schedule, fee invoices, certificates, notifications. |
-| **User & Staff Mgmt** | Admin create/update users | `UsersManagementView.tsx` | `POST /api/users`, `PATCH /api/users/:id` | Working | Admin-only. Self-demotion & self-deactivation guarded server-side. |
-| **Admissions** | Public admission endpoint | *No UI yet* | `POST /api/admissions/public` | Backend Only | Endpoint exists and is rate-limited, but `AuthView.tsx` has no public admissions application tab. |
-| **Admissions** | Admin admissions triage & conversion | `AdmissionsView.tsx` | `GET /api/admissions`, `POST /api/admissions`, `PATCH /api/admissions/:id` | Working (Caveat) | 1-click conversion creates Student + Enrollment + Tuition Invoice + Notification in DB transaction. New users get static temp password `Student!2026`. |
-| **Courses & Cohorts** | Course creation (with module weights) | `CoursesCohortsView.tsx` | `POST /api/courses` | Working | Enforces `sum(module.weight) === 100` server & client side. Missing course edit/archive UI. |
-| **Courses & Cohorts** | Cohort creation | `CoursesCohortsView.tsx` | `POST /api/cohorts` | Working | Persists structured cohorts with capacity & date range. Missing cohort edit/archive UI. |
-| **Enrollments** | Staff create & update enrollments | `EnrollmentsView.tsx` | `POST /api/enrollments`, `PATCH /api/enrollments/:id` | Partial Gap | Functional, optional tuition invoice generation works. UI form passes cohort text label without selecting/linking `cohortId` FK. |
-| **Course Tracking** | Module completion toggle | `CourseTrackingView.tsx` | `PUT /api/progress/module-completion` | Working | Validates module belongs to enrolled course and enrollment is not Dropped. |
-| **Grading** | Module grading & feedback | `CourseTrackingView.tsx` | `PUT /api/grades` | Working | Upserts grade (0–100), dispatches student notification, Phase 1 added enrollment guard. |
-| **Scheduling** | Class session creation | `SchedulesView.tsx` | `POST /api/sessions` | Partial Gap | Persists session and triggers reminder sweep. Modal hardcodes `Cohort A/B · Autumn` options instead of reading `data.cohorts`. |
-| **Scheduling** | Session status update (`Completed`/`Cancelled`) | *No UI yet* | `PATCH /api/sessions/:id/status` | Backend Only | `api.updateSessionStatus` exists in `src/utils/api.ts`, but `SchedulesView.tsx` exposes no status controls. |
-| **Attendance & Alerts** | Attendance marking + automated alert | `AttendanceAlertsView.tsx` | `POST /api/attendance` | Working | Upserts attendance (`Present`/`Late`/`Absent`), dispatches automated student notification, Phase 1 added cohort enrollment validation. |
-| **Attendance & Alerts** | Automated 24h session reminder sweep | `AttendanceAlertsView.tsx`, `server.ts` | `POST /api/notifications/run-reminders` | Working | Idempotent via `dedupeKey`; runs on interval, login/dashboard load, session creation, and manual trigger. |
-| **Notifications** | Student inbox read / read-all | `StudentDashboard.tsx` | `PATCH /api/notifications/:id/read`, `POST /api/notifications/read-all` | Working | Phase 1 fixed cross-user IDOR so both routes strictly scope to `req.authUser.id`. |
-| **Progress Reports** | Printable / downloadable report + remarks | `ProgressReportView.tsx` | `PUT /api/progress/remark` | Working | Weighted GPA/average, letter grade, standing, attendance summary, print layout, `.txt` download. Phase 1 added enrollment check. |
-| **Finance & Receipts** | Issue invoice, void invoice, record payment | `FinanceView.tsx` | `POST /api/invoices`, `PATCH /api/invoices/:id/void`, `POST /api/invoices/:id/payments` | Working | Integer-cents arithmetic via `toCents`/`fromCents`, prevents overpaying or voiding paid invoices, auto-generates `RCPT-2026-*` and student notification. |
-| **Document Vault** | Upload, role-scoped download, archive | `DocumentsView.tsx` | `POST /api/documents`, `GET /api/documents/:id/download`, `PATCH /api/documents/:id/archive` | Working | Max 2 MB validation; students restricted to `ID Verification`, `Assignment`, `Other` and own docs + enrolled `Syllabus`. |
-| **Certificates** | Issue, revoke & public verify | `CertificatesView.tsx`, `AuthView.tsx` | `POST /api/certificates`, `POST /api/certificates/:id/revoke`, `GET /api/certificates/verify/:code` | Working | Checks eligibility (100% completion, passing grade >= 60%, attendance >= 75%), SHA-256 hash verification. |
-| **Audit Logs** | Read-only security/operations trail | `AuditLogsView.tsx` | `GET /api/dashboard` (admin) | Working | Displays latest 80 audit log rows for admins only. |
-
----
-
-## 2. Incomplete UI / API Wiring Summary
-
-1. **Session Lifecycle Controls Missing (`PATCH /api/sessions/:id/status`):** Backend route and `src/utils/api.ts` client method exist, but instructors/admins have no buttons in `SchedulesView.tsx` to mark sessions `Completed` or `Cancelled`.
-2. **Public Admissions Form Missing (`POST /api/admissions/public`):** Backend endpoint exists and rate limiting is active, but prospective students have no UI entry point in `AuthView.tsx`.
-3. **Hardcoded Cohort Strings in Forms (`EnrollmentsView.tsx`, `SchedulesView.tsx`):** Forms construct static `'Cohort A · Autumn'` / `'Cohort B · Autumn'` dropdowns rather than binding to `data.cohorts` (`cohortId` + `cohort` name), preventing newly created cohorts from appearing cleanly in scheduling/enrollment selects.
-4. **Course/Cohort Edit & Archive UI Missing:** Creation exists (`POST /api/courses`, `POST /api/cohorts`), while update/archive endpoints and UI forms are not yet built.
-5. **Document & Invoice Pagination / Receipt Print Template:** Document Vault stores Base64 payloads directly in `documents.content_base64` (capped at 2 MB) without dedicated search pagination, and payment receipts lack a standalone printable receipt slip modal.
+| **Auth & Security** | Email/password sign-in (`Argon2id` + `scrypt` upgrade) | `AuthView.tsx` | `POST /api/auth/login` | Working | Rate-limited, audit-logged, sets HttpOnly opaque session cookie. Still uses `nta_session` cookie name & shows demo quick-fill buttons (Phase B cleanup). |
+| **Auth & Security** | Google SSO (Firebase) | `AuthView.tsx` | `POST /api/auth/firebase` | Legacy Active (To Remove) | Must be completely removed in Phase B along with Firebase packages and `User.firebaseUid`. |
+| **Auth & Security** | Student self-registration | `AuthView.tsx` | `POST /api/auth/register` | Working (Needs Policy Polish) | Hardcodes `student` role; currently auto-enrolls into first active cohort instead of pure portal creation or Admissions link. |
+| **Auth & Security** | Password change / forgot / reset | `App.tsx`, `AuthView.tsx` | `POST /api/auth/{change,forgot,reset}-password` | Working (Partial Onboarding) | Forgot-password creates reset token in DB but does not deliver via email (`Phase I`). `mustChangePassword` flag is cleared on change, but app shell does not yet block navigation with a forced-change gate (`Phase C`). |
+| **Auth & Security** | Protected initial Admin bootstrap CLI | CLI | `scripts/bootstrap-admin.ts` | Working | Enforces >=12 char password & secret if admin exists. |
+| **Admin Portal** | Admin Dashboard & Date-Filtered Analytics | `AdminOverview.tsx` | `GET /api/dashboard`, `GET /api/admin/analytics` | Working | Live DB metrics (students, instructors, pending admissions, revenue, outstanding fees, today's classes, charts). |
+| **Admin Portal** | Academy Settings, Academic Years & Terms, Departments, Classrooms | `AcademySettingsView.tsx`, `BatchesManagementView.tsx` | `/api/settings`, `/api/academic-years*`, `/api/academic-terms*`, `/api/departments*`, `/api/classrooms*` | Working | Defaults to `USD` instead of `INR` and lacks official IGS Sopore seed defaults (`Phase B`). |
+| **Student Mgmt** | Student Directory, Create, Edit, Profile, Search/Filter/Sort/Pagination | `StudentsManagementView.tsx` | `/api/students*` | Working | Server-generated student codes (`STU-YYYY-###` currently; shifting to configurable `IGS-` prefix in Phase B). |
+| **Instructor Mgmt** | Instructor Directory, Create, Edit, Assign Courses/Batches, Permissions | `InstructorsManagementView.tsx` | `/api/instructors*` | Working | Scoped RBAC enforced in `server/security/permissions.ts`. |
+| **Admissions** | Public Admission Application Form | *Missing in `AuthView.tsx`* | `POST /api/admissions/public` | Partial | Backend endpoint exists; `AuthView.tsx` has no public "Apply for Admission" tab (`Phase E`). |
+| **Admissions** | Admin Admissions Workflow (Draft/Submit/Review/Docs/Approve/Reject/Withdraw) | `AdmissionsView.tsx` | `/api/admissions*` | Working (Onboarding Gap) | Document upload & verification (`Pending`/`Verified`/`Replacement Required`/`Rejected`), status history, batch allocation, and fee plan association all work. Approval sets static/generated password without sending onboarding setup token (`Phase C`). |
+| **Academics** | Courses, Modules & Batches CRUD | `CoursesCohortsView.tsx`, `BatchesManagementView.tsx` | `POST/PATCH /api/courses*`, `POST/PATCH /api/cohorts*` | Working | Validates module weight sum = 100%, batch capacity, classroom & term links. |
+| **Academics** | Enrollments, Status Lifecycle & Batch/Course Transfers | `EnrollmentsView.tsx` | `/api/enrollments*` | Working | Capacity waitlist awareness & automated fee invoice option work. |
+| **Academics** | Enrollment History Modal | `EnrollmentsView.tsx` | `GET /api/enrollments/:enrollmentId/history` | **Broken** | Backend returns flat fields (`studentName`, `courseCode`), while frontend `api.fetchEnrollmentHistory` reads `res.enrollment.studentName` (`TypeError`). Fix in Phase C. |
+| **Academics** | Module Completion & Grading | `CourseTrackingView.tsx` | `PUT /api/progress/module-completion`, `PUT /api/grades` | Working (Partial Assessments) | Auto-creates 1:1 `Assessment` per module on grading. Dedicated multi-type assessment management (assignments, quizzes, labs, exams) UI/API is incomplete (`Phase F`). |
+| **Academics** | Class Scheduling & Status Transitions | `SchedulesView.tsx` | `POST /api/sessions`, `PATCH /api/sessions/:id/status` | Working | Session creation & `Completed`/`Cancelled` status updates dispatch notifications. |
+| **Academics** | Attendance Marking, Reminders & Progress Reports | `AttendanceAlertsView.tsx`, `ProgressReportView.tsx` | `POST /api/attendance`, `PUT /api/progress/remark`, `POST /api/notifications/run-reminders` | Working (Partial Policy/Bulk) | Individual marking & printable/`.txt` transcript work. Bulk attendance marking, leave/excused status, correction history UI, and global configurable pass/attendance thresholds need completion (`Phase F`). |
+| **Finance** | Invoices, Voiding, Partial/Full Payments & Receipt Modal | `FinanceView.tsx` | `/api/invoices*`, `/api/payments` | Working (Currency/Slip Polish) | Integer-cents math, receipt preview (`window.print()`). Needs INR currency formatting, fee plan/structure CRUD UI (`Phase G`). |
+| **Finance** | Discounts, Scholarships & Refunds | *None* | *None* | **Schema Only** | `discounts`, `scholarships`, and `refunds` tables exist in `prisma/schema.prisma`, but no API routes or UI exist (`Phase G`). |
+| **Documents** | Private Document Vault | `DocumentsView.tsx` | `/api/documents*` | Working (Postgres Storage) | Stores `contentBase64` inside `documents` table (<=2 MB). Needs migration to private object storage adapter (`Phase H`). |
+| **Certificates** | Issue, Revoke & Public Verify | `CertificatesView.tsx`, `AuthView.tsx` | `/api/certificates*` | Partial | Eligibility check & SHA-256 verification work. Download returns raw `.json` file instead of printable/PDF certificate with QR verification code (`Phase H`). |
+| **Communication** | In-App Notifications & Delivery Logs | `StudentDashboard.tsx`, `AttendanceAlertsView.tsx` | `/api/notifications*` | Partial | In-app notifications and `DeliveryLog` (`channel: 'in_app'`) work. Real SMTP/email provider & user notification preferences UI are not wired (`Phase I`). |
+| **Background Jobs & Exports** | Reliable Job Queue & Scheduled Reports | *In-process `setInterval`* | `runSessionReminderSweep` | Not Implemented | Reminder sweeps run in-process without persistence/retries. CSV/PDF reporting exports are not yet implemented (`Phase I`). |

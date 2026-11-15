@@ -27,10 +27,10 @@ import {
   generateUniqueStudentCode,
   getPortalActivationPolicy,
   getUserDashboardById,
+  issueAccountSetupToken,
   recordAuditLog,
   toPublicUser,
 } from '../ams-service.ts';
-import { hashPassword } from '../auth.ts';
 import { prisma } from '../db/prisma.ts';
 import {
   requireAuth,
@@ -376,11 +376,14 @@ async function approveAdmissionWorkflow(params: {
 
     let studentCode = studentRow?.studentCode ?? null;
     let studentProfileId = '';
+    let issuedOnboarding: {
+      rawToken: string;
+      onboardingPath: string;
+      expiresAt: string;
+    } | null = null;
     if (!studentRow) {
       const studentId = `stu-${crypto.randomUUID().slice(0, 8)}`;
       studentCode = await generateUniqueStudentCode(tx);
-      const tempSecret = crypto.randomBytes(12).toString('base64url');
-      const tempHash = await hashPassword(tempSecret);
 
       studentRow = await tx.user.create({
         data: {
@@ -391,9 +394,15 @@ async function approveAdmissionWorkflow(params: {
           status: activateNow ? 'active' : 'inactive',
           studentCode,
           phone: admission.phone || null,
-          passwordHash: tempHash,
+          passwordHash: null,
           mustChangePassword: true,
         },
+      });
+
+      issuedOnboarding = await issueAccountSetupToken(tx, {
+        userId: studentRow.id,
+        createdByUserId: params.actor.id,
+        ttlHours: 72,
       });
 
       const roleRow = await tx.role.findUnique({ where: { code: 'student' } });
@@ -564,6 +573,7 @@ async function approveAdmissionWorkflow(params: {
 
     let invoiceId: string | null = null;
     if (params.issueInvoice !== false && totalFeeCents > 0) {
+      const academyRow = await tx.academy.findFirst({ select: { currency: true } });
       invoiceId = `inv-${crypto.randomUUID().slice(0, 8)}`;
       const invNum = await generateNextInvoiceNumber(tx);
       const totalDueStr = (totalFeeCents / 100).toFixed(2);
@@ -582,7 +592,7 @@ async function approveAdmissionWorkflow(params: {
           subtotal: totalDueStr,
           amountDue: totalDueStr,
           amountPaid: '0.00',
-          currency: feePlan?.currency || 'USD',
+          currency: academyRow?.currency || feePlan?.currency || 'INR',
           status: 'Unpaid',
           dueDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
           issuedByUserId: params.actor.id,
@@ -706,6 +716,13 @@ async function approveAdmissionWorkflow(params: {
       batchName: batch.name,
       portalActivated: portalIsActive,
       portalActivationPolicy: activationPolicy,
+      ...(issuedOnboarding
+        ? {
+            onboardingToken: issuedOnboarding.rawToken,
+            onboardingPath: issuedOnboarding.onboardingPath,
+            onboardingExpiresAt: issuedOnboarding.expiresAt,
+          }
+        : {}),
     };
   });
 
@@ -726,6 +743,85 @@ async function approveAdmissionWorkflow(params: {
 
   return result;
 }
+
+// Public catalog of active non-archived courses, batches, and fee plans for online applications (no PII)
+admissionsRouter.get(
+  '/admissions/public/catalog',
+  async (_req: Request, res: Response) => {
+    try {
+      const [academy, courses, batches, feePlans] = await Promise.all([
+        prisma.academy.findFirst({ select: { name: true, currency: true } }),
+        prisma.course.findMany({
+          where: { isArchived: false },
+          orderBy: { code: 'asc' },
+          select: {
+            id: true,
+            code: true,
+            title: true,
+            track: true,
+            category: true,
+            durationWeeks: true,
+            tuitionFee: true,
+          },
+        }),
+        prisma.batch.findMany({
+          where: {
+            status: { in: ['Planned', 'Active'] },
+          },
+          orderBy: { startDate: 'asc' },
+          select: {
+            id: true,
+            code: true,
+            name: true,
+            courseId: true,
+            startDate: true,
+            endDate: true,
+            status: true,
+          },
+        }),
+        prisma.feePlan.findMany({
+          where: { isActive: true },
+          orderBy: { installmentCount: 'asc' },
+          select: {
+            id: true,
+            code: true,
+            name: true,
+            description: true,
+            installmentCount: true,
+            currency: true,
+          },
+        }),
+      ]);
+
+      res.json({
+        academyName: academy?.name ?? 'IGS — InfoCom Global Services',
+        currency: academy?.currency ?? 'INR',
+        courses: courses.map((c) => ({
+          id: c.id,
+          code: c.code,
+          title: c.title,
+          track: c.track,
+          category: c.category,
+          durationWeeks: c.durationWeeks,
+          tuitionFee: c.tuitionFee.toFixed(2),
+        })),
+        batches: batches.map((b) => ({
+          id: b.id,
+          code: b.code,
+          name: b.name,
+          courseId: b.courseId,
+          startDate: b.startDate.toISOString(),
+          endDate: b.endDate.toISOString(),
+          status: b.status,
+        })),
+        feePlans,
+      });
+    } catch (err) {
+      console.error('GET /api/admissions/public/catalog error:', err);
+      res.status(500).json({ error: 'Failed to load admission program catalog.' });
+    }
+  }
+);
 
 // Public application submission (supports Draft and Submitted)
 admissionsRouter.post(

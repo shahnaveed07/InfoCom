@@ -1,66 +1,59 @@
-# InfoCom AMS — Phased Implementation Plan (Post-Phase 1 Baseline)
+# InfoCom Global Services AMS — Master Implementation Plan (Phases A–J)
 
-This plan establishes the controlled, incremental roadmap from the stabilized Phase 1 repository to a complete, production-hardened Academy Management System without breaking working features.
-
----
-
-## Phase 1 (Completed) — Repository Audit, Security Stabilization & Baseline
-
-- Complete codebase, dependency, persistence, and feature inventory (`REPOSITORY_AUDIT.md`, `FEATURE_INVENTORY.md`).
-- Byte-for-byte backup verified (`/data/centre-db.backup.json` === `/data/centre-db.json`).
-- Critical immediate security remediations applied and unit-tested:
-  - CSPRNG fallback session secret (`SEC-01`).
-  - `jti`-based session revocation on logout & DB role re-validation (`SEC-02`).
-  - Cross-user notification IDOR eliminated (`SEC-03`).
-  - Rate limiting on login, registration, Firebase SSO, and public admissions + failed-login audit logs (`SEC-04`).
-  - HTTPS-conditional `secure` session cookie flag, safe HTTP security headers, and CSRF same-origin guard (`SEC-05`).
-  - Enrollment integrity validation on grades, remarks, module completion, and attendance (`SEC-06`).
-  - Admissions creation locked to `admin` + `nosniff` on downloads (`SEC-07`).
-- Build, TypeScript lint (`tsc --noEmit`), and unit test suites (`academic.test.ts`, `validation.test.ts`, `auth.test.ts`) verified green.
+This roadmap executes the **InfoCom Global Services — Complete AMS Implementation Master Prompt** sequentially without discarding working modules or historical data.
 
 ---
 
-## Phase 2 — Identity Lifecycle, Scoped Instructor RBAC & Onboarding
+## Phase A — Current Repository Audit & Documentation Sync (Current)
+- Inspect live runtime code (`server/`, `src/`, `prisma/`, `scripts/`).
+- Replace outdated Phase 1 Drizzle/mock documentation with accurate architecture, database, security, API, testing, and deployment documentation.
+- Flag missing external brand asset (`igs-infocom-global-services.png`).
 
-**Dependencies:** Phase 1 baseline passing; Cloud SQL PostgreSQL instance active.
+## Phase B — Official IGS Branding, Firebase Removal & Single Database Cleanup
+- Apply official identity across metadata, HTML title/meta, login showcase, sidebar/topbar, transcripts, receipts, certificates, and seeded defaults:
+  - **Name:** `IGS — InfoCom Global Services` (`Computer Institute`)
+  - **Location:** `Downtown Sopore, Opposite Hassan Motors Petrol Pump, Sopore, Jammu and Kashmir, India.`
+  - **Slogan:** `"Learn Today, Build Tomorrow."`
+  - **Defaults:** `Asia/Kolkata`, `INR` (`₹` / `en-IN`), configurable `IGS-YYYY-NNNNN` student ID prefix (preserving historical student IDs and paid invoices).
+- Remove Firebase Auth & Admin SDK completely (`src/lib/firebase*`, `firebase-applet-config.json`, `/api/auth/firebase`, Bearer ID token auth, `syncFirebaseUser`, `firebase`/`firebase-admin` deps) and add a **new** Prisma migration dropping `users.firebase_uid`.
+- Remove Drizzle ORM (`src/db/*`, `server/migrate.ts`, `drizzle-orm`, `drizzle-kit`) so PostgreSQL + Prisma ORM is the single database layer.
+- Switch session cookie to `igs_session` (clearing legacy `nta_session`) and remove demo quick-fill credential buttons/passwords from production login UI.
 
-1. **Persistent Session & Password Lifecycle (`SEC-09`, `SEC-10`, `SEC-11`):**
-   - Add `user_sessions` (or `sessionVersion` column on `users`) in `src/db/schema.ts` so logout/deactivation/role-change revocations survive server restarts.
-   - Add authenticated `POST /api/auth/change-password` endpoint (`requireAuth`) and enforce password rotation for staff-provisioned / admission-converted students using temporary onboarding tokens instead of static `Student!2026`.
-2. **Instructor Course-Assignment RBAC (`SEC-08`):**
-   - Scope instructor write operations (`PUT /api/grades`, `PUT /api/progress/remark`, `PUT /api/progress/module-completion`, `POST /api/sessions`, `POST /api/attendance`, `POST /api/certificates`) to courses/cohorts where the instructor is assigned (`course.instructorId === user.id || cohort.instructorId === user.id || session.instructorId === user.id`), keeping `admin` unrestricted.
-   - Add dedicated instructor notification preferences and ensure `buildDashboardForUser()` does not expose unrelated instructors' notifications/documents.
-3. **Production Server Start Packaging (`INF-01`):**
-   - Add `"build:server"` (`esbuild server.ts --bundle --platform=node --packages=external --outfile=dist-server/server.mjs` or `tsx` runtime entrypoint) and align `package.json` `"start"` script so `npm start` executes reliably in Node.js production environments.
+## Phase C — Authentication, Forced Password Change & Secure Onboarding + History Bugfix
+- Fix `GET /api/enrollments/:enrollmentId/history` response contract & `EnrollmentsView` modal.
+- Enforce `mustChangePassword` gate immediately after login and inside `App.tsx` until password rotation succeeds.
+- Replace static initial password provisioning on admin user creation / admission approval with cryptographic one-time onboarding/setup tokens and admin-triggered reset/invite tokens.
+- Verify account suspension/deactivation/reactivation and session revocation end-to-end.
 
----
+## Phase D — Admin Portal & People/Master Data Completeness
+- Ensure all Admin Overview metrics/charts, Student Management, Instructor Management, Departments, Classrooms, Academic Years/Terms use live IGS defaults (`INR`, `Asia/Kolkata`, configurable ID prefix).
+- Expose instructor permission toggles cleanly and audit every master-data mutation.
 
-## Phase 3 — Academic Workflows, Cohorts & Public Admissions Wiring
+## Phase E — Admissions & Enrollment Workflows
+- Add public "Apply for Admission" workflow in `AuthView.tsx` wired to `POST /api/admissions/public` (including document submission or draft creation).
+- Ensure applicant portal self-registration separates cleanly from course enrollment without unintended silent auto-enrollment.
+- Complete admissions approval -> student profile -> batch seat verification -> fee plan invoice -> onboarding token flow.
 
-**Dependencies:** Phase 2 RBAC & schema updates.
+## Phase F — Academic Operations Completeness
+- Expose multi-type `Assessment` creation/management (`Assignment`, `Quiz`, `Lab`, `Midterm`, `Final`) tied to courses/modules/batches.
+- Add bulk session attendance marking, excused/leave status support, and attendance correction history UI.
+- Wire configurable global/course grading & attendance thresholds (`AcademySetting` + `Course`) into progress reports and certificate eligibility.
 
-1. **Dynamic Cohort Binding (`UI-01`, `UI-03`):**
-   - Populate cohort dropdowns dynamically from `data.cohorts` in `EnrollmentsView.tsx` and `SchedulesView.tsx`, persisting `cohortId` FKs and enforcing cohort capacity checks on enrollment (`Active` count <= `cohort.capacity`, auto-suggesting `Waitlisted` when full).
-2. **Session Lifecycle & Attendance Rules (`UI-02`, `UI-07`):**
-   - Wire `PATCH /api/sessions/:id/status` controls (`Completed`, `Cancelled`) into `SchedulesView.tsx` and auto-dispatch cancellation notifications to enrolled cohort students.
-   - Exclude `Waitlisted` enrollments from grading/attendance eligibility until promoted to `Active`.
-3. **Public Admissions Portal & Self-Registration Separation (`UI-04`, `UI-05`):**
-   - Add a public "Apply for Admission" tab in `AuthView.tsx` backed by `POST /api/admissions/public`.
-   - Remove silent auto-enrollment from `registerStudentAccount()` or make course selection explicit via Admissions review.
-4. **Course & Cohort Edit/Archive Operations:**
-   - Add `PATCH /api/courses/:id` and `PATCH /api/cohorts/:id` with Zod validation, audit logging, and UI edit modals in `CoursesCohortsView.tsx`.
+## Phase G — Financial Management Completeness
+- Add CRUD & UI for `FeePlan` and `FeeStructure`.
+- Implement API routes & UI for `Discount`, `Scholarship`, and `Refund` management, recalculating invoice totals (`subtotal - discountTotal - scholarshipTotal`) and tracking `PaymentAllocation`.
+- Provide printable official `INR` invoices & fee receipts (`RCPT-*`) with InfoCom Sopore letterhead.
 
----
+## Phase H — Private Object Storage & Verified PDF Certificates with QR Codes
+- Introduce a clean private storage provider (`local-private` disk store with S3/GCS-ready adapter interface), migrating new uploads out of `documents.content_base64` while supporting legacy Base64 fallback reads.
+- Implement server-side / branded PDF certificate generation embedding certificate code, SHA-256 hash, and scannable verification QR code linking to public verification.
 
-## Phase 4 — Financial Polish, Document Hardening & Paginated Reporting
+## Phase I — Background Job Queue, Email Delivery & Exportable Reports
+- Replace in-process `setInterval` sweeps with a PostgreSQL-backed `BackgroundJob` queue supporting scheduling, idempotency keys, retries, and failure tracking.
+- Add transactional SMTP/email notification adapter updating `DeliveryLog` (`Queued` / `Delivered` / `Failed`) alongside `NotificationPreference` UI.
+- Add CSV and printable/PDF report exports for attendance, grades, enrollments, and fee collections.
 
-**Dependencies:** Phase 3 academic/cohort completeness.
-
-1. **Finance & Printable Receipts:**
-   - Add printable official receipt view (`RCPT-2026-*`) in `FinanceView.tsx` and student fee statements in `StudentDashboard.tsx`.
-   - Support overdue invoice flagging and automated fee reminder notifications.
-2. **Document Vault Hardening (`SEC-12`):**
-   - Enforce MIME & file-extension allowlisting and optional server-side storage adapter abstraction while keeping PostgreSQL persistence working seamlessly.
-3. **Scalability & Export (`INF-03`):**
-   - Add server-side pagination/filtering endpoints for `auditLogs`, `payments`, and `notifications`, plus CSV export for administrative finance & attendance summaries.
-   - Clean up remaining internal copy strings (`UI-06`).
+## Phase J — Production Build, Hardening & CI Readiness
+- Read `PORT` from `process.env.PORT` (`3000` fallback) in `server.ts`.
+- Compile backend TypeScript to runnable JS (`dist-server/server.js`) so `npm start` executes `node dist-server/server.js` cleanly.
+- Add GitHub Actions CI workflow (`lint`, `build`, `prisma validate`, `test`) and complete regression verification (`npm test`, `tsc --noEmit`, `vite build`, headless Chromium browser verification).

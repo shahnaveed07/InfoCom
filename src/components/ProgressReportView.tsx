@@ -46,8 +46,11 @@ export function ProgressReportView({
       courses: data.courses,
       enrollments: data.enrollments,
       grades: data.grades,
+      assessments: data.assessments,
+      assessmentGrades: data.assessmentGrades,
       attendance: data.attendance,
       remarks: data.remarks,
+      policies: data.policies,
       generatedAtIso: new Date().toISOString(),
     });
   }, [
@@ -55,8 +58,11 @@ export function ProgressReportView({
     data.courses,
     data.enrollments,
     data.grades,
+    data.assessments,
+    data.assessmentGrades,
     data.attendance,
     data.remarks,
+    data.policies,
   ]);
 
   if (!report) {
@@ -201,9 +207,12 @@ export function ProgressReportView({
         <header className="border-b border-slate-200 pb-6 flex flex-col sm:flex-row sm:items-start justify-between gap-4">
           <div>
             <p className="text-xs font-medium text-blue-700">
-              Northbridge Tech Academy · Official Progress Transcript
+              {data.academy?.name ?? 'IGS — InfoCom Global Services'} · Official Progress Transcript
             </p>
-            <h2 className="font-display text-2xl font-semibold text-slate-900 mt-1">
+            <p className="text-[11px] text-slate-500 mt-0.5">
+              {data.academy?.address || 'Downtown Sopore, Opposite Hassan Motors Petrol Pump, Sopore, Jammu and Kashmir, India.'}
+            </p>
+            <h2 className="font-display text-2xl font-semibold text-slate-900 mt-1.5">
               {report.student.name}
             </h2>
             <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-slate-500">
@@ -214,7 +223,7 @@ export function ProgressReportView({
               <span>{report.student.email}</span>
               <span aria-hidden="true">·</span>
               <span className="tabular-nums">
-                Issued {new Date(report.generatedAtIso).toLocaleDateString('en-US')}
+                Issued {new Date(report.generatedAtIso).toLocaleDateString('en-IN')}
               </span>
             </div>
           </div>
@@ -280,7 +289,8 @@ export function ProgressReportView({
                         {c.cohort} · Enrollment: {c.status} · Attendance:{' '}
                         <span className="font-mono tabular-nums">
                           {c.attendance.rate}% ({c.attendance.present}P /{' '}
-                          {c.attendance.late}L / {c.attendance.absent}A)
+                          {c.attendance.late}L / {c.attendance.absent}A
+                          {c.attendance.excused > 0 ? ` / ${c.attendance.excused}E` : ''})
                         </span>
                       </p>
                     </div>
@@ -335,6 +345,49 @@ export function ProgressReportView({
                       </tbody>
                     </table>
                   </div>
+
+                  {c.assessmentRows.filter(
+                    (a) => a.assessmentType !== 'Module Assessment'
+                  ).length > 0 && (
+                    <div className="overflow-x-auto border border-slate-200 rounded-lg">
+                      <table className="w-full text-left border-collapse">
+                        <thead>
+                          <tr className="border-b border-slate-200 bg-slate-50 text-[11px] font-medium text-slate-500">
+                            <th className="py-2 px-4">Additional Assessment</th>
+                            <th className="py-2 px-3">Type</th>
+                            <th className="py-2 px-3 text-right">Weight</th>
+                            <th className="py-2 px-3 text-right">Score</th>
+                            <th className="py-2 px-4">Instructor Feedback</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-200 text-xs">
+                          {c.assessmentRows
+                            .filter((a) => a.assessmentType !== 'Module Assessment')
+                            .map((asmt) => (
+                              <tr key={asmt.assessmentId}>
+                                <td className="py-2.5 px-4 font-medium text-slate-900">
+                                  {asmt.title}
+                                </td>
+                                <td className="py-2.5 px-3 text-slate-600">
+                                  {asmt.assessmentType}
+                                </td>
+                                <td className="py-2.5 px-3 text-right font-mono text-slate-600 tabular-nums">
+                                  {asmt.weight}%
+                                </td>
+                                <td className="py-2.5 px-3 text-right font-mono font-medium text-slate-900 tabular-nums">
+                                  {asmt.score !== null
+                                    ? `${asmt.score}/${asmt.maxScore} (${asmt.percentage}% · ${asmt.letterGrade})`
+                                    : 'Ungraded'}
+                                </td>
+                                <td className="py-2.5 px-4 text-slate-600">
+                                  {asmt.feedback || '—'}
+                                </td>
+                              </tr>
+                            ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
 
                   {/* Instructor Remark */}
                   <div className="bg-slate-50 border border-slate-200 rounded-lg p-4">

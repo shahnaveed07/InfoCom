@@ -43,8 +43,11 @@ export function StudentDashboard({
         courses: data.courses,
         enrollments: data.enrollments,
         grades: data.grades,
+        assessments: data.assessments,
+        assessmentGrades: data.assessmentGrades,
         attendance: data.attendance,
         remarks: data.remarks,
+        policies: data.policies,
         generatedAtIso: new Date().toISOString(),
       }),
     [data]
@@ -280,6 +283,48 @@ export function StudentDashboard({
                         </tbody>
                       </table>
                     </div>
+
+                    {course.assessmentRows.filter(
+                      (a) => a.assessmentType !== 'Module Assessment'
+                    ).length > 0 && (
+                      <div className="overflow-x-auto border border-slate-200 rounded-lg">
+                        <table className="w-full text-left border-collapse">
+                          <thead>
+                            <tr className="border-b border-slate-200 bg-slate-50 text-[11px] font-medium text-slate-500">
+                              <th className="py-2 px-3.5">Assessment</th>
+                              <th className="py-2 px-3">Type</th>
+                              <th className="py-2 px-3 text-right">Score</th>
+                              <th className="py-2 px-3.5">Feedback</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-200 text-xs">
+                            {course.assessmentRows
+                              .filter((a) => a.assessmentType !== 'Module Assessment')
+                              .map((asmt) => (
+                                <tr key={asmt.assessmentId}>
+                                  <td className="py-2 px-3.5 font-medium text-slate-900">
+                                    {asmt.title}{' '}
+                                    <span className="font-mono text-[11px] text-slate-400">
+                                      ({asmt.weight}%)
+                                    </span>
+                                  </td>
+                                  <td className="py-2 px-3 text-slate-600">
+                                    {asmt.assessmentType}
+                                  </td>
+                                  <td className="py-2 px-3 text-right font-mono font-medium text-slate-900 tabular-nums whitespace-nowrap">
+                                    {asmt.score !== null
+                                      ? `${asmt.score}/${asmt.maxScore} (${asmt.percentage}% · ${asmt.letterGrade})`
+                                      : 'Pending'}
+                                  </td>
+                                  <td className="py-2 px-3.5 text-slate-600">
+                                    {asmt.feedback || '—'}
+                                  </td>
+                                </tr>
+                              ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -337,17 +382,17 @@ export function StudentDashboard({
                       <div className="flex flex-wrap items-center gap-4 text-xs text-slate-600 shrink-0">
                         <span className="inline-flex items-center gap-1.5 font-mono tabular-nums">
                           <CalendarClock className="w-3.5 h-3.5 text-slate-400" />
-                          {start.toLocaleDateString('en-US', {
+                          {start.toLocaleDateString('en-IN', {
                             month: 'short',
                             day: 'numeric',
                           })}{' '}
                           ·{' '}
-                          {start.toLocaleTimeString('en-US', {
+                          {start.toLocaleTimeString('en-IN', {
                             hour: 'numeric',
                             minute: '2-digit',
                           })}
                           –
-                          {end.toLocaleTimeString('en-US', {
+                          {end.toLocaleTimeString('en-IN', {
                             hour: 'numeric',
                             minute: '2-digit',
                           })}
@@ -445,7 +490,7 @@ export function StudentDashboard({
                         {n.message}
                       </p>
                       <p className="font-mono text-[11px] text-slate-400 mt-1.5 tabular-nums">
-                        {new Date(n.createdAt).toLocaleString('en-US', {
+                        {new Date(n.createdAt).toLocaleString('en-IN', {
                           month: 'short',
                           day: 'numeric',
                           hour: 'numeric',

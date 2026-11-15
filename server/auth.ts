@@ -1,7 +1,8 @@
 import crypto from 'node:crypto';
 import argon2 from 'argon2';
 
-export const SESSION_COOKIE_NAME = 'nta_session';
+export const SESSION_COOKIE_NAME = 'igs_session';
+export const LEGACY_SESSION_COOKIE_NAME = 'nta_session';
 export const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
 export const PASSWORD_RESET_TTL_MS = 1000 * 60 * 30; // 30 minutes
 

@@ -4,12 +4,15 @@ import {
   Archive,
   ArrowLeft,
   ArrowUpDown,
+  Check,
   CheckCircle2,
+  Copy,
   CreditCard,
   Edit3,
   FileText,
   FolderOpen,
   GraduationCap,
+  KeyRound,
   Plus,
   RotateCcw,
   Search,
@@ -43,7 +46,7 @@ export function StudentsManagementView({
   data,
   onDashboardUpdate,
 }: StudentsManagementViewProps) {
-  const currency = data.academy?.currency || 'USD';
+  const currency = data.academy?.currency || 'INR';
   const departments = data.departments ?? [];
 
   // Directory query state
@@ -68,7 +71,9 @@ export function StudentsManagementView({
   const [cName, setCName] = useState('');
   const [cEmail, setCEmail] = useState('');
   const [cPhone, setCPhone] = useState('');
+  const [cPasswordMode, setCPasswordMode] = useState<'invite' | 'password'>('invite');
   const [cPassword, setCPassword] = useState('');
+  const [cRequirePwChange, setCRequirePwChange] = useState(true);
   const [cDeptId, setCDeptId] = useState('');
   const [cDob, setCDob] = useState('');
   const [cEmergency, setCEmergency] = useState('');
@@ -78,6 +83,12 @@ export function StudentsManagementView({
   const [cCohortId, setCCohortId] = useState('');
   const [cError, setCError] = useState('');
   const [cSaving, setCSaving] = useState(false);
+  const [onboardingLink, setOnboardingLink] = useState<{
+    studentName: string;
+    studentCode: string;
+    url: string;
+  } | null>(null);
+  const [copiedLink, setCopiedLink] = useState(false);
 
   // Edit modal state
   const [editTarget, setEditTarget] = useState<StudentDirectoryRow | null>(null);
@@ -150,16 +161,34 @@ export function StudentsManagementView({
     setEError('');
   }
 
+  async function handleCopyOnboardingUrl() {
+    if (!onboardingLink) return;
+    try {
+      await navigator.clipboard.writeText(onboardingLink.url);
+      setCopiedLink(true);
+      setTimeout(() => setCopiedLink(false), 2000);
+    } catch {
+      setCopiedLink(false);
+    }
+  }
+
   async function handleCreateSubmit(e: React.FormEvent) {
     e.preventDefault();
     setCError('');
+    setOnboardingLink(null);
+    if (cPasswordMode === 'password' && cPassword.length < 8) {
+      setCError('Temporary password must be at least 8 characters long.');
+      return;
+    }
     setCSaving(true);
     try {
       const res = await api.createStudent({
         name: cName.trim(),
         email: cEmail.trim(),
         phone: cPhone.trim(),
-        password: cPassword,
+        ...(cPasswordMode === 'password'
+          ? { password: cPassword, requirePasswordChange: cRequirePwChange }
+          : { requirePasswordChange: true }),
         departmentId: cDeptId || null,
         dateOfBirth: cDob || null,
         address: cAddress.trim(),
@@ -179,7 +208,18 @@ export function StudentsManagementView({
       setCAddress('');
       setCCourseId('');
       setCCohortId('');
-      setNotice(`Student ${res.student.name} (${res.student.studentCode}) created.`);
+      if (res.onboardingPath) {
+        setOnboardingLink({
+          studentName: res.student.name,
+          studentCode: res.student.studentCode ?? '',
+          url: `${window.location.origin}${res.onboardingPath}`,
+        });
+        setNotice(
+          `Student ${res.student.name} (${res.student.studentCode}) created with a 72-hour onboarding setup link.`
+        );
+      } else {
+        setNotice(`Student ${res.student.name} (${res.student.studentCode}) created.`);
+      }
       await loadDirectory();
     } catch (err) {
       setCError(err instanceof Error ? err.message : 'Unable to create student.');
@@ -483,7 +523,7 @@ export function StudentsManagementView({
                           <p className="text-slate-600 mt-0.5">{h.reason}</p>
                         </div>
                         <span className="font-mono text-[11px] text-slate-400 tabular-nums shrink-0">
-                          {new Date(h.changedAt).toLocaleString('en-US')}
+                          {new Date(h.changedAt).toLocaleString('en-IN')}
                         </span>
                       </div>
                     ))}
@@ -534,7 +574,7 @@ export function StudentsManagementView({
                         </div>
                       </div>
                       <span className="font-mono text-[11px] text-slate-400 shrink-0 tabular-nums">
-                        {new Date(doc.createdAt).toLocaleDateString('en-US')}
+                        {new Date(doc.createdAt).toLocaleDateString('en-IN')}
                       </span>
                     </div>
                   ))}
@@ -618,7 +658,7 @@ export function StudentsManagementView({
                             {formatMoney(pay.amount, currency)}
                           </span>
                           <span className="ml-3 text-[11px] text-slate-400">
-                            {new Date(pay.paidAt).toLocaleDateString('en-US')}
+                            {new Date(pay.paidAt).toLocaleDateString('en-IN')}
                           </span>
                         </div>
                       </div>
@@ -912,6 +952,46 @@ export function StudentsManagementView({
         >
           <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
           <span>{notice}</span>
+        </div>
+      )}
+
+      {onboardingLink && (
+        <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-xs font-semibold text-blue-900">
+              <KeyRound className="w-4 h-4 text-blue-700 shrink-0" />
+              <span>
+                Student Onboarding Setup Link · {onboardingLink.studentName}{' '}
+                {onboardingLink.studentCode ? `(${onboardingLink.studentCode})` : ''}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setOnboardingLink(null)}
+              aria-label="Dismiss student onboarding link"
+              className="text-blue-700 hover:text-blue-900 cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+            <input
+              type="text"
+              readOnly
+              value={onboardingLink.url}
+              aria-label="Student onboarding setup URL"
+              onFocus={(e) => e.currentTarget.select()}
+              className="flex-1 px-3 py-1.5 text-xs font-mono bg-white border border-blue-200 rounded-lg text-slate-900"
+            />
+            <button
+              type="button"
+              onClick={handleCopyOnboardingUrl}
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-blue-700 hover:bg-blue-800 rounded-lg cursor-pointer whitespace-nowrap"
+            >
+              {copiedLink ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+              <span>{copiedLink ? 'Copied' : 'Copy Link'}</span>
+            </button>
+          </div>
         </div>
       )}
 
@@ -1212,23 +1292,6 @@ export function StudentsManagementView({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label
-                    htmlFor="new-stu-password"
-                    className="block text-xs font-medium text-slate-700 mb-1"
-                  >
-                    Initial Password (min 8 chars)
-                  </label>
-                  <input
-                    id="new-stu-password"
-                    type="password"
-                    required
-                    minLength={8}
-                    value={cPassword}
-                    onChange={(e) => setCPassword(e.target.value)}
-                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
-                  />
-                </div>
-                <div>
-                  <label
                     htmlFor="new-stu-phone"
                     className="block text-xs font-medium text-slate-700 mb-1"
                   >
@@ -1242,7 +1305,66 @@ export function StudentsManagementView({
                     className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
                   />
                 </div>
+                <div>
+                  <span className="block text-xs font-medium text-slate-700 mb-1">
+                    Account Password Mode
+                  </span>
+                  <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 rounded-lg">
+                    <button
+                      type="button"
+                      onClick={() => setCPasswordMode('invite')}
+                      className={`py-1.5 px-2 text-xs font-medium rounded-md cursor-pointer ${
+                        cPasswordMode === 'invite'
+                          ? 'bg-white text-slate-900 shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Setup Link
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCPasswordMode('password')}
+                      className={`py-1.5 px-2 text-xs font-medium rounded-md cursor-pointer ${
+                        cPasswordMode === 'password'
+                          ? 'bg-white text-slate-900 shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Temp Password
+                    </button>
+                  </div>
+                </div>
               </div>
+
+              {cPasswordMode === 'password' && (
+                <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-2">
+                  <div>
+                    <label
+                      htmlFor="new-stu-password"
+                      className="block text-xs font-medium text-slate-700 mb-1"
+                    >
+                      Temporary Password (min 8 chars)
+                    </label>
+                    <input
+                      id="new-stu-password"
+                      type="password"
+                      required
+                      minLength={8}
+                      value={cPassword}
+                      onChange={(e) => setCPassword(e.target.value)}
+                      className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg"
+                    />
+                  </div>
+                  <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={cRequirePwChange}
+                      onChange={(e) => setCRequirePwChange(e.target.checked)}
+                    />
+                    <span>Require password change on first login</span>
+                  </label>
+                </div>
+              )}
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
@@ -1383,7 +1505,7 @@ export function StudentsManagementView({
               </div>
 
               <p className="text-[11px] text-slate-500">
-                A unique student ID (e.g. INF-2026-XXXX) will be securely generated on the server.
+                A unique student ID (e.g. IGS-YYYY-XXXXX) will be securely generated on the server.
               </p>
 
               <div className="pt-2 flex items-center justify-end gap-2.5">

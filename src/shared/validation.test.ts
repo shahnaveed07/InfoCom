@@ -7,13 +7,23 @@ import {
   toCents,
 } from './academic.ts';
 import {
+  applyInvoiceAdjustmentSchema,
   approveAdmissionSchema,
+  bulkAttendanceSchema,
   courseTransferSchema,
   createAdmissionSchema,
+  createAssessmentSchema,
   createCourseSchema,
+  createDiscountSchema,
+  createFeePlanSchema,
+  createFeeStructureSchema,
   createInvoiceSchema,
+  createScholarshipSchema,
+  markAttendanceSchema,
   recordPaymentSchema,
+  refundPaymentSchema,
   registerSchema,
+  saveAssessmentGradeSchema,
   updateEnrollmentStatusSchema,
   verifyAdmissionDocumentSchema,
 } from './validation.ts';
@@ -139,4 +149,142 @@ test('Phase 5 admission draft/submit, verification, approval, and course transfe
     true
   );
 });
+
+test('Phase F assessment, grade, Excused attendance, and bulk attendance validation schemas', () => {
+  assert.equal(
+    createAssessmentSchema.safeParse({
+      courseId: 'crs-1',
+      title: 'Midterm Practical',
+      assessmentType: 'Midterm',
+      maxScore: 100,
+      weight: 30,
+    }).success,
+    true
+  );
+  assert.equal(
+    createAssessmentSchema.safeParse({
+      courseId: 'crs-1',
+      title: 'Invalid Type',
+      assessmentType: 'OralPopQuiz',
+    }).success,
+    false
+  );
+  assert.equal(
+    saveAssessmentGradeSchema.safeParse({
+      studentId: 'stu-1',
+      score: -5,
+      feedback: '',
+    }).success,
+    false
+  );
+  assert.equal(
+    markAttendanceSchema.safeParse({
+      sessionId: 'ses-1',
+      studentId: 'stu-1',
+      status: 'Excused',
+      note: 'Medical leave approved',
+    }).success,
+    true
+  );
+  assert.equal(
+    bulkAttendanceSchema.safeParse({
+      sessionId: 'ses-1',
+      entries: [],
+    }).success,
+    false
+  );
+  assert.equal(
+    bulkAttendanceSchema.safeParse({
+      sessionId: 'ses-1',
+      entries: [
+        { studentId: 'stu-1', status: 'Present', note: '' },
+        { studentId: 'stu-2', status: 'Excused', note: 'Exam clash' },
+      ],
+    }).success,
+    true
+  );
+});
+
+test('Phase G fee plan, fee structure, discount, scholarship, adjustment, and refund schemas', () => {
+  assert.equal(
+    createFeePlanSchema.safeParse({
+      code: 'FP-3TERM',
+      name: 'Quarterly Installment',
+      installmentCount: 3,
+    }).success,
+    true
+  );
+  assert.equal(
+    createFeePlanSchema.safeParse({
+      code: 'X',
+      name: 'Invalid',
+      installmentCount: 0,
+    }).success,
+    false
+  );
+
+  assert.equal(
+    createFeeStructureSchema.safeParse({
+      courseId: 'crs-1',
+      tuitionAmount: '12000.00',
+      registrationFee: '500.00',
+      labFee: '1000.00',
+    }).success,
+    true
+  );
+
+  assert.equal(
+    createDiscountSchema.safeParse({
+      code: 'OVER100',
+      name: 'Invalid Pct',
+      discountType: 'Percentage',
+      value: '120.00',
+    }).success,
+    false
+  );
+  assert.equal(
+    createDiscountSchema.safeParse({
+      code: 'EARLY15',
+      name: 'Early Bird',
+      discountType: 'Percentage',
+      value: '15.00',
+    }).success,
+    true
+  );
+
+  assert.equal(
+    createScholarshipSchema.safeParse({
+      code: 'MERIT25',
+      name: 'Sopore Merit Grant',
+      coverageType: 'Percentage',
+      coverageValue: '25.00',
+      maxRecipients: 20,
+    }).success,
+    true
+  );
+
+  assert.equal(
+    applyInvoiceAdjustmentSchema.safeParse({
+      kind: 'discount',
+      targetId: 'dsc-1',
+    }).success,
+    true
+  );
+  assert.equal(
+    refundPaymentSchema.safeParse({
+      amount: '500.00',
+      reason: 'Abc',
+    }).success,
+    false
+  );
+  assert.equal(
+    refundPaymentSchema.safeParse({
+      amount: '500.00',
+      reason: 'Student withdrew before batch start',
+    }).success,
+    true
+  );
+});
+
+
 

@@ -390,8 +390,8 @@ export function BatchesManagementView({
                         </div>
                         <div className="font-mono text-[11px] text-slate-500 mt-0.5">
                           {batch.code} ·{' '}
-                          {new Date(batch.startDate).toLocaleDateString('en-US')} –{' '}
-                          {new Date(batch.endDate).toLocaleDateString('en-US')}
+                          {new Date(batch.startDate).toLocaleDateString('en-IN')} –{' '}
+                          {new Date(batch.endDate).toLocaleDateString('en-IN')}
                         </div>
                       </td>
                       <td className="py-3 px-4">

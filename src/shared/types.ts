@@ -10,7 +10,15 @@ export type EnrollmentStatus =
   | 'Withdrawn'
   | 'Dropped';
 
-export type AttendanceStatus = 'Present' | 'Late' | 'Absent';
+export type AttendanceStatus = 'Present' | 'Late' | 'Absent' | 'Excused';
+
+export type AssessmentType =
+  | 'Module Assessment'
+  | 'Assignment'
+  | 'Quiz'
+  | 'Lab'
+  | 'Midterm'
+  | 'Final';
 
 export type NotificationKind =
   | 'attendance'
@@ -74,6 +82,7 @@ export interface UserPublic {
   staffCode?: string | null;
   department?: string | null;
   phone?: string | null;
+  mustChangePassword?: boolean;
   createdAt?: string;
 }
 
@@ -276,11 +285,54 @@ export interface AttendanceRecord {
   updatedBy: string;
 }
 
+export interface AttendanceAuditEntry {
+  id: string;
+  sessionId: string;
+  studentId: string;
+  studentName: string;
+  previousStatus: AttendanceStatus | null;
+  newStatus: AttendanceStatus;
+  previousNote: string;
+  newNote: string;
+  actorEmail: string;
+  actorRole: string;
+  summary: string;
+  createdAt: string;
+}
+
+export interface AssessmentRecord {
+  id: string;
+  courseId: string;
+  moduleId?: string | null;
+  batchId?: string | null;
+  title: string;
+  assessmentType: AssessmentType;
+  maxScore: number;
+  weight: number;
+  dueDate?: string | null;
+  createdAt: string;
+}
+
+export interface AssessmentGradeRecord {
+  id: string;
+  assessmentId: string;
+  studentId: string;
+  courseId: string;
+  moduleId?: string | null;
+  score: number;
+  maxScore: number;
+  percentage: number;
+  feedback: string;
+  gradedAt: string;
+  gradedBy: string;
+}
+
 export interface ModuleGrade {
   id: string;
   studentId: string;
   courseId: string;
   moduleId: string;
+  assessmentId?: string;
   score: number;
   feedback: string;
   gradedAt: string;
@@ -302,7 +354,11 @@ export interface FeeInvoice {
   studentId: string;
   enrollmentId?: string | null;
   courseId: string;
+  feeStructureId?: string | null;
   description: string;
+  subtotal?: string;
+  discountTotal?: string;
+  scholarshipTotal?: string;
   amountDue: string;
   amountPaid: string;
   currency: string;
@@ -312,12 +368,122 @@ export interface FeeInvoice {
   createdAt: string;
 }
 
+export interface FeeStructureRecord {
+  id: string;
+  courseId: string;
+  courseCode?: string;
+  courseTitle?: string;
+  batchId?: string | null;
+  feePlanId?: string | null;
+  feePlanName?: string | null;
+  tuitionAmount: string;
+  registrationFee: string;
+  labFee: string;
+  totalAmount: string;
+  effectiveFrom: string;
+  isActive: boolean;
+  createdAt: string;
+}
+
+export interface DiscountRecord {
+  id: string;
+  code: string;
+  name: string;
+  discountType: 'Percentage' | 'Fixed';
+  value: string;
+  isActive: boolean;
+  validFrom?: string | null;
+  validTo?: string | null;
+  createdAt: string;
+}
+
+export interface ScholarshipRecord {
+  id: string;
+  code: string;
+  name: string;
+  sponsorName: string;
+  coverageType: 'Percentage' | 'Fixed';
+  coverageValue: string;
+  maxRecipients: number;
+  academicYearId?: string | null;
+  isActive: boolean;
+  createdAt: string;
+}
+
+export interface RefundRecord {
+  id: string;
+  refundNumber: string;
+  paymentId: string;
+  receiptNumber?: string;
+  invoiceId: string;
+  invoiceNumber?: string;
+  studentId: string;
+  studentName?: string;
+  amount: string;
+  reason: string;
+  status: 'Pending' | 'Processed' | 'Cancelled';
+  processedByUserId: string;
+  processedByName?: string;
+  processedAt: string;
+}
+
+export interface InvoiceItemRecord {
+  id: string;
+  invoiceId: string;
+  itemType: 'Tuition' | 'Registration' | 'Lab' | 'Discount' | 'Scholarship' | 'Other';
+  description: string;
+  quantity: number;
+  unitPrice: string;
+  lineTotal: string;
+  createdAt: string;
+}
+
+export interface PaymentAllocationRecord {
+  id: string;
+  paymentId: string;
+  receiptNumber: string;
+  method: PaymentMethod;
+  referenceCode: string;
+  allocatedAmount: string;
+  allocatedAt: string;
+}
+
+export interface InvoiceDetailPayload {
+  invoice: FeeInvoice;
+  student: {
+    id: string;
+    name: string;
+    email: string;
+    studentCode?: string | null;
+    phone?: string | null;
+  };
+  course: {
+    id: string;
+    code: string;
+    title: string;
+  };
+  academy: {
+    name: string;
+    legalName: string;
+    email: string;
+    phone: string;
+    website: string;
+    address: string;
+    logoDataUrl: string;
+    currency: string;
+  };
+  items: InvoiceItemRecord[];
+  allocations: PaymentAllocationRecord[];
+  refunds: RefundRecord[];
+}
+
 export interface PaymentReceipt {
   id: string;
   receiptNumber: string;
   invoiceId: string;
   studentId: string;
   amount: string;
+  refundedAmount?: string;
   method: PaymentMethod;
   referenceCode: string;
   recordedByUserId: string;
@@ -480,6 +646,7 @@ export interface CertificateTemplateInfo {
 export interface AcademySettingsPayload {
   academy: AcademyProfile;
   policies: {
+    studentIdPrefix: string;
     invoicePrefix: string;
     invoiceNextSeq: number;
     feeDueDays: number;
@@ -519,6 +686,7 @@ export interface AdminAnalyticsDetail {
       present: number;
       late: number;
       absent: number;
+      excused: number;
       total: number;
       rate: number;
     };
@@ -646,14 +814,29 @@ export interface InstructorDetailPayload {
   sessions: ClassSession[];
 }
 
+export interface AcademyPolicySummary {
+  passingScore: number;
+  distinctionScore: number;
+  minAttendanceRatePct: number;
+  lateWeightPct: number;
+  certificateMinCompletionPct: number;
+  certificateMinScore: number;
+  certificateMinAttendancePct: number;
+}
+
 export interface DashboardPayload {
   user: UserPublic;
   academy?: AcademyProfile;
+  policies?: AcademyPolicySummary;
   departments?: Department[];
   classrooms?: Classroom[];
   academicYears?: AcademicYear[];
   academicTerms?: AcademicTerm[];
   feePlans?: FeePlanSummary[];
+  feeStructures?: FeeStructureRecord[];
+  discounts?: DiscountRecord[];
+  scholarships?: ScholarshipRecord[];
+  refunds?: RefundRecord[];
   courses: Course[];
   cohorts: Cohort[];
   users: UserPublic[];
@@ -662,6 +845,8 @@ export interface DashboardPayload {
   enrollments: Enrollment[];
   sessions: ClassSession[];
   attendance: AttendanceRecord[];
+  assessments?: AssessmentRecord[];
+  assessmentGrades?: AssessmentGradeRecord[];
   grades: ModuleGrade[];
   remarks: ProgressRemark[];
   invoices: FeeInvoice[];

@@ -1,6 +1,6 @@
 {
-  "name": "Northbridge Tech Academy",
-  "description": "Computer training centre portal for student course tracking, enrollment management, progress reports, class schedules, and automated attendance and session notifications.",
+  "name": "IGS — InfoCom Global Services",
+  "description": "Academy Management System for IGS — InfoCom Global Services Computer Institute, Sopore, Jammu and Kashmir. Learn Today, Build Tomorrow.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

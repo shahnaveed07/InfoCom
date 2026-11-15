@@ -17,6 +17,7 @@ import {
   generateUniqueStudentCode,
   getActiveDocumentContent,
   getUserDashboardById,
+  issueAccountSetupToken,
   issueVerifiedCertificate,
   recordAuditLog,
   recordInvoicePayment,
@@ -160,13 +161,17 @@ adminOpsRouter.post(
       const prefix =
         input.role === 'admin' ? 'adm' : input.role === 'instructor' ? 'ins' : 'stu';
       const id = `${prefix}-${crypto.randomUUID().slice(0, 8)}`;
-      const studentCode =
-        input.role === 'student' ? await generateUniqueStudentCode() : null;
-      const staffCode =
-        input.role !== 'student' ? await generateUniqueStaffCode() : null;
 
-      const newUserHash = await hashPassword(input.password);
-      const created = await prisma.$transaction(async (tx) => {
+      const hasPassword = Boolean(input.password && input.password.trim().length > 0);
+      const newUserHash = hasPassword ? await hashPassword(input.password!) : null;
+      const mustChangePassword = !hasPassword || Boolean(input.requirePasswordChange);
+
+      const { created, onboarding } = await prisma.$transaction(async (tx) => {
+        const studentCode =
+          input.role === 'student' ? await generateUniqueStudentCode(tx) : null;
+        const staffCode =
+          input.role !== 'student' ? await generateUniqueStaffCode(tx) : null;
+
         const user = await tx.user.create({
           data: {
             id,
@@ -185,7 +190,8 @@ adminOpsRouter.post(
                   : null),
             phone: input.phone || null,
             passwordHash: newUserHash,
-            passwordUpdatedAt: new Date(),
+            passwordUpdatedAt: hasPassword ? new Date() : null,
+            mustChangePassword,
           },
         });
 
@@ -222,22 +228,114 @@ adminOpsRouter.post(
           });
         }
 
-        return user;
+        let issuedOnboarding: {
+          rawToken: string;
+          onboardingPath: string;
+          expiresAt: string;
+        } | null = null;
+        if (!hasPassword) {
+          issuedOnboarding = await issueAccountSetupToken(tx, {
+            userId: user.id,
+            createdByUserId: req.authUser!.id,
+            ttlHours: 72,
+          });
+          await tx.deliveryLog.create({
+            data: {
+              id: `del-${crypto.randomUUID().slice(0, 8)}`,
+              userId: user.id,
+              channel: 'in_app',
+              recipient: user.email,
+              status: 'Delivered',
+            },
+          });
+        }
+
+        return { created: user, onboarding: issuedOnboarding };
       });
 
       await recordAuditLog({
         actor: req.authUser!,
-        action: 'USER_CREATED',
+        action: onboarding ? 'ONBOARDING_TOKEN_ISSUED' : 'USER_CREATED',
         entityType: 'user',
         entityId: created.id,
-        summary: `Created ${created.role} account for ${created.name} (${created.email}).`,
+        summary: onboarding
+          ? `Created ${created.role} account for ${created.name} (${created.email}) with single-use 72h setup token.`
+          : `Created ${created.role} account for ${created.name} (${created.email}).`,
       });
 
       const dashboard = await getUserDashboardById(req.authUser!.id);
-      res.status(201).json({ user: toPublicUser(created), dashboard });
+      res.status(201).json({
+        user: toPublicUser(created),
+        ...(onboarding
+          ? {
+              onboardingToken: onboarding.rawToken,
+              onboardingPath: onboarding.onboardingPath,
+              onboardingExpiresAt: onboarding.expiresAt,
+            }
+          : {}),
+        dashboard,
+      });
     } catch (err) {
       console.error('POST /api/users error:', err);
       res.status(500).json({ error: 'Failed to create user account.' });
+    }
+  }
+);
+
+adminOpsRouter.post(
+  '/users/:id/reset-token',
+  requireAuth,
+  requireRoles('admin'),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const target = await prisma.user.findUnique({ where: { id: req.params.id } });
+      if (!target) {
+        res.status(404).json({ error: 'User account not found.' });
+        return;
+      }
+      if (target.status === 'suspended' || target.status === 'archived') {
+        res.status(400).json({
+          error: `Cannot issue setup/reset link for a ${target.status} account.`,
+        });
+        return;
+      }
+
+      const issued = await prisma.$transaction(async (tx) => {
+        const token = await issueAccountSetupToken(tx, {
+          userId: target.id,
+          createdByUserId: req.authUser!.id,
+          ttlHours: 72,
+        });
+        await tx.deliveryLog.create({
+          data: {
+            id: `del-${crypto.randomUUID().slice(0, 8)}`,
+            userId: target.id,
+            channel: 'in_app',
+            recipient: target.email,
+            status: 'Delivered',
+          },
+        });
+        return token;
+      });
+
+      await recordAuditLog({
+        actor: req.authUser!,
+        action: 'ONBOARDING_TOKEN_ISSUED',
+        entityType: 'user',
+        entityId: target.id,
+        summary: `Issued single-use 72h password setup/reset token for ${target.email}.`,
+      });
+
+      res.json({
+        ok: true,
+        onboardingToken: issued.rawToken,
+        onboardingPath: issued.onboardingPath,
+        onboardingExpiresAt: issued.expiresAt,
+        user: toPublicUser(target),
+      });
+    } catch (err) {
+      console.error('POST /api/users/:id/reset-token error:', err);
+      res.status(500).json({ error: 'Failed to issue password setup link.' });
     }
   }
 );
@@ -342,9 +440,12 @@ adminOpsRouter.post(
       }
 
       const input = parsed.data;
-      const [student, course] = await Promise.all([
+      const [student, course, feeStructure] = await Promise.all([
         prisma.user.findFirst({ where: { id: input.studentId, role: 'student' } }),
         prisma.course.findUnique({ where: { id: input.courseId } }),
+        input.feeStructureId
+          ? prisma.feeStructure.findUnique({ where: { id: input.feeStructureId } })
+          : Promise.resolve(null),
       ]);
 
       if (!student || !course) {
@@ -352,9 +453,61 @@ adminOpsRouter.post(
         return;
       }
 
+      if (input.feeStructureId && (!feeStructure || feeStructure.courseId !== course.id)) {
+        res.status(400).json({ error: 'Selected fee structure does not belong to this course.' });
+        return;
+      }
+
       const invoiceId = `inv-${crypto.randomUUID().slice(0, 8)}`;
       const invoiceNumber = await generateNextInvoiceNumber();
-      const formattedAmount = Number(input.amountDue).toFixed(2);
+
+      const itemRows: Array<{
+        itemType: 'Tuition' | 'Registration' | 'Lab';
+        description: string;
+        amount: string;
+      }> = [];
+
+      let formattedAmount = Number(input.amountDue).toFixed(2);
+      if (feeStructure) {
+        const tuitionCents = toCents(feeStructure.tuitionAmount.toFixed(2));
+        const regCents = toCents(feeStructure.registrationFee.toFixed(2));
+        const labCents = toCents(feeStructure.labFee.toFixed(2));
+        const totalCents = tuitionCents + regCents + labCents;
+        if (totalCents > 0) {
+          formattedAmount = (totalCents / 100).toFixed(2);
+          itemRows.push({
+            itemType: 'Tuition',
+            description: `${course.code} ${course.title} — Tuition Fee`,
+            amount: (tuitionCents / 100).toFixed(2),
+          });
+          if (regCents > 0) {
+            itemRows.push({
+              itemType: 'Registration',
+              description: `${course.code} — Registration Fee`,
+              amount: (regCents / 100).toFixed(2),
+            });
+          }
+          if (labCents > 0) {
+            itemRows.push({
+              itemType: 'Lab',
+              description: `${course.code} — Computer Lab Fee`,
+              amount: (labCents / 100).toFixed(2),
+            });
+          }
+        }
+      }
+
+      if (itemRows.length === 0) {
+        itemRows.push({
+          itemType: 'Tuition',
+          description: input.description,
+          amount: formattedAmount,
+        });
+      }
+
+      const acadRow = await prisma.academy.findFirst({ select: { currency: true } });
+      const activeCurrency = acadRow?.currency || 'INR';
+      const displayCurrencySymbol = activeCurrency === 'INR' ? '₹' : `${activeCurrency} `;
 
       await prisma.$transaction(async (tx) => {
         await tx.invoice.create({
@@ -364,28 +517,31 @@ adminOpsRouter.post(
             studentId: student.id,
             enrollmentId: input.enrollmentId ?? null,
             courseId: course.id,
+            feeStructureId: feeStructure?.id ?? null,
             description: input.description,
             subtotal: formattedAmount,
             amountDue: formattedAmount,
             amountPaid: '0.00',
-            currency: 'USD',
+            currency: activeCurrency,
             status: 'Unpaid',
             dueDate: new Date(input.dueDate),
             issuedByUserId: req.authUser!.id,
           },
         });
 
-        await tx.invoiceItem.create({
-          data: {
-            id: `item-${crypto.randomUUID().slice(0, 8)}`,
-            invoiceId,
-            itemType: 'Tuition',
-            description: input.description,
-            quantity: 1,
-            unitPrice: formattedAmount,
-            lineTotal: formattedAmount,
-          },
-        });
+        for (const row of itemRows) {
+          await tx.invoiceItem.create({
+            data: {
+              id: `item-${crypto.randomUUID().slice(0, 8)}`,
+              invoiceId,
+              itemType: row.itemType,
+              description: row.description,
+              quantity: 1,
+              unitPrice: row.amount,
+              lineTotal: row.amount,
+            },
+          });
+        }
 
         const notif = await tx.notification.create({
           data: {
@@ -393,7 +549,7 @@ adminOpsRouter.post(
             userId: student.id,
             kind: 'finance',
             title: `Tuition Invoice Issued · ${invoiceNumber}`,
-            message: `Invoice ${invoiceNumber} for $${formattedAmount} (${input.description}) is due on ${new Date(input.dueDate).toLocaleDateString('en-US')}.`,
+            message: `Invoice ${invoiceNumber} for ${displayCurrencySymbol}${formattedAmount} (${input.description}) is due on ${new Date(input.dueDate).toLocaleDateString('en-IN')}.`,
             relatedCourseId: course.id,
             read: false,
           },
@@ -416,11 +572,11 @@ adminOpsRouter.post(
         action: 'INVOICE_ISSUED',
         entityType: 'fee_invoice',
         entityId: invoiceId,
-        summary: `Issued invoice ${invoiceNumber} ($${formattedAmount}) to ${student.name}.`,
+        summary: `Issued invoice ${invoiceNumber} (${displayCurrencySymbol}${formattedAmount}) to ${student.name}.`,
       });
 
       const dashboard = await getUserDashboardById(req.authUser!.id);
-      res.status(201).json({ invoiceNumber, dashboard });
+      res.status(201).json({ invoiceId, invoiceNumber, dashboard });
     } catch (err) {
       console.error('POST /api/invoices error:', err);
       res.status(500).json({ error: 'Failed to create fee invoice.' });

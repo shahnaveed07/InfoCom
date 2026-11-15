@@ -161,17 +161,10 @@ function extractOriginHost(rawUrl: string): string | null {
 /**
  * Verifies same-origin for cookie-authenticated state-changing requests (POST/PUT/PATCH/DELETE).
  * Blocks cross-site Fetch metadata (`Sec-Fetch-Site: cross-site`), `Origin: null`, and untrusted Origin/Referer hosts.
- * Skips requests authenticated solely via Bearer token or safe HTTP methods.
  */
 export function csrfOriginGuard(req: Request, res: Response, next: NextFunction): void {
   const method = req.method.toUpperCase();
   if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') {
-    next();
-    return;
-  }
-
-  const authHeader = req.headers.authorization;
-  if (authHeader && authHeader.startsWith('Bearer ')) {
     next();
     return;
   }

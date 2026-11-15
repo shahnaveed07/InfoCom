@@ -3,8 +3,11 @@ import {
   AlertCircle,
   ArrowLeft,
   CalendarClock,
+  Check,
   CheckCircle2,
+  Copy,
   Edit3,
+  KeyRound,
   Layers,
   Shield,
   UserCheck,
@@ -89,7 +92,9 @@ export function InstructorsManagementView({
   const [cName, setCName] = useState('');
   const [cEmail, setCEmail] = useState('');
   const [cPhone, setCPhone] = useState('');
+  const [cPasswordMode, setCPasswordMode] = useState<'invite' | 'password'>('invite');
   const [cPassword, setCPassword] = useState('');
+  const [cRequirePwChange, setCRequirePwChange] = useState(true);
   const [cDeptId, setCDeptId] = useState('');
   const [cSpec, setCSpec] = useState('');
   const [cQual, setCQual] = useState('');
@@ -100,6 +105,12 @@ export function InstructorsManagementView({
   const [cPerms, setCPerms] = useState<InstructorPermissionKey[]>(DEFAULT_PERM_KEYS);
   const [cError, setCError] = useState('');
   const [cSaving, setCSaving] = useState(false);
+  const [onboardingLink, setOnboardingLink] = useState<{
+    instructorName: string;
+    staffCode: string;
+    url: string;
+  } | null>(null);
+  const [copiedLink, setCopiedLink] = useState(false);
 
   // Edit instructor modal
   const [editTarget, setEditTarget] = useState<InstructorDirectoryRow | null>(null);
@@ -189,16 +200,34 @@ export function InstructorsManagementView({
     setPPerms(row.profile.permissions);
   }
 
+  async function handleCopyOnboardingUrl() {
+    if (!onboardingLink) return;
+    try {
+      await navigator.clipboard.writeText(onboardingLink.url);
+      setCopiedLink(true);
+      setTimeout(() => setCopiedLink(false), 2000);
+    } catch {
+      setCopiedLink(false);
+    }
+  }
+
   async function handleCreateSubmit(e: React.FormEvent) {
     e.preventDefault();
     setCError('');
+    setOnboardingLink(null);
+    if (cPasswordMode === 'password' && cPassword.length < 8) {
+      setCError('Temporary password must be at least 8 characters long.');
+      return;
+    }
     setCSaving(true);
     try {
       const res = await api.createInstructor({
         name: cName.trim(),
         email: cEmail.trim(),
         phone: cPhone.trim(),
-        password: cPassword,
+        ...(cPasswordMode === 'password'
+          ? { password: cPassword, requirePasswordChange: cRequirePwChange }
+          : { requirePasswordChange: true }),
         departmentId: cDeptId || null,
         specialization: cSpec.trim(),
         qualification: cQual.trim(),
@@ -220,7 +249,18 @@ export function InstructorsManagementView({
       setCBio('');
       setCCourseIds([]);
       setCBatchIds([]);
-      setNotice(`Instructor account created for ${res.instructor.name} (${res.instructor.staffCode}).`);
+      if (res.onboardingPath) {
+        setOnboardingLink({
+          instructorName: res.instructor.name,
+          staffCode: res.instructor.staffCode ?? '',
+          url: `${window.location.origin}${res.onboardingPath}`,
+        });
+        setNotice(
+          `Instructor account created for ${res.instructor.name} (${res.instructor.staffCode}) with a 72-hour setup link.`
+        );
+      } else {
+        setNotice(`Instructor account created for ${res.instructor.name} (${res.instructor.staffCode}).`);
+      }
     } catch (err) {
       setCError(err instanceof Error ? err.message : 'Unable to create instructor.');
     } finally {
@@ -862,7 +902,7 @@ export function InstructorsManagementView({
                     <div className="flex items-start justify-between gap-2">
                       <span className="font-medium text-slate-900">{ses.title}</span>
                       <span className="font-mono text-[11px] text-slate-500 tabular-nums shrink-0">
-                        {new Date(ses.startIso).toLocaleString('en-US', {
+                        {new Date(ses.startIso).toLocaleString('en-IN', {
                           month: 'short',
                           day: 'numeric',
                           hour: 'numeric',
@@ -920,6 +960,46 @@ export function InstructorsManagementView({
         >
           <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
           <span>{notice}</span>
+        </div>
+      )}
+
+      {onboardingLink && (
+        <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-xs font-semibold text-blue-900">
+              <KeyRound className="w-4 h-4 text-blue-700 shrink-0" />
+              <span>
+                Instructor Onboarding Setup Link · {onboardingLink.instructorName}{' '}
+                {onboardingLink.staffCode ? `(${onboardingLink.staffCode})` : ''}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setOnboardingLink(null)}
+              aria-label="Dismiss instructor onboarding link"
+              className="text-blue-700 hover:text-blue-900 cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+            <input
+              type="text"
+              readOnly
+              value={onboardingLink.url}
+              aria-label="Instructor onboarding setup URL"
+              onFocus={(e) => e.currentTarget.select()}
+              className="flex-1 px-3 py-1.5 text-xs font-mono bg-white border border-blue-200 rounded-lg text-slate-900"
+            />
+            <button
+              type="button"
+              onClick={handleCopyOnboardingUrl}
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-blue-700 hover:bg-blue-800 rounded-lg cursor-pointer whitespace-nowrap"
+            >
+              {copiedLink ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+              <span>{copiedLink ? 'Copied' : 'Copy Link'}</span>
+            </button>
+          </div>
         </div>
       )}
 
@@ -1103,18 +1183,33 @@ export function InstructorsManagementView({
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
-                  <label htmlFor="new-ins-password" className="block text-xs font-medium text-slate-700 mb-1">
-                    Password (min 8)
-                  </label>
-                  <input
-                    id="new-ins-password"
-                    type="password"
-                    required
-                    minLength={8}
-                    value={cPassword}
-                    onChange={(e) => setCPassword(e.target.value)}
-                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
-                  />
+                  <span className="block text-xs font-medium text-slate-700 mb-1">
+                    Password Mode
+                  </span>
+                  <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 rounded-lg">
+                    <button
+                      type="button"
+                      onClick={() => setCPasswordMode('invite')}
+                      className={`py-1.5 px-1.5 text-xs font-medium rounded-md cursor-pointer ${
+                        cPasswordMode === 'invite'
+                          ? 'bg-white text-slate-900 shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Setup Link
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCPasswordMode('password')}
+                      className={`py-1.5 px-1.5 text-xs font-medium rounded-md cursor-pointer ${
+                        cPasswordMode === 'password'
+                          ? 'bg-white text-slate-900 shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Password
+                    </button>
+                  </div>
                 </div>
                 <div>
                   <label htmlFor="new-ins-phone" className="block text-xs font-medium text-slate-700 mb-1">
@@ -1147,6 +1242,33 @@ export function InstructorsManagementView({
                   </select>
                 </div>
               </div>
+
+              {cPasswordMode === 'password' && (
+                <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-2">
+                  <div>
+                    <label htmlFor="new-ins-password" className="block text-xs font-medium text-slate-700 mb-1">
+                      Temporary Password (min 8 chars)
+                    </label>
+                    <input
+                      id="new-ins-password"
+                      type="password"
+                      required
+                      minLength={8}
+                      value={cPassword}
+                      onChange={(e) => setCPassword(e.target.value)}
+                      className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg"
+                    />
+                  </div>
+                  <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={cRequirePwChange}
+                      onChange={(e) => setCRequirePwChange(e.target.checked)}
+                    />
+                    <span>Require password change on first login</span>
+                  </label>
+                </div>
+              )}
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>

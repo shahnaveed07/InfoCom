@@ -662,13 +662,12 @@ export async function runJsonMigration(): Promise<{
       const assessmentId = `asmt-${g.moduleId}`;
       await tx.grade.upsert({
         where: {
-          studentId_courseId_moduleId: {
+          studentId_assessmentId: {
             studentId: g.studentId,
-            courseId: g.courseId,
-            moduleId: g.moduleId,
+            assessmentId,
           },
         },
-        update: { enrollmentId, assessmentId },
+        update: { enrollmentId, moduleId: g.moduleId },
         create: {
           id: g.id,
           studentId: g.studentId,
@@ -827,7 +826,10 @@ export async function runJsonMigration(): Promise<{
     );
     const enrGrades = allGradesDb
       .filter((g) => g.studentId === enr.studentId && g.courseId === enr.courseId)
-      .map((g) => ({ score: g.score, weight: moduleWeightMap.get(g.moduleId) ?? 0 }))
+      .map((g) => ({
+        score: g.score,
+        weight: g.moduleId ? (moduleWeightMap.get(g.moduleId) ?? 0) : 0,
+      }))
       .filter((x) => x.weight > 0);
     const weightedAvg = calculateWeightedAverage(enrGrades);
     const enrAtt = allAttDb

@@ -38,7 +38,13 @@ export const createUserSchema = z.object({
   role: z.enum(['admin', 'instructor', 'student']),
   department: z.string().trim().max(120).optional().default(''),
   phone: z.string().trim().max(40).optional().default(''),
-  password: z.string().min(8, 'Initial password must be at least 8 characters.').max(128),
+  password: z
+    .string()
+    .min(8, 'Initial password must be at least 8 characters.')
+    .max(128)
+    .optional()
+    .or(z.literal('')),
+  requirePasswordChange: z.boolean().optional(),
 });
 
 export const updateUserSchema = z.object({
@@ -293,6 +299,52 @@ export const toggleModuleSchema = z.object({
   completed: z.boolean(),
 });
 
+export const assessmentTypeSchema = z.enum([
+  'Module Assessment',
+  'Assignment',
+  'Quiz',
+  'Lab',
+  'Midterm',
+  'Final',
+]);
+
+export const createAssessmentSchema = z.object({
+  courseId: z.string().trim().min(1, 'Course is required.'),
+  moduleId: z.string().trim().optional().nullable(),
+  batchId: z.string().trim().optional().nullable(),
+  title: z.string().trim().min(2, 'Assessment title is required.').max(160),
+  assessmentType: assessmentTypeSchema.default('Assignment'),
+  maxScore: z.coerce.number().int().min(1).max(1000).default(100),
+  weight: z.coerce.number().int().min(1).max(100).default(20),
+  dueDate: z
+    .string()
+    .trim()
+    .refine((v) => v === '' || !Number.isNaN(Date.parse(v)), 'Valid due date required.')
+    .optional()
+    .nullable(),
+});
+
+export const updateAssessmentSchema = z.object({
+  title: z.string().trim().min(2).max(160).optional(),
+  assessmentType: assessmentTypeSchema.optional(),
+  moduleId: z.string().trim().optional().nullable(),
+  batchId: z.string().trim().optional().nullable(),
+  maxScore: z.coerce.number().int().min(1).max(1000).optional(),
+  weight: z.coerce.number().int().min(1).max(100).optional(),
+  dueDate: z
+    .string()
+    .trim()
+    .refine((v) => v === '' || !Number.isNaN(Date.parse(v)), 'Valid due date required.')
+    .optional()
+    .nullable(),
+});
+
+export const saveAssessmentGradeSchema = z.object({
+  studentId: z.string().trim().min(1),
+  score: z.coerce.number().min(0, 'Score cannot be negative.'),
+  feedback: z.string().trim().max(1000).optional().default(''),
+});
+
 export const saveGradeSchema = z.object({
   studentId: z.string().trim().min(1),
   courseId: z.string().trim().min(1),
@@ -307,11 +359,27 @@ export const saveRemarkSchema = z.object({
   summary: z.string().trim().min(4).max(2000),
 });
 
+export const attendanceStatusSchema = z.enum(['Present', 'Late', 'Absent', 'Excused']);
+
 export const markAttendanceSchema = z.object({
   sessionId: z.string().trim().min(1),
   studentId: z.string().trim().min(1),
-  status: z.enum(['Present', 'Late', 'Absent']),
+  status: attendanceStatusSchema,
   note: z.string().trim().max(500).optional().default(''),
+});
+
+export const bulkAttendanceSchema = z.object({
+  sessionId: z.string().trim().min(1),
+  entries: z
+    .array(
+      z.object({
+        studentId: z.string().trim().min(1),
+        status: attendanceStatusSchema,
+        note: z.string().trim().max(500).optional().default(''),
+      })
+    )
+    .min(1, 'At least one student attendance entry is required.')
+    .max(250),
 });
 
 export const createSessionSchema = z.object({
@@ -329,6 +397,7 @@ export const createInvoiceSchema = z.object({
   studentId: z.string().trim().min(1),
   courseId: z.string().trim().min(1),
   enrollmentId: z.string().trim().optional(),
+  feeStructureId: z.string().trim().optional().nullable(),
   description: z.string().trim().min(3).max(240),
   amountDue: z.string().trim().regex(/^\d+(\.\d{1,2})?$/, 'Amount due must be a valid decimal.').refine((v) => Number(v) > 0, 'Amount due must be greater than zero.'),
   dueDate: z.string().refine((v) => !Number.isNaN(Date.parse(v)), 'Valid due date required.'),
@@ -339,6 +408,121 @@ export const recordPaymentSchema = z.object({
   method: z.enum(['Card', 'Bank Transfer', 'Cash', 'Corporate Sponsorship']),
   referenceCode: z.string().trim().max(120).optional().default(''),
   notes: z.string().trim().max(500).optional().default(''),
+});
+
+const positiveDecimalString = z
+  .string()
+  .trim()
+  .regex(/^\d+(\.\d{1,2})?$/, 'Amount must be a valid decimal.')
+  .refine((v) => Number(v) > 0, 'Amount must be greater than zero.');
+
+const nonNegativeDecimalString = z
+  .string()
+  .trim()
+  .regex(/^\d+(\.\d{1,2})?$/, 'Amount must be a valid decimal.')
+  .refine((v) => Number(v) >= 0, 'Amount cannot be negative.');
+
+export const createFeePlanSchema = z.object({
+  code: z.string().trim().min(2).max(32),
+  name: z.string().trim().min(2).max(120),
+  description: z.string().trim().max(400).optional().default(''),
+  installmentCount: z.coerce.number().int().min(1).max(24).default(1),
+  isActive: z.boolean().optional().default(true),
+});
+
+export const updateFeePlanSchema = createFeePlanSchema.partial();
+
+export const createFeeStructureSchema = z.object({
+  courseId: z.string().trim().min(1, 'Course is required.'),
+  batchId: z.string().trim().optional().nullable(),
+  feePlanId: z.string().trim().optional().nullable(),
+  tuitionAmount: positiveDecimalString,
+  registrationFee: nonNegativeDecimalString.optional().default('0.00'),
+  labFee: nonNegativeDecimalString.optional().default('0.00'),
+  isActive: z.boolean().optional().default(true),
+});
+
+export const updateFeeStructureSchema = createFeeStructureSchema.partial();
+
+export const createDiscountSchema = z
+  .object({
+    code: z.string().trim().min(2).max(32),
+    name: z.string().trim().min(2).max(120),
+    discountType: z.enum(['Percentage', 'Fixed']),
+    value: positiveDecimalString,
+    isActive: z.boolean().optional().default(true),
+    validFrom: z
+      .string()
+      .trim()
+      .refine((v) => v === '' || !Number.isNaN(Date.parse(v)), 'Valid start date required.')
+      .optional()
+      .nullable(),
+    validTo: z
+      .string()
+      .trim()
+      .refine((v) => v === '' || !Number.isNaN(Date.parse(v)), 'Valid end date required.')
+      .optional()
+      .nullable(),
+  })
+  .refine(
+    (d) => d.discountType !== 'Percentage' || Number(d.value) <= 100,
+    'Percentage discount cannot exceed 100%.'
+  );
+
+export const updateDiscountSchema = z.object({
+  name: z.string().trim().min(2).max(120).optional(),
+  discountType: z.enum(['Percentage', 'Fixed']).optional(),
+  value: positiveDecimalString.optional(),
+  isActive: z.boolean().optional(),
+  validFrom: z
+    .string()
+    .trim()
+    .refine((v) => v === '' || !Number.isNaN(Date.parse(v)), 'Valid start date required.')
+    .optional()
+    .nullable(),
+  validTo: z
+    .string()
+    .trim()
+    .refine((v) => v === '' || !Number.isNaN(Date.parse(v)), 'Valid end date required.')
+    .optional()
+    .nullable(),
+});
+
+export const createScholarshipSchema = z
+  .object({
+    code: z.string().trim().min(2).max(32),
+    name: z.string().trim().min(2).max(120),
+    sponsorName: z.string().trim().max(120).optional().default(''),
+    coverageType: z.enum(['Percentage', 'Fixed']),
+    coverageValue: positiveDecimalString,
+    maxRecipients: z.coerce.number().int().min(1).max(1000).default(10),
+    academicYearId: z.string().trim().optional().nullable(),
+    isActive: z.boolean().optional().default(true),
+  })
+  .refine(
+    (s) => s.coverageType !== 'Percentage' || Number(s.coverageValue) <= 100,
+    'Percentage scholarship coverage cannot exceed 100%.'
+  );
+
+export const updateScholarshipSchema = z.object({
+  name: z.string().trim().min(2).max(120).optional(),
+  sponsorName: z.string().trim().max(120).optional(),
+  coverageType: z.enum(['Percentage', 'Fixed']).optional(),
+  coverageValue: positiveDecimalString.optional(),
+  maxRecipients: z.coerce.number().int().min(1).max(1000).optional(),
+  academicYearId: z.string().trim().optional().nullable(),
+  isActive: z.boolean().optional(),
+});
+
+export const applyInvoiceAdjustmentSchema = z.object({
+  kind: z.enum(['discount', 'scholarship']),
+  targetId: z.string().trim().min(1, 'Select a discount or scholarship.'),
+  notes: z.string().trim().max(300).optional().default(''),
+});
+
+export const refundPaymentSchema = z.object({
+  amount: positiveDecimalString,
+  reason: z.string().trim().min(4, 'Refund reason is required.').max(400),
 });
 
 export const uploadDocumentSchema = z.object({
@@ -366,7 +550,13 @@ export const createStudentSchema = z.object({
   name: z.string().trim().min(2, 'Student full name is required.').max(120),
   email: z.string().trim().email('Valid email address is required.'),
   phone: z.string().trim().max(40).optional().default(''),
-  password: z.string().min(8, 'Initial password must be at least 8 characters.').max(128),
+  password: z
+    .string()
+    .min(8, 'Initial password must be at least 8 characters.')
+    .max(128)
+    .optional()
+    .or(z.literal('')),
+  requirePasswordChange: z.boolean().optional(),
   departmentId: z.string().trim().optional().nullable(),
   dateOfBirth: z.string().trim().optional().nullable(),
   address: z.string().trim().max(400).optional().default(''),
@@ -402,7 +592,13 @@ export const createInstructorSchema = z.object({
   name: z.string().trim().min(2, 'Instructor full name is required.').max(120),
   email: z.string().trim().email('Valid email address is required.'),
   phone: z.string().trim().max(40).optional().default(''),
-  password: z.string().min(8, 'Initial password must be at least 8 characters.').max(128),
+  password: z
+    .string()
+    .min(8, 'Initial password must be at least 8 characters.')
+    .max(128)
+    .optional()
+    .or(z.literal('')),
+  requirePasswordChange: z.boolean().optional(),
   departmentId: z.string().trim().optional().nullable(),
   specialization: z.string().trim().max(160).optional().default(''),
   qualification: z.string().trim().max(160).optional().default(''),
@@ -513,9 +709,17 @@ export const updateAcademySettingsSchema = z.object({
       )
       .optional(),
     timezone: z.string().trim().min(2).max(80).default('Asia/Kolkata'),
-    currency: z.string().trim().min(3).max(8).default('USD'),
+    currency: z.string().trim().min(3).max(8).default('INR'),
   }),
   policies: z.object({
+    studentIdPrefix: z
+      .string()
+      .trim()
+      .min(2)
+      .max(12)
+      .regex(/^[A-Z0-9-]+$/i, 'Student ID prefix must contain only letters, numbers, or hyphens.')
+      .optional()
+      .default('IGS'),
     invoicePrefix: z.string().trim().min(2).max(24),
     invoiceNextSeq: z.coerce.number().int().min(1).max(9_999_999),
     feeDueDays: z.coerce.number().int().min(1).max(180),

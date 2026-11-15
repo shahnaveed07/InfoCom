@@ -13,7 +13,6 @@ datasource db {
 
 model User {
   id                 String    @id
-  firebaseUid        String?   @unique @map("firebase_uid")
   name               String
   email              String    @unique
   role               String    @default("student") // Primary active role: 'admin' | 'instructor' | 'student'
@@ -143,7 +142,7 @@ model Academy {
   address     String   @default("")
   logoDataUrl String   @default("") @map("logo_data_url")
   timezone    String   @default("Asia/Kolkata")
-  currency    String   @default("USD")
+  currency    String   @default("INR")
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -546,9 +545,9 @@ model Grade {
   id             String   @id
   studentId      String   @map("student_id")
   courseId       String   @map("course_id")
-  moduleId       String   @map("module_id")
+  moduleId       String?  @map("module_id")
   enrollmentId   String?  @map("enrollment_id")
-  assessmentId   String?  @map("assessment_id")
+  assessmentId   String   @map("assessment_id")
   score          Int
   maxScore       Int      @default(100) @map("max_score")
   feedback       String   @default("")
@@ -556,14 +555,15 @@ model Grade {
   gradedByUserId String?  @map("graded_by_user_id")
   gradedBy       String   @map("graded_by")
 
-  student      User         @relation("StudentGrades", fields: [studentId], references: [id], onDelete: Cascade)
-  course       Course       @relation(fields: [courseId], references: [id], onDelete: Cascade)
-  module       CourseModule @relation(fields: [moduleId], references: [id], onDelete: Cascade)
-  enrollment   Enrollment?  @relation(fields: [enrollmentId], references: [id], onDelete: SetNull)
-  assessment   Assessment?  @relation(fields: [assessmentId], references: [id], onDelete: SetNull)
-  gradedByUser User?        @relation("GradeMarker", fields: [gradedByUserId], references: [id], onDelete: SetNull)
+  student      User          @relation("StudentGrades", fields: [studentId], references: [id], onDelete: Cascade)
+  course       Course        @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  module       CourseModule? @relation(fields: [moduleId], references: [id], onDelete: SetNull)
+  enrollment   Enrollment?   @relation(fields: [enrollmentId], references: [id], onDelete: SetNull)
+  assessment   Assessment    @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  gradedByUser User?         @relation("GradeMarker", fields: [gradedByUserId], references: [id], onDelete: SetNull)
 
-  @@unique([studentId, courseId, moduleId], map: "module_grades_student_course_mod_idx")
+  @@unique([studentId, assessmentId], map: "module_grades_student_assessment_idx")
+  @@index([studentId, courseId, moduleId], map: "module_grades_student_course_mod_lookup_idx")
   @@index([enrollmentId])
   @@index([assessmentId])
   @@map("module_grades")
@@ -692,7 +692,7 @@ model FeePlan {
   name             String
   description      String   @default("")
   installmentCount Int      @default(1) @map("installment_count")
-  currency         String   @default("USD")
+  currency         String   @default("INR")
   isActive         Boolean  @default(true) @map("is_active")
   createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
@@ -737,7 +737,7 @@ model Invoice {
   scholarshipTotal Decimal  @default(0.00) @map("scholarship_total") @db.Decimal(12, 2)
   amountDue        Decimal  @map("amount_due") @db.Decimal(12, 2)
   amountPaid       Decimal  @default(0.00) @map("amount_paid") @db.Decimal(12, 2)
-  currency         String   @default("USD")
+  currency         String   @default("INR")
   status           String   @default("Unpaid") // 'Unpaid' | 'Partial' | 'Paid' | 'Voided'
   dueDate          DateTime @map("due_date") @db.Timestamptz(6)
   issuedByUserId   String?  @map("issued_by_user_id")
@@ -876,7 +876,7 @@ model CertificateTemplate {
   name             String
   courseId         String?  @map("course_id")
   titleFormat      String   @default("Certificate of Completion") @map("title_format")
-  signatoryName    String   @default("Sarah Lin") @map("signatory_name")
+  signatoryName    String   @default("Academy Director") @map("signatory_name")
   signatoryTitle   String   @default("Academy Director") @map("signatory_title")
   minCompletionPct Int      @default(100) @map("min_completion_pct")
   minScore         Int      @default(60) @map("min_score")

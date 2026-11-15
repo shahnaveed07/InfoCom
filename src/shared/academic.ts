@@ -1,6 +1,9 @@
 import type {
+  AcademyPolicySummary,
   AdmissionApplication,
   AdmissionStatus,
+  AssessmentGradeRecord,
+  AssessmentRecord,
   AttendanceRecord,
   CertificateRecord,
   ClassSession,
@@ -150,6 +153,7 @@ export interface AttendanceStats {
   present: number;
   late: number;
   absent: number;
+  excused: number;
   rate: number;
 }
 
@@ -170,6 +174,17 @@ export interface CourseProgressReportItem {
     weight: number;
     completed: boolean;
     score: number | null;
+    letterGrade: string;
+    feedback: string;
+  }>;
+  assessmentRows: Array<{
+    assessmentId: string;
+    title: string;
+    assessmentType: AssessmentRecord['assessmentType'];
+    weight: number;
+    maxScore: number;
+    score: number | null;
+    percentage: number | null;
     letterGrade: string;
     feedback: string;
   }>;
@@ -217,21 +232,34 @@ export function calculateWeightedAverage(
   return Math.round((weightedSum / totalWeight) * 10) / 10;
 }
 
-export function calculateAttendanceStats(records: AttendanceRecord[]): AttendanceStats {
+export function calculateAttendanceStats(
+  records: AttendanceRecord[],
+  options?: { lateWeightPct?: number }
+): AttendanceStats {
   const total = records.length;
   if (total === 0) {
-    return { total: 0, present: 0, late: 0, absent: 0, rate: 100 };
+    return { total: 0, present: 0, late: 0, absent: 0, excused: 0, rate: 100 };
   }
   let present = 0;
   let late = 0;
   let absent = 0;
+  let excused = 0;
   for (const r of records) {
     if (r.status === 'Present') present += 1;
     else if (r.status === 'Late') late += 1;
     else if (r.status === 'Absent') absent += 1;
+    else if (r.status === 'Excused') excused += 1;
   }
-  const rate = Math.round(((present + late * 0.75) / total) * 100);
-  return { total, present, late, absent, rate };
+  const effectiveTotal = present + late + absent;
+  if (effectiveTotal === 0) {
+    return { total, present, late, absent, excused, rate: 100 };
+  }
+  const lateWeight = Math.max(0, Math.min(100, options?.lateWeightPct ?? 75)) / 100;
+  const rate = Math.min(
+    100,
+    Math.round(((present + late * lateWeight) / effectiveTotal) * 100)
+  );
+  return { total, present, late, absent, excused, rate };
 }
 
 export function calculateCourseCompletion(
@@ -245,11 +273,15 @@ export function calculateCourseCompletion(
 
 export function determineAcademicStanding(
   overallAverage: number | null,
-  overallAttendanceRate: number
+  overallAttendanceRate: number,
+  policies?: Partial<Pick<AcademyPolicySummary, 'distinctionScore' | 'passingScore' | 'minAttendanceRatePct'>>
 ): StudentProgressReport['standing'] {
   if (overallAverage === null) return 'Pending Assessment';
-  if (overallAverage >= 90 && overallAttendanceRate >= 90) return 'Distinction';
-  if (overallAverage < 75 || overallAttendanceRate < 75) return 'Needs Attention';
+  const distinction = policies?.distinctionScore ?? 90;
+  const passing = policies?.passingScore ?? 75;
+  const minAtt = policies?.minAttendanceRatePct ?? 75;
+  if (overallAverage >= distinction && overallAttendanceRate >= distinction) return 'Distinction';
+  if (overallAverage < passing || overallAttendanceRate < minAtt) return 'Needs Attention';
   return 'On Track';
 }
 
@@ -258,8 +290,11 @@ export function computeStudentProgressReport(params: {
   courses: Course[];
   enrollments: Enrollment[];
   grades: ModuleGrade[];
+  assessments?: AssessmentRecord[];
+  assessmentGrades?: AssessmentGradeRecord[];
   attendance: AttendanceRecord[];
   remarks: ProgressRemark[];
+  policies?: Partial<AcademyPolicySummary>;
   generatedAtIso: string;
 }): StudentProgressReport {
   const studentEnrollments = params.enrollments.filter(
@@ -270,6 +305,7 @@ export function computeStudentProgressReport(params: {
   const allAttendanceRecords: AttendanceRecord[] = [];
   const courseAverages: number[] = [];
   const courseCompletions: number[] = [];
+  const lateWeightPct = params.policies?.lateWeightPct;
 
   for (const enrollment of studentEnrollments) {
     const course = params.courses.find((c) => c.id === enrollment.courseId);
@@ -277,6 +313,14 @@ export function computeStudentProgressReport(params: {
 
     const courseGrades = params.grades.filter(
       (g) => g.studentId === params.student.id && g.courseId === course.id
+    );
+    const courseAssessments = (params.assessments ?? []).filter(
+      (a) =>
+        a.courseId === course.id &&
+        (!a.batchId || a.batchId === enrollment.cohortId)
+    );
+    const courseAssessmentGrades = (params.assessmentGrades ?? []).filter(
+      (ag) => ag.studentId === params.student.id && ag.courseId === course.id
     );
     const courseAttendance = params.attendance.filter(
       (a) => a.studentId === params.student.id && a.courseId === course.id
@@ -299,11 +343,37 @@ export function computeStudentProgressReport(params: {
       };
     });
 
-    const gradedPairs = moduleRows
+    const assessmentRows = courseAssessments.map((asmt) => {
+      const ag = courseAssessmentGrades.find((g) => g.assessmentId === asmt.id);
+      const pct = ag
+        ? Math.round((ag.score / Math.max(1, asmt.maxScore)) * 1000) / 10
+        : null;
+      return {
+        assessmentId: asmt.id,
+        title: asmt.title,
+        assessmentType: asmt.assessmentType,
+        weight: asmt.weight,
+        maxScore: asmt.maxScore,
+        score: ag ? ag.score : null,
+        percentage: pct,
+        letterGrade: calculateLetterGrade(pct),
+        feedback: ag?.feedback ?? '',
+      };
+    });
+
+    const gradedAssessmentPairs = assessmentRows
+      .filter((r) => r.percentage !== null)
+      .map((r) => ({ score: r.percentage as number, weight: r.weight }));
+
+    const gradedModulePairs = moduleRows
       .filter((m) => m.score !== null)
       .map((m) => ({ score: m.score as number, weight: m.weight }));
 
-    const weightedScore = calculateWeightedAverage(gradedPairs);
+    const weightedScore =
+      gradedAssessmentPairs.length > 0
+        ? calculateWeightedAverage(gradedAssessmentPairs)
+        : calculateWeightedAverage(gradedModulePairs);
+
     if (weightedScore !== null) {
       courseAverages.push(weightedScore);
     }
@@ -327,8 +397,9 @@ export function computeStudentProgressReport(params: {
       completionPct,
       weightedScore,
       letterGrade: calculateLetterGrade(weightedScore),
-      attendance: calculateAttendanceStats(courseAttendance),
+      attendance: calculateAttendanceStats(courseAttendance, { lateWeightPct }),
       moduleRows,
+      assessmentRows,
       instructorRemark:
         remarkObj?.summary ||
         'Progressing steadily through scheduled lab exercises and module assessments.',
@@ -342,7 +413,7 @@ export function computeStudentProgressReport(params: {
         ) / 10
       : null;
 
-  const overallAttendance = calculateAttendanceStats(allAttendanceRecords);
+  const overallAttendance = calculateAttendanceStats(allAttendanceRecords, { lateWeightPct });
   const overallCompletionPct =
     courseCompletions.length > 0
       ? Math.round(
@@ -357,7 +428,7 @@ export function computeStudentProgressReport(params: {
     overallLetterGrade: calculateLetterGrade(overallAverage),
     overallAttendanceRate: overallAttendance.rate,
     overallCompletionPct,
-    standing: determineAcademicStanding(overallAverage, overallAttendance.rate),
+    standing: determineAcademicStanding(overallAverage, overallAttendance.rate, params.policies),
     courses: courseReports,
   };
 }
@@ -376,7 +447,9 @@ export function buildAttendanceNotification(params: {
       ? 'marked Present'
       : params.status === 'Late'
         ? 'marked Late'
-        : 'marked Absent';
+        : params.status === 'Excused'
+          ? 'marked Excused'
+          : 'marked Absent';
 
   const noteSuffix = params.note?.trim() ? ` Note: ${params.note.trim()}` : '';
 
@@ -428,7 +501,7 @@ export function findUpcomingSessionsNeedingReminders(params: {
     );
 
     const hoursRemaining = Math.max(1, Math.round(diffMs / (60 * 60 * 1000)));
-    const timeLabel = new Date(startMs).toLocaleString('en-US', {
+    const timeLabel = new Date(startMs).toLocaleString('en-IN', {
       month: 'short',
       day: 'numeric',
       hour: 'numeric',
@@ -459,8 +532,9 @@ export function findUpcomingSessionsNeedingReminders(params: {
 
 export function formatReportAsText(report: StudentProgressReport): string {
   const lines: string[] = [
-    'INFOCOM ACADEMY MANAGEMENT SYSTEM — OFFICIAL STUDENT PROGRESS REPORT',
-    `Generated: ${new Date(report.generatedAtIso).toLocaleString('en-US')}`,
+    'IGS — INFOCOM GLOBAL SERVICES · COMPUTER INSTITUTE — OFFICIAL STUDENT PROGRESS REPORT',
+    'Downtown Sopore, Opposite Hassan Motors Petrol Pump, Sopore, Jammu and Kashmir, India',
+    `Generated: ${new Date(report.generatedAtIso).toLocaleString('en-IN')}`,
     '====================================================================',
     `Student Name:       ${report.student.name}`,
     `Student ID:         ${report.student.studentCode ?? report.student.id}`,
@@ -476,7 +550,7 @@ export function formatReportAsText(report: StudentProgressReport): string {
     lines.push(`--------------------------------------------------------------------`);
     lines.push(`${c.courseCode} — ${c.courseTitle} (${c.cohort} · ${c.status})`);
     lines.push(
-      `Completion: ${c.completionPct}% | Course Grade: ${c.weightedScore !== null ? `${c.weightedScore}% (${c.letterGrade})` : 'Pending'} | Attendance: ${c.attendance.rate}% (${c.attendance.present}P / ${c.attendance.late}L / ${c.attendance.absent}A)`
+      `Completion: ${c.completionPct}% | Course Grade: ${c.weightedScore !== null ? `${c.weightedScore}% (${c.letterGrade})` : 'Pending'} | Attendance: ${c.attendance.rate}% (${c.attendance.present}P / ${c.attendance.late}L / ${c.attendance.absent}A${c.attendance.excused ? ` / ${c.attendance.excused}E` : ''})`
     );
     lines.push('Modules:');
     for (const m of c.moduleRows) {
@@ -485,6 +559,19 @@ export function formatReportAsText(report: StudentProgressReport): string {
       lines.push(`  - [${m.moduleCode}] ${m.moduleTitle} (${m.weight}%) — ${status} · ${gradeStr}`);
       if (m.feedback) {
         lines.push(`      Feedback: ${m.feedback}`);
+      }
+    }
+    const extraAssessments = c.assessmentRows.filter(
+      (a) => a.assessmentType !== 'Module Assessment'
+    );
+    if (extraAssessments.length > 0) {
+      lines.push('Assessments:');
+      for (const a of extraAssessments) {
+        const gradeStr =
+          a.score !== null
+            ? `${a.score}/${a.maxScore} (${a.percentage}% · ${a.letterGrade})`
+            : 'Ungraded';
+        lines.push(`  - [${a.assessmentType}] ${a.title} (${a.weight}%) — ${gradeStr}`);
       }
     }
     lines.push(`Instructor Remark: ${c.instructorRemark}`);
@@ -516,14 +603,15 @@ export function fromCents(cents: number): string {
   return `${negative ? '-' : ''}${whole}.${frac}`;
 }
 
-export function formatCents(cents: number, currency = 'USD'): string {
-  return new Intl.NumberFormat('en-US', {
+export function formatCents(cents: number, currency = 'INR'): string {
+  const locale = currency.toUpperCase() === 'INR' ? 'en-IN' : 'en-US';
+  return new Intl.NumberFormat(locale, {
     style: 'currency',
     currency,
   }).format(cents / 100);
 }
 
-export function formatMoney(amount: string | number, currency = 'USD'): string {
+export function formatMoney(amount: string | number, currency = 'INR'): string {
   return formatCents(toCents(amount), currency);
 }
 
@@ -533,9 +621,56 @@ export function computeInvoiceStatus(
 ): Exclude<InvoiceStatus, 'Voided'> {
   const due = toCents(amountDue);
   const paid = toCents(amountPaid);
+  if (due <= 0) return 'Paid';
   if (paid <= 0) return 'Unpaid';
   if (paid >= due) return 'Paid';
   return 'Partial';
+}
+
+export function computeAdjustmentCents(params: {
+  baseCents: number;
+  type: 'Percentage' | 'Fixed';
+  value: string | number;
+  maxAllowedCents: number;
+}): number {
+  if (params.baseCents <= 0 || params.maxAllowedCents <= 0) return 0;
+  let rawCents = 0;
+  if (params.type === 'Percentage') {
+    const pct = Number(params.value);
+    if (!Number.isFinite(pct) || pct <= 0) return 0;
+    const clampedPct = Math.min(100, pct);
+    rawCents = Math.round((params.baseCents * clampedPct) / 100);
+  } else {
+    rawCents = toCents(params.value);
+  }
+  if (rawCents <= 0) return 0;
+  return Math.min(rawCents, params.maxAllowedCents);
+}
+
+export function recalculateInvoiceTotals(params: {
+  subtotalCents: number;
+  discountTotalCents: number;
+  scholarshipTotalCents: number;
+  paidCents: number;
+}): { netDueCents: number; status: Exclude<InvoiceStatus, 'Voided'> } {
+  const netDueCents = Math.max(
+    0,
+    params.subtotalCents - params.discountTotalCents - params.scholarshipTotalCents
+  );
+  const status = computeInvoiceStatus(fromCents(netDueCents), fromCents(params.paidCents));
+  return { netDueCents, status };
+}
+
+export function computeRefundableCents(
+  paymentAmount: string | number,
+  priorRefundAmounts: Array<string | number>
+): number {
+  const totalPayment = toCents(paymentAmount);
+  const refundedSoFar = priorRefundAmounts.reduce<number>(
+    (acc, val) => acc + Math.max(0, toCents(val)),
+    0
+  );
+  return Math.max(0, totalPayment - refundedSoFar);
 }
 
 export function computeCertificateEligibility(params: {
@@ -543,23 +678,29 @@ export function computeCertificateEligibility(params: {
   completionPct: number;
   weightedScore: number | null;
   attendanceRate: number;
+  minCompletionPct?: number;
+  minScore?: number;
+  minAttendancePct?: number;
 }): { eligible: boolean; reasons: string[] } {
+  const minCompletion = params.minCompletionPct ?? 100;
+  const minScore = params.minScore ?? 70;
+  const minAtt = params.minAttendancePct ?? 75;
   const reasons: string[] = [];
   if (isInactiveEnrollmentStatus(params.enrollmentStatus) || params.enrollmentStatus === 'Waitlisted') {
     reasons.push(`Enrollment status is ${params.enrollmentStatus}.`);
   }
-  if (params.completionPct < 100 && params.enrollmentStatus !== 'Completed') {
-    reasons.push(`Module completion is ${params.completionPct}% (100% required).`);
+  if (params.completionPct < minCompletion && params.enrollmentStatus !== 'Completed') {
+    reasons.push(`Module completion is ${params.completionPct}% (${minCompletion}% required).`);
   }
-  if (params.weightedScore === null || params.weightedScore < 70) {
+  if (params.weightedScore === null || params.weightedScore < minScore) {
     reasons.push(
       params.weightedScore === null
         ? 'Graded assessments are incomplete.'
-        : `Weighted score is ${params.weightedScore}% (minimum 70% required).`
+        : `Weighted score is ${params.weightedScore}% (minimum ${minScore}% required).`
     );
   }
-  if (params.attendanceRate < 75) {
-    reasons.push(`Attendance rate is ${params.attendanceRate}% (minimum 75% required).`);
+  if (params.attendanceRate < minAtt) {
+    reasons.push(`Attendance rate is ${params.attendanceRate}% (minimum ${minAtt}% required).`);
   }
   return { eligible: reasons.length === 0, reasons };
 }
@@ -660,7 +801,7 @@ export function buildMonthlyRevenueSeries(params: {
   for (let i = count - 1; i >= 0; i -= 1) {
     const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
     const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
-    const label = d.toLocaleDateString('en-US', { month: 'short', year: '2-digit', timeZone: 'UTC' });
+    const label = d.toLocaleDateString('en-IN', { month: 'short', year: '2-digit', timeZone: 'UTC' });
     buckets.set(key, { monthKey: key, label, collectedCents: 0, billedCents: 0 });
   }
 
@@ -700,7 +841,7 @@ export function buildEnrollmentTrendSeries(params: {
   for (let i = count - 1; i >= 0; i -= 1) {
     const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
     const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
-    const label = d.toLocaleDateString('en-US', { month: 'short', year: '2-digit', timeZone: 'UTC' });
+    const label = d.toLocaleDateString('en-IN', { month: 'short', year: '2-digit', timeZone: 'UTC' });
     buckets.set(key, { monthKey: key, label, enrollments: 0, completions: 0 });
   }
 

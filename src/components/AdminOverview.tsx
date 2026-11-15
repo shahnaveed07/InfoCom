@@ -50,7 +50,7 @@ export function AdminOverview({ data, onNavigate }: AdminOverviewProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  const currency = data.academy?.currency || 'USD';
+  const currency = data.academy?.currency || 'INR';
 
   useEffect(() => {
     let active = true;
@@ -99,6 +99,7 @@ export function AdminOverview({ data, onNavigate }: AdminOverviewProps) {
   const presentCount = kpis?.attendanceOverview.present ?? 0;
   const lateCount = kpis?.attendanceOverview.late ?? 0;
   const absentCount = kpis?.attendanceOverview.absent ?? 0;
+  const excusedCount = kpis?.attendanceOverview.excused ?? 0;
 
   return (
     <div className="space-y-6">
@@ -299,6 +300,7 @@ export function AdminOverview({ data, onNavigate }: AdminOverviewProps) {
             </span>
             <span className="font-mono text-[11px] text-slate-500 tabular-nums">
               {presentCount}P · {lateCount}L · {absentCount}A
+              {excusedCount > 0 ? ` · ${excusedCount}E` : ''}
             </span>
           </div>
           <div className="mt-1 text-[11px] text-slate-500 tabular-nums">
@@ -629,15 +631,23 @@ export function AdminOverview({ data, onNavigate }: AdminOverviewProps) {
                     className="bg-red-600 h-full"
                     title={`Absent: ${absentCount}`}
                   />
+                  {excusedCount > 0 && (
+                    <div
+                      style={{ width: `${(excusedCount / attendanceTotal) * 100}%` }}
+                      className="bg-blue-600 h-full"
+                      title={`Excused: ${excusedCount}`}
+                    />
+                  )}
                 </>
               ) : (
                 <div className="bg-slate-200 w-full h-full" />
               )}
             </div>
-            <div className="mt-2 flex items-center gap-4 text-[11px] text-slate-600 font-mono tabular-nums">
+            <div className="mt-2 flex flex-wrap items-center gap-4 text-[11px] text-slate-600 font-mono tabular-nums">
               <span className="text-emerald-700">Present: {presentCount}</span>
               <span className="text-amber-700">Late: {lateCount}</span>
               <span className="text-red-700">Absent: {absentCount}</span>
+              <span className="text-blue-700">Excused: {excusedCount}</span>
             </div>
           </div>
         </section>
@@ -676,7 +686,7 @@ export function AdminOverview({ data, onNavigate }: AdminOverviewProps) {
                   <div className="flex items-start justify-between gap-2">
                     <p className="text-sm font-medium text-slate-900">{ses.title}</p>
                     <span className="font-mono text-[11px] text-blue-700 shrink-0 tabular-nums">
-                      {new Date(ses.startIso).toLocaleTimeString('en-US', {
+                      {new Date(ses.startIso).toLocaleTimeString('en-IN', {
                         hour: 'numeric',
                         minute: '2-digit',
                       })}
@@ -735,7 +745,7 @@ export function AdminOverview({ data, onNavigate }: AdminOverviewProps) {
                       {formatMoney(tx.amount, currency)}
                     </div>
                     <div className="font-mono text-[10px] text-slate-400 tabular-nums">
-                      {new Date(tx.paidAt).toLocaleDateString('en-US', {
+                      {new Date(tx.paidAt).toLocaleDateString('en-IN', {
                         month: 'short',
                         day: 'numeric',
                       })}
@@ -923,7 +933,7 @@ export function AdminOverview({ data, onNavigate }: AdminOverviewProps) {
                   <p className="text-sm text-slate-700 mt-0.5">{log.summary}</p>
                 </div>
                 <span className="font-mono text-[11px] text-slate-400 whitespace-nowrap shrink-0 tabular-nums">
-                  {new Date(log.createdAt).toLocaleString('en-US', {
+                  {new Date(log.createdAt).toLocaleString('en-IN', {
                     month: 'short',
                     day: 'numeric',
                     hour: 'numeric',

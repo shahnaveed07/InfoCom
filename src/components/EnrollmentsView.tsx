@@ -1202,7 +1202,7 @@ export function EnrollmentsView({ data, onDashboardUpdate }: EnrollmentsViewProp
                               : `Created (${entry.newStatus})`}
                           </span>
                           <span className="font-mono text-[11px] text-slate-500 tabular-nums">
-                            {new Date(entry.changedAt).toLocaleString('en-US')}
+                            {new Date(entry.changedAt).toLocaleString('en-IN')}
                           </span>
                         </div>
                         {(entry.previousBatchName || entry.newBatchName) && (

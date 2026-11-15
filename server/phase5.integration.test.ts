@@ -123,7 +123,7 @@ test('Phase 5 Admission & Enrollment Workflow Integration Suite', async (t) => {
           email: otherStuEmail,
           role: 'student',
           status: 'active',
-          studentCode: `NTA-P5-${runSuffix.slice(0, 4).toUpperCase()}`,
+          studentCode: `IGS-P5-${runSuffix.slice(0, 4).toUpperCase()}`,
           passwordHash: pwHash,
         },
       ],
@@ -453,7 +453,7 @@ test('Phase 5 Admission & Enrollment Workflow Integration Suite', async (t) => {
       createdEnrollmentIds.push(approvedEnrollmentId);
       if (invoiceId && invoiceId !== 'null') createdInvoiceIds.push(invoiceId);
 
-      assert.match(String(approveRes.json?.studentCode), /^NTA-\d{4}-/);
+      assert.match(String(approveRes.json?.studentCode), /^IGS-\d{4}-/);
       assert.equal(approveRes.json?.portalActivated, false);
 
       // Student account starts inactive under manual_activation policy
@@ -532,6 +532,15 @@ test('Phase 5 Admission & Enrollment Workflow Integration Suite', async (t) => {
         },
       });
 
+      const catalogRes = await apiFetch('/api/admissions/public/catalog');
+      assert.equal(catalogRes.res.status, 200);
+      assert.equal(catalogRes.json?.currency, 'INR');
+      const catalogCourses = catalogRes.json?.courses as Array<{ id: string; code: string }>;
+      const catalogBatches = catalogRes.json?.batches as Array<{ id: string; courseId: string }>;
+      assert.ok(catalogCourses.some((c) => c.id === courseAId));
+      assert.ok(catalogBatches.some((b) => b.id === batchOpenId && b.courseId === courseAId));
+      assert.equal((catalogRes.json as Record<string, unknown>).students, undefined);
+
       const app2Email = `applicant2.${runSuffix}@infocom.test`;
       const pubRes = await apiFetch('/api/admissions/public', {
         method: 'POST',
@@ -539,15 +548,32 @@ test('Phase 5 Admission & Enrollment Workflow Integration Suite', async (t) => {
           applicantName: `Rohan Mehta ${runSuffix}`,
           applicantEmail: app2Email,
           phone: '+91-98111-22334',
+          guardianName: 'Suresh Mehta',
+          guardianRelationship: 'Father',
+          guardianPhone: '+91-98111-22335',
+          previousQualification: '12th Grade',
           targetCourseId: courseAId,
           targetBatchId: batchOpenId,
           preferredCohort: `Open Batch ${runSuffix}`,
           status: 'Submitted',
+          documents: [
+            {
+              documentType: 'ID Verification',
+              title: 'Public Applicant ID',
+              category: 'ID Verification',
+              fileName: 'public_id.txt',
+              mimeType: 'text/plain',
+              contentBase64: Buffer.from('PUBLIC-ID-SAMPLE').toString('base64'),
+            },
+          ],
         },
       });
       assert.equal(pubRes.res.status, 201);
+      assert.match(String(pubRes.json?.applicationNumber), /^ADM-\d{4}-/);
       const app2Id = String(pubRes.json?.admissionId);
       createdAdmissionIds.push(app2Id);
+      const app2Docs = await prisma.admissionDocument.findMany({ where: { applicationId: app2Id } });
+      for (const d of app2Docs) createdFileAssetIds.push(d.fileAssetId);
 
       const approve2 = await apiFetch(`/api/admissions/${app2Id}/approve`, {
         method: 'POST',

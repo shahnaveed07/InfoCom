@@ -152,7 +152,7 @@ test('Phase 3 Security & Authorization Integration Suite', async (t) => {
           email: stuAEmail,
           role: 'student',
           status: 'active',
-          studentCode: `NTA-SA-${runSuffix}`,
+          studentCode: `IGS-SA-${runSuffix}`,
           passwordHash: argonHash,
         },
         {
@@ -161,7 +161,7 @@ test('Phase 3 Security & Authorization Integration Suite', async (t) => {
           email: stuBEmail,
           role: 'student',
           status: 'active',
-          studentCode: `NTA-SB-${runSuffix}`,
+          studentCode: `IGS-SB-${runSuffix}`,
           passwordHash: argonHash,
         },
         {
@@ -170,7 +170,7 @@ test('Phase 3 Security & Authorization Integration Suite', async (t) => {
           email: legacyStuEmail,
           role: 'student',
           status: 'active',
-          studentCode: `NTA-LG-${runSuffix}`,
+          studentCode: `IGS-LG-${runSuffix}`,
           passwordHash: legacyHash,
         },
       ],
@@ -824,6 +824,117 @@ test('Phase 3 Security & Authorization Integration Suite', async (t) => {
       }
       assert.equal(hit429, true);
       resetAuthRateLimiters();
+    });
+
+    await t.test('12. Onboarding setup tokens, mustChangePassword gate, and admin reset-token endpoint', async () => {
+      resetAuthRateLimiters();
+      // 1) Create user via invite mode (no password) -> issues single-use onboardingToken + sets mustChangePassword=true
+      const inviteEmail = `invite.${runSuffix}@infocom.test`;
+      const inviteRes = await apiFetch('/api/users', {
+        method: 'POST',
+        cookie: adminCookie,
+        body: {
+          name: 'Invited Learner',
+          email: inviteEmail,
+          role: 'student',
+        },
+      });
+      assert.equal(inviteRes.res.status, 201);
+      const inviteBody = inviteRes.json as {
+        user: { id: string; mustChangePassword?: boolean };
+        onboardingToken?: string;
+        onboardingPath?: string;
+      };
+      assert.ok(inviteBody.user.id);
+      createdUserIds.push(inviteBody.user.id);
+      assert.equal(inviteBody.user.mustChangePassword, true);
+      assert.ok(inviteBody.onboardingToken && inviteBody.onboardingToken.length >= 20);
+      assert.ok(inviteBody.onboardingPath?.startsWith('/?setupToken='));
+
+      // Consuming onboarding token sets password, clears mustChangePassword, and enables login
+      const invitedPass = 'InvitedPass!2026';
+      const setupConsume = await apiFetch('/api/auth/reset-password', {
+        method: 'POST',
+        body: { token: inviteBody.onboardingToken, newPassword: invitedPass },
+      });
+      assert.equal(setupConsume.res.status, 200);
+
+      const invitedLogin = await apiFetch('/api/auth/login', {
+        method: 'POST',
+        body: { email: inviteEmail, password: invitedPass },
+      });
+      assert.equal(invitedLogin.res.status, 200);
+      assert.equal((invitedLogin.json?.user as { mustChangePassword?: boolean }).mustChangePassword, false);
+
+      // 2) Create user with temporary password + requirePasswordChange: true -> blocks /api/dashboard until changed
+      const tempEmail = `temppw.${runSuffix}@infocom.test`;
+      const tempPass = 'TempPass!2026';
+      const tempCreate = await apiFetch('/api/users', {
+        method: 'POST',
+        cookie: adminCookie,
+        body: {
+          name: 'Temp Password User',
+          email: tempEmail,
+          role: 'student',
+          password: tempPass,
+          requirePasswordChange: true,
+        },
+      });
+      assert.equal(tempCreate.res.status, 201);
+      const tempUserId = (tempCreate.json?.user as { id: string }).id;
+      createdUserIds.push(tempUserId);
+
+      const tempLogin = await apiFetch('/api/auth/login', {
+        method: 'POST',
+        body: { email: tempEmail, password: tempPass },
+      });
+      assert.equal(tempLogin.res.status, 200);
+      assert.equal((tempLogin.json?.user as { mustChangePassword?: boolean }).mustChangePassword, true);
+      const tempCookie = extractSessionCookie(tempLogin.res);
+
+      // Dashboard is blocked with 403 PASSWORD_CHANGE_REQUIRED while mustChangePassword is true
+      const blockedDash = await apiFetch('/api/dashboard', { cookie: tempCookie });
+      assert.equal(blockedDash.res.status, 403);
+      assert.equal(blockedDash.json?.code, 'PASSWORD_CHANGE_REQUIRED');
+
+      // /api/auth/me remains accessible and returns mustChangePassword: true
+      const meDuringGate = await apiFetch('/api/auth/me', { cookie: tempCookie });
+      assert.equal(meDuringGate.res.status, 200);
+      assert.equal((meDuringGate.json?.user as { mustChangePassword?: boolean }).mustChangePassword, true);
+
+      // Changing password clears mustChangePassword and unlocks /api/dashboard
+      const newTempPass = 'PermanentPass!2026';
+      const changeRes = await apiFetch('/api/auth/change-password', {
+        method: 'POST',
+        cookie: tempCookie,
+        body: { currentPassword: tempPass, newPassword: newTempPass },
+      });
+      assert.equal(changeRes.res.status, 200);
+      assert.equal((changeRes.json?.user as { mustChangePassword?: boolean }).mustChangePassword, false);
+
+      const unblockedDash = await apiFetch('/api/dashboard', { cookie: tempCookie });
+      assert.equal(unblockedDash.res.status, 200);
+
+      // 3) Admin-only POST /api/users/:id/reset-token
+      const nonAdminAttempt = await apiFetch(`/api/users/${tempUserId}/reset-token`, {
+        method: 'POST',
+        cookie: instACookie,
+      });
+      assert.equal(nonAdminAttempt.res.status, 403);
+
+      const adminResetToken = await apiFetch(`/api/users/${tempUserId}/reset-token`, {
+        method: 'POST',
+        cookie: adminCookie,
+      });
+      assert.equal(adminResetToken.res.status, 200);
+      const resetBody = adminResetToken.json as { onboardingToken: string; onboardingPath: string };
+      assert.ok(resetBody.onboardingToken.length >= 20);
+
+      const resetApply = await apiFetch('/api/auth/reset-password', {
+        method: 'POST',
+        body: { token: resetBody.onboardingToken, newPassword: 'ReissuedPass!2026' },
+      });
+      assert.equal(resetApply.res.status, 200);
     });
   } finally {
     resetAuthRateLimiters();

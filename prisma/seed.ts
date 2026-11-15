@@ -45,26 +45,33 @@ async function main() {
     await tx.academy.upsert({
       where: { code: 'INFOCOM-MAIN' },
       update: {
-        name: 'InfoCom Academy',
-        legalName: 'InfoCom Computer Training & Engineering Institute',
-        website: 'https://infocom.edu',
-        currency: 'USD',
+        name: 'IGS — InfoCom Global Services',
+        legalName: 'InfoCom Global Services — Computer Institute',
+        email: '',
+        phone: '',
+        website: '',
+        address:
+          'Downtown Sopore, Opposite Hassan Motors Petrol Pump, Sopore, Jammu and Kashmir, India.',
+        timezone: 'Asia/Kolkata',
+        currency: 'INR',
       },
       create: {
         id: 'acad-infocom',
         code: 'INFOCOM-MAIN',
-        name: 'InfoCom Academy',
-        legalName: 'InfoCom Computer Training & Engineering Institute',
-        email: 'registrar@infocom.edu',
-        phone: '+91 80 4120 8800',
-        website: 'https://infocom.edu',
-        address: '420 Innovation Way, Suite 300, Bengaluru',
+        name: 'IGS — InfoCom Global Services',
+        legalName: 'InfoCom Global Services — Computer Institute',
+        email: '',
+        phone: '',
+        website: '',
+        address:
+          'Downtown Sopore, Opposite Hassan Motors Petrol Pump, Sopore, Jammu and Kashmir, India.',
         timezone: 'Asia/Kolkata',
-        currency: 'USD',
+        currency: 'INR',
       },
     });
 
     const settings = [
+      { key: 'academy.student_id_prefix', value: 'IGS', valueType: 'string' },
       { key: 'academy.invoice_prefix', value: 'INV-2026', valueType: 'string' },
       { key: 'academy.invoice_next_seq', value: '1050', valueType: 'number' },
       { key: 'academy.fee_due_days', value: '14', valueType: 'number' },
@@ -169,42 +176,42 @@ async function main() {
 
     await tx.feePlan.upsert({
       where: { code: 'PLAN-STANDARD' },
-      update: { name: 'Standard Tuition Plan', isActive: true },
+      update: { name: 'Standard Tuition Plan', currency: 'INR', isActive: true },
       create: {
         id: 'plan-standard',
         code: 'PLAN-STANDARD',
         name: 'Standard Tuition Plan',
         description: 'Single or 2-installment tuition schedule.',
         installmentCount: 2,
-        currency: 'USD',
+        currency: 'INR',
         isActive: true,
       },
     });
 
     await tx.feePlan.upsert({
       where: { code: 'PLAN-FULL' },
-      update: { name: 'Full Upfront Tuition', isActive: true },
+      update: { name: 'Full Upfront Tuition', currency: 'INR', isActive: true },
       create: {
         id: 'plan-full',
         code: 'PLAN-FULL',
         name: 'Full Upfront Tuition',
         description: 'Single lump-sum tuition payment upon enrollment.',
         installmentCount: 1,
-        currency: 'USD',
+        currency: 'INR',
         isActive: true,
       },
     });
 
     await tx.certificateTemplate.upsert({
       where: { code: 'CERT-DEFAULT-2026' },
-      update: { isActive: true },
+      update: { isActive: true, name: 'IGS InfoCom Global Services Completion Template' },
       create: {
         id: 'tmpl-default-2026',
         code: 'CERT-DEFAULT-2026',
-        name: 'InfoCom Standard Diploma Template',
+        name: 'IGS InfoCom Global Services Completion Template',
         titleFormat: 'Verified Certificate of Technical Mastery',
-        signatoryName: 'Sarah Lin',
-        signatoryTitle: 'Academy Director',
+        signatoryName: 'Academy Director',
+        signatoryTitle: 'IGS — InfoCom Global Services',
         minCompletionPct: 100,
         minScore: 60,
         minAttendancePct: 75,
@@ -222,35 +229,37 @@ async function main() {
     const demoAccounts = [
       {
         id: 'adm-director',
-        name: 'Sarah Lin',
+        name: 'Academy Director',
         email: 'admin@infocom.edu',
         role: 'admin',
-        staffCode: 'INF-ADM-001',
+        staffCode: 'IGS-ADM-001',
         department: 'Academy Administration',
         password: process.env.SEED_ADMIN_PASSWORD || 'Admin!2026',
       },
       {
         id: 'inst-elena',
         name: 'Dr. Elena Vance',
-        email: 'elena.vance@northbridge.edu',
+        email: 'elena.vance@infocom-faculty.local',
         role: 'instructor',
-        staffCode: 'INF-INS-001',
+        staffCode: 'IGS-INS-001',
         department: 'Software & Cloud Systems',
         password: process.env.SEED_INSTRUCTOR_PASSWORD || 'Instructor!2026',
       },
       {
         id: 'inst-david',
         name: 'Prof. David Okonkwo',
-        email: 'david.okonkwo@northbridge.edu',
+        email: 'david.okonkwo@infocom-faculty.local',
         role: 'instructor',
-        staffCode: 'INF-INS-002',
+        staffCode: 'IGS-INS-002',
         department: 'Data & Security Lab',
         password: process.env.SEED_INSTRUCTOR_PASSWORD || 'Instructor!2026',
       },
     ];
 
     for (const acct of demoAccounts) {
-      const existing = await tx.user.findUnique({ where: { email: acct.email } });
+      const existing = await tx.user.findFirst({
+        where: { OR: [{ id: acct.id }, { email: acct.email }] },
+      });
       if (!existing) {
         const pwHash = await hashPassword(acct.password);
         await tx.user.create({
@@ -265,15 +274,25 @@ async function main() {
             passwordHash: pwHash,
           },
         });
+      } else if (existing.id === acct.id) {
+        await tx.user.update({
+          where: { id: existing.id },
+          data: {
+            name: acct.name,
+            staffCode: acct.staffCode,
+            department: acct.department,
+          },
+        });
       }
+      const resolvedUserId = existing?.id ?? acct.id;
       const roleRow = await tx.role.findUnique({ where: { code: acct.role } });
       if (roleRow) {
         await tx.userRole.upsert({
-          where: { userId_roleId: { userId: existing?.id ?? acct.id, roleId: roleRow.id } },
+          where: { userId_roleId: { userId: resolvedUserId, roleId: roleRow.id } },
           update: {},
           create: {
             id: `ur-${acct.id}-${roleRow.code}`,
-            userId: existing?.id ?? acct.id,
+            userId: resolvedUserId,
             roleId: roleRow.id,
           },
         });

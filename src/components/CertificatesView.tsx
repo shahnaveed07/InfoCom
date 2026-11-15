@@ -51,6 +51,10 @@ export function CertificatesView({
   const [notice, setNotice] = useState('');
   const [busyKey, setBusyKey] = useState<string | null>(null);
 
+  const minCompletionPolicy = data.policies?.certificateMinCompletionPct ?? 100;
+  const minScorePolicy = data.policies?.certificateMinScore ?? 60;
+  const minAttendancePolicy = data.policies?.certificateMinAttendancePct ?? 75;
+
   const candidateRows = useMemo(() => {
     if (!isStaff) return [];
     return data.enrollments
@@ -71,24 +75,51 @@ export function CertificatesView({
         const studentGrades = data.grades.filter(
           (g) => g.studentId === student.id && g.courseId === course.id
         );
-        const weightedScore = calculateWeightedAverage(
-          course.modules
-            .map((m) => {
-              const g = studentGrades.find((gr) => gr.moduleId === m.id);
-              return g ? { score: g.score, weight: m.weight } : null;
-            })
-            .filter((x): x is { score: number; weight: number } => x !== null)
+        const eligibleAssessments = (data.assessments ?? []).filter(
+          (a) => a.courseId === course.id && (!a.batchId || a.batchId === enr.cohortId)
         );
+        const studentAsmtGrades = (data.assessmentGrades ?? []).filter(
+          (g) => g.studentId === student.id && g.courseId === course.id
+        );
+        const asmtPairs = eligibleAssessments
+          .map((a) => {
+            const g = studentAsmtGrades.find((gr) => gr.assessmentId === a.id);
+            return g ? { score: g.percentage, weight: a.weight } : null;
+          })
+          .filter((x): x is { score: number; weight: number } => x !== null);
+
+        const weightedScore =
+          asmtPairs.length > 0
+            ? calculateWeightedAverage(asmtPairs)
+            : calculateWeightedAverage(
+                course.modules
+                  .map((m) => {
+                    const g = studentGrades.find((gr) => gr.moduleId === m.id);
+                    return g ? { score: g.score, weight: m.weight } : null;
+                  })
+                  .filter((x): x is { score: number; weight: number } => x !== null)
+              );
+
         const attStats = calculateAttendanceStats(
           data.attendance.filter(
             (a) => a.studentId === student.id && a.courseId === course.id
-          )
+          ),
+          { lateWeightPct: data.policies?.lateWeightPct }
         );
         const eligibility = computeCertificateEligibility({
           enrollmentStatus: enr.status,
           completionPct,
           weightedScore,
           attendanceRate: attStats.rate,
+          minCompletionPct: minCompletionPolicy,
+          minScore:
+            (course.passingScore ?? 60) > minScorePolicy
+              ? (course.passingScore ?? 60)
+              : minScorePolicy,
+          minAttendancePct:
+            (course.minAttendanceRate ?? 75) > minAttendancePolicy
+              ? (course.minAttendanceRate ?? 75)
+              : minAttendancePolicy,
         });
 
         return {
@@ -103,7 +134,7 @@ export function CertificatesView({
         };
       })
       .filter((x): x is NonNullable<typeof x> => x !== null);
-  }, [isStaff, data]);
+  }, [isStaff, data, minCompletionPolicy, minScorePolicy, minAttendancePolicy]);
 
   async function handleIssue(studentId: string, courseId: string) {
     if (!onIssueCertificate) return;
@@ -318,7 +349,7 @@ export function CertificatesView({
               Graduation & Certificate Eligibility Review
             </h2>
             <p className="text-xs text-slate-500 mt-0.5">
-              Requires 100% module completion, weighted grade 70%+, and attendance 75%+
+              Requires {minCompletionPolicy}% module completion, weighted grade {minScorePolicy}%+, and attendance {minAttendancePolicy}%+
             </p>
           </div>
 
@@ -408,7 +439,10 @@ export function CertificatesView({
             </div>
             <div>
               <p className="text-xs font-semibold tracking-widest uppercase text-blue-700">
-                InfoCom Academy Management System · Northbridge Tech Academy
+                {data.academy?.name ?? 'IGS — InfoCom Global Services'} · Computer Institute
+              </p>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                {data.academy?.address || 'Downtown Sopore, Opposite Hassan Motors Petrol Pump, Sopore, Jammu and Kashmir, India.'}
               </p>
               <h3 className="font-display text-2xl font-semibold text-slate-900 mt-2">
                 Certificate of Technical Completion
@@ -433,7 +467,7 @@ export function CertificatesView({
             <div className="flex flex-col sm:flex-row justify-between items-center gap-3 text-xs text-slate-500">
               <div className="text-left">
                 <div>Issued By: {previewCert.issuedByName}</div>
-                <div>Date: {new Date(previewCert.issuedAt).toLocaleDateString('en-US')}</div>
+                <div>Date: {new Date(previewCert.issuedAt).toLocaleDateString('en-IN')}</div>
               </div>
               <div className="text-right font-mono">
                 <div className="font-semibold text-slate-800">

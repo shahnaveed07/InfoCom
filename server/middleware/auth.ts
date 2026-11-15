@@ -1,8 +1,8 @@
 import type { NextFunction, Request, Response } from 'express';
-import { adminAuth } from '../../src/lib/firebase-admin.ts';
 import type { UserPublic, UserRole } from '../../src/shared/types.ts';
-import { syncFirebaseUser, toPublicUser } from '../ams-service.ts';
+import { toPublicUser } from '../ams-service.ts';
 import {
+  LEGACY_SESSION_COOKIE_NAME,
   SESSION_COOKIE_NAME,
   SESSION_TTL_MS,
   hashSessionToken,
@@ -32,6 +32,12 @@ export function extractSessionToken(req: Request): string | undefined {
 export function setSessionCookie(res: Response, rawToken: string, req?: Request): void {
   const secure =
     process.env.NODE_ENV === 'production' || (req ? isSecureRequest(req) : false);
+  res.clearCookie(LEGACY_SESSION_COOKIE_NAME, {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure,
+    path: '/',
+  });
   res.cookie(SESSION_COOKIE_NAME, rawToken, {
     httpOnly: true,
     sameSite: 'lax',
@@ -44,6 +50,12 @@ export function setSessionCookie(res: Response, rawToken: string, req?: Request)
 export function clearSessionCookie(res: Response, req?: Request): void {
   const secure =
     process.env.NODE_ENV === 'production' || (req ? isSecureRequest(req) : false);
+  res.clearCookie(LEGACY_SESSION_COOKIE_NAME, {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure,
+    path: '/',
+  });
   res.clearCookie(SESSION_COOKIE_NAME, {
     httpOnly: true,
     sameSite: 'lax',
@@ -55,27 +67,7 @@ export function clearSessionCookie(res: Response, req?: Request): void {
 export async function resolveRequestSession(
   req: Request
 ): Promise<{ user: UserPublic; sessionId?: string } | null> {
-  // 1. Check Bearer Firebase ID Token if explicitly provided
-  const authHeader = req.headers.authorization;
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const idToken = authHeader.slice('Bearer '.length).trim();
-    if (idToken) {
-      try {
-        const decoded = await adminAuth.verifyIdToken(idToken);
-        const userRow = await syncFirebaseUser({
-          uid: decoded.uid,
-          email: decoded.email ?? '',
-          name: decoded.name ?? decoded.email ?? 'Academy User',
-        });
-        if (userRow.status !== 'active') return null;
-        return { user: toPublicUser(userRow) };
-      } catch {
-        return null;
-      }
-    }
-  }
-
-  // 2. Check opaque HttpOnly server session cookie via SHA-256 token hash lookup
+  // Check opaque HttpOnly server session cookie via SHA-256 token hash lookup
   const rawToken = extractSessionToken(req);
   if (!rawToken) return null;
 
@@ -106,6 +98,21 @@ export async function requireAuth(
     const resolved = await resolveRequestSession(req);
     if (!resolved) {
       res.status(401).json({ error: 'Authentication required.' });
+      return;
+    }
+    const reqPath = req.originalUrl.split('?')[0];
+    if (
+      resolved.user.mustChangePassword &&
+      reqPath !== '/api/auth/me' &&
+      reqPath !== '/api/auth/logout' &&
+      reqPath !== '/api/auth/change-password' &&
+      reqPath !== '/api/auth/reset-password' &&
+      reqPath !== '/api/auth/forgot-password'
+    ) {
+      res.status(403).json({
+        error: 'Password change required before accessing academy resources.',
+        code: 'PASSWORD_CHANGE_REQUIRED',
+      });
       return;
     }
     req.authUser = resolved.user;

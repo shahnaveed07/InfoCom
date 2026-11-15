@@ -9,9 +9,11 @@ import {
   calculateLetterGrade,
   calculateWeightedAverage,
   computeAcademyAnalytics,
+  computeAdjustmentCents,
   computeBatchMetrics,
   computeCertificateEligibility,
   computeInvoiceStatus,
+  computeRefundableCents,
   computeStudentProgressReport,
   findUpcomingSessionsNeedingReminders,
   formatCents,
@@ -26,6 +28,7 @@ import {
   isTerminalEnrollmentStatus,
   isValidAdmissionTransition,
   isValidEnrollmentTransition,
+  recalculateInvoiceTotals,
   resolveAnalyticsDateWindow,
   shouldActivatePortalOnApproval,
   shouldActivatePortalOnPayment,
@@ -49,10 +52,10 @@ import type {
 const sampleStudent: UserPublic = {
   id: 'stu-1',
   name: 'Marcus Chen',
-  email: 'marcus.chen@student.northbridge.edu',
+  email: 'marcus.chen@student.example',
   role: 'student',
   status: 'active',
-  studentCode: 'NTA-2026-041',
+  studentCode: 'IGS-2026-041',
 };
 
 const sampleCourse: Course = {
@@ -303,8 +306,9 @@ test('decimal-safe financial helpers avoid float drift and compute invoice statu
   assert.equal(toCents('1450.50'), 145050);
   assert.equal(toCents('0.10') + toCents('0.20'), 30);
   assert.equal(fromCents(toCents('0.10') + toCents('0.20')), '0.30');
-  assert.equal(formatCents(145000), '$1,450.00');
-  assert.equal(formatMoney('1450.00'), '$1,450.00');
+  assert.equal(formatCents(145000), '₹1,450.00');
+  assert.equal(formatMoney('1450.00'), '₹1,450.00');
+  assert.equal(formatCents(145000, 'USD'), '$1,450.00');
 
   assert.equal(computeInvoiceStatus('1450.00', '0.00'), 'Unpaid');
   assert.equal(computeInvoiceStatus('1450.00', '500.00'), 'Partial');
@@ -338,7 +342,7 @@ test('computeAcademyAnalytics excludes archived/voided invoices and aggregates m
       {
         id: 'inst-1',
         name: 'Dr. Elena Vance',
-        email: 'elena.vance@northbridge.edu',
+        email: 'elena.vance@infocom-faculty.local',
         role: 'instructor',
         status: 'active',
       },
@@ -376,7 +380,7 @@ test('computeAcademyAnalytics excludes archived/voided invoices and aggregates m
         description: 'Tuition',
         amountDue: '1000.00',
         amountPaid: '400.00',
-        currency: 'USD',
+        currency: 'INR',
         status: 'Partial',
         dueDate: '2026-12-01T00:00:00Z',
         isArchived: false,
@@ -390,7 +394,7 @@ test('computeAcademyAnalytics excludes archived/voided invoices and aggregates m
         description: 'Voided',
         amountDue: '500.00',
         amountPaid: '0.00',
-        currency: 'USD',
+        currency: 'INR',
         status: 'Voided',
         dueDate: '2026-12-01T00:00:00Z',
         isArchived: false,
@@ -449,7 +453,7 @@ test('Phase 4 analytics helpers compute date windows, series, batch metrics, and
         description: 'Tuition',
         amountDue: '1450.00',
         amountPaid: '1000.00',
-        currency: 'USD',
+        currency: 'INR',
         status: 'Partial',
         dueDate: '2026-12-01T00:00:00Z',
         isArchived: false,
@@ -463,7 +467,7 @@ test('Phase 4 analytics helpers compute date windows, series, batch metrics, and
         description: 'Void',
         amountDue: '999.00',
         amountPaid: '0.00',
-        currency: 'USD',
+        currency: 'INR',
         status: 'Voided',
         dueDate: '2026-12-01T00:00:00Z',
         isArchived: false,
@@ -589,5 +593,202 @@ test('Phase 5 admission & enrollment transitions, inactive status checks, and po
   assert.equal(shouldActivatePortalOnPayment('after_first_payment'), true);
   assert.equal(shouldActivatePortalOnPayment('on_approval'), false);
 });
+
+test('Phase F Excused attendance exclusion, custom lateWeightPct, multi-type assessments, and dynamic policy eligibility', () => {
+  const excusedOnly: AttendanceRecord[] = [
+    {
+      id: 'ex-1',
+      sessionId: 's1',
+      courseId: 'crs-ts',
+      studentId: 'stu-1',
+      status: 'Excused',
+      note: 'Medical leave',
+      updatedAt: '2026-11-12T10:00:00Z',
+      updatedBy: 'Dr. Elena Vance',
+    },
+  ];
+  const allExcusedStats = calculateAttendanceStats(excusedOnly);
+  assert.equal(allExcusedStats.total, 1);
+  assert.equal(allExcusedStats.excused, 1);
+  assert.equal(allExcusedStats.rate, 100);
+
+  const mixedRecords: AttendanceRecord[] = [
+    ...excusedOnly,
+    {
+      id: 'att-p',
+      sessionId: 's2',
+      courseId: 'crs-ts',
+      studentId: 'stu-1',
+      status: 'Present',
+      note: '',
+      updatedAt: '2026-11-13T10:00:00Z',
+      updatedBy: 'Dr. Elena Vance',
+    },
+    {
+      id: 'att-l',
+      sessionId: 's3',
+      courseId: 'crs-ts',
+      studentId: 'stu-1',
+      status: 'Late',
+      note: '',
+      updatedAt: '2026-11-14T10:00:00Z',
+      updatedBy: 'Dr. Elena Vance',
+    },
+  ];
+  // Effective total is 2 (1 Present + 1 Late); Excused does not penalize denominator
+  const customLateStats = calculateAttendanceStats(mixedRecords, { lateWeightPct: 50 });
+  assert.equal(customLateStats.total, 3);
+  assert.equal(customLateStats.excused, 1);
+  assert.equal(customLateStats.rate, 75);
+
+  const report = computeStudentProgressReport({
+    student: sampleStudent,
+    courses: [sampleCourse],
+    enrollments: [
+      {
+        id: 'enr-1',
+        studentId: 'stu-1',
+        courseId: 'crs-ts',
+        cohortId: 'batch-1',
+        cohort: 'Cohort A · Autumn',
+        status: 'Active',
+        enrolledAt: '2026-09-01T09:00:00Z',
+        completedModuleIds: ['m1'],
+      },
+    ],
+    grades: [],
+    assessments: [
+      {
+        id: 'asmt-mod-1',
+        courseId: 'crs-ts',
+        moduleId: 'm1',
+        batchId: null,
+        title: 'M1: TypeScript Type Systems',
+        assessmentType: 'Module Assessment',
+        maxScore: 100,
+        weight: 60,
+        dueDate: null,
+        createdAt: '2026-11-01T00:00:00Z',
+      },
+      {
+        id: 'asmt-quiz-1',
+        courseId: 'crs-ts',
+        moduleId: 'm1',
+        batchId: 'batch-1',
+        title: 'Generics Quiz 1',
+        assessmentType: 'Quiz',
+        maxScore: 50,
+        weight: 40,
+        dueDate: null,
+        createdAt: '2026-11-02T00:00:00Z',
+      },
+    ],
+    assessmentGrades: [
+      {
+        id: 'ag-1',
+        assessmentId: 'asmt-mod-1',
+        studentId: 'stu-1',
+        courseId: 'crs-ts',
+        moduleId: 'm1',
+        score: 80,
+        maxScore: 100,
+        percentage: 80,
+        feedback: 'Solid work',
+        gradedAt: '2026-11-05T00:00:00Z',
+        gradedBy: 'Dr. Elena Vance',
+      },
+      {
+        id: 'ag-2',
+        assessmentId: 'asmt-quiz-1',
+        studentId: 'stu-1',
+        courseId: 'crs-ts',
+        moduleId: 'm1',
+        score: 45, // 90%
+        maxScore: 50,
+        percentage: 90,
+        feedback: 'Clean answers',
+        gradedAt: '2026-11-06T00:00:00Z',
+        gradedBy: 'Dr. Elena Vance',
+      },
+    ],
+    attendance: mixedRecords,
+    remarks: [],
+    policies: {
+      lateWeightPct: 50,
+      passingScore: 65,
+      distinctionScore: 80,
+      minAttendanceRatePct: 70,
+    },
+    generatedAtIso: '2026-11-15T10:00:00Z',
+  });
+
+  // 80% * 60 + 90% * 40 = 84%
+  assert.equal(report.overallAverage, 84);
+  assert.equal(report.overallAttendanceRate, 75);
+  assert.equal(report.standing, 'On Track');
+
+  const text = formatReportAsText(report);
+  assert.match(text, /\[Quiz\] Generics Quiz 1/);
+  assert.match(text, /1E/);
+
+  const customElig = computeCertificateEligibility({
+    enrollmentStatus: 'Active',
+    completionPct: 80,
+    weightedScore: 65,
+    attendanceRate: 70,
+    minCompletionPct: 80,
+    minScore: 60,
+    minAttendancePct: 70,
+  });
+  assert.equal(customElig.eligible, true);
+  assert.equal(customElig.reasons.length, 0);
+});
+
+test('Phase G financial adjustments, invoice recalculation, and bounded refunds', () => {
+  assert.equal(computeInvoiceStatus('0.00', '0.00'), 'Paid');
+
+  // 15% discount on ₹10,000.00 -> ₹1,500.00
+  const pctAdj = computeAdjustmentCents({
+    baseCents: 1_000_000,
+    type: 'Percentage',
+    value: '15.00',
+    maxAllowedCents: 1_000_000,
+  });
+  assert.equal(pctAdj, 150_000);
+
+  // Fixed adjustment clamped to remaining payable balance
+  const fixedAdj = computeAdjustmentCents({
+    baseCents: 1_000_000,
+    type: 'Fixed',
+    value: '5000.00',
+    maxAllowedCents: 200_000,
+  });
+  assert.equal(fixedAdj, 200_000);
+
+  // Recalculate invoice net due and status when paid >= netDue
+  const recalcPaid = recalculateInvoiceTotals({
+    subtotalCents: 1_000_000,
+    discountTotalCents: 150_000,
+    scholarshipTotalCents: 250_000,
+    paidCents: 600_000,
+  });
+  assert.equal(recalcPaid.netDueCents, 600_000);
+  assert.equal(recalcPaid.status, 'Paid');
+
+  const recalcPartial = recalculateInvoiceTotals({
+    subtotalCents: 1_000_000,
+    discountTotalCents: 100_000,
+    scholarshipTotalCents: 0,
+    paidCents: 300_000,
+  });
+  assert.equal(recalcPartial.netDueCents, 900_000);
+  assert.equal(recalcPartial.status, 'Partial');
+
+  // Refundable cents tracking across multiple prior refunds
+  assert.equal(computeRefundableCents('5000.00', ['1500.00', '1000.00']), 250_000);
+  assert.equal(computeRefundableCents('5000.00', ['6000.00']), 0);
+});
+
+
 
 

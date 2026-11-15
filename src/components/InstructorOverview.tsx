@@ -232,12 +232,12 @@ export function InstructorOverview({ data, onNavigate }: InstructorOverviewProps
                       <span className="inline-flex items-center gap-1">
                         <CalendarClock className="w-3.5 h-3.5 text-slate-400" />
                         <span className="tabular-nums">
-                          {start.toLocaleDateString('en-US', {
+                          {start.toLocaleDateString('en-IN', {
                             month: 'short',
                             day: 'numeric',
                           })}{' '}
                           ·{' '}
-                          {start.toLocaleTimeString('en-US', {
+                          {start.toLocaleTimeString('en-IN', {
                             hour: 'numeric',
                             minute: '2-digit',
                           })}
@@ -308,7 +308,7 @@ export function InstructorOverview({ data, onNavigate }: InstructorOverviewProps
                   <p className="text-sm text-slate-700 mt-0.5">{notif.message}</p>
                 </div>
                 <span className="font-mono text-[11px] text-slate-400 whitespace-nowrap shrink-0 tabular-nums">
-                  {new Date(notif.createdAt).toLocaleString('en-US', {
+                  {new Date(notif.createdAt).toLocaleString('en-IN', {
                     month: 'short',
                     day: 'numeric',
                     hour: 'numeric',

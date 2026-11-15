@@ -1,7 +1,5 @@
 import crypto from 'node:crypto';
 import express, { Router, type Request, type Response } from 'express';
-import { adminAuth } from '../../src/lib/firebase-admin.ts';
-import type { UserRole } from '../../src/shared/types.ts';
 import {
   changePasswordSchema,
   forgotPasswordSchema,
@@ -16,7 +14,6 @@ import {
   recordAuditLog,
   registerStudentAccount,
   runSessionReminderSweep,
-  syncFirebaseUser,
   toPublicUser,
 } from '../ams-service.ts';
 import {
@@ -112,20 +109,12 @@ const changePasswordLimiter = createRateLimiter({
   message: 'Too many password change attempts. Please wait before trying again.',
 });
 
-const firebaseAuthLimiter = createRateLimiter({
-  windowMs: 15 * 60 * 1000,
-  maxRequests: 20,
-  keyPrefix: 'auth-firebase',
-  message: 'Too many Google Sign-In verification attempts. Please try again shortly.',
-});
-
 export function resetAuthRateLimiters(): void {
   loginLimiter.reset();
   registerLimiter.reset();
   forgotPasswordLimiter.reset();
   resetPasswordLimiter.reset();
   changePasswordLimiter.reset();
-  firebaseAuthLimiter.reset();
 }
 
 authRouter.get('/auth/me', async (req: Request, res: Response) => {
@@ -219,52 +208,6 @@ authRouter.post('/auth/login', loginLimiter, async (req: Request, res: Response)
   } catch (err) {
     console.error('POST /api/auth/login error:', err);
     res.status(500).json({ error: 'Unable to sign in right now.' });
-  }
-});
-
-authRouter.post('/auth/firebase', firebaseAuthLimiter, async (req: Request, res: Response) => {
-  try {
-    const idToken = typeof req.body?.idToken === 'string' ? req.body.idToken.trim() : '';
-    if (!idToken) {
-      res.status(400).json({ error: 'Firebase ID token is required.' });
-      return;
-    }
-
-    const decoded = await adminAuth.verifyIdToken(idToken);
-    if (!decoded.email) {
-      res.status(400).json({ error: 'Google account must expose a verified email address.' });
-      return;
-    }
-
-    const user = await syncFirebaseUser({
-      uid: decoded.uid,
-      email: decoded.email,
-      name: decoded.name ?? decoded.email.split('@')[0],
-    });
-
-    if (user.status !== 'active') {
-      res.status(403).json({
-        error: 'This account is suspended, inactive, or archived. Contact Academy Administration.',
-      });
-      return;
-    }
-
-    const { rawToken } = await issueOpaqueSession(req, user);
-    setSessionCookie(res, rawToken, req);
-
-    await recordAuditLog({
-      actor: { id: user.id, email: user.email, role: user.role },
-      action: 'USER_GOOGLE_LOGIN',
-      entityType: 'user',
-      entityId: user.id,
-      ipAddress: getClientIp(req),
-      summary: `User ${user.email} authenticated via Google Sign-In.`,
-    });
-
-    res.json({ user: toPublicUser(user) });
-  } catch (err) {
-    console.error('POST /api/auth/firebase error:', err);
-    res.status(401).json({ error: 'Google Sign-In verification failed.' });
   }
 });
 
@@ -362,7 +305,7 @@ authRouter.post(
       }
 
       const newHash = await hashPassword(newPassword);
-      await prisma.user.update({
+      const updatedUser = await prisma.user.update({
         where: { id: user.id },
         data: {
           passwordHash: newHash,
@@ -385,7 +328,11 @@ authRouter.post(
         summary: `User ${user.email} updated their account password.`,
       });
 
-      res.json({ ok: true, message: 'Password updated successfully.' });
+      res.json({
+        ok: true,
+        message: 'Password updated successfully.',
+        user: toPublicUser(updatedUser),
+      });
     } catch (err) {
       console.error('POST /api/auth/change-password error:', err);
       res.status(500).json({ error: 'Unable to update password right now.' });
@@ -470,12 +417,14 @@ authRouter.post(
       });
 
       const now = new Date();
+      const isPendingOnboarding =
+        resetRecord?.user?.status === 'inactive' && !resetRecord.user.passwordHash;
       if (
         !resetRecord ||
         resetRecord.usedAt !== null ||
         resetRecord.expiresAt.getTime() <= now.getTime() ||
         !resetRecord.user ||
-        resetRecord.user.status !== 'active'
+        (resetRecord.user.status !== 'active' && !isPendingOnboarding)
       ) {
         res.status(400).json({ error: 'Password reset token is invalid or has expired.' });
         return;
@@ -517,11 +466,17 @@ authRouter.post(
         entityType: 'user',
         entityId: resetRecord.user.id,
         ipAddress: getClientIp(req),
-        summary: `Password reset completed and all prior sessions revoked for ${resetRecord.user.email}.`,
+        summary: `Password setup/reset completed and all prior sessions revoked for ${resetRecord.user.email}.`,
       });
 
       clearSessionCookie(res, req);
-      res.json({ ok: true, message: 'Password has been reset. You may now sign in.' });
+      res.json({
+        ok: true,
+        message:
+          resetRecord.user.status === 'active'
+            ? 'Password has been set. You may now sign in.'
+            : 'Password has been set. You can sign in once the institute activates your student portal.',
+      });
     } catch (err) {
       console.error('POST /api/auth/reset-password error:', err);
       res.status(500).json({ error: 'Unable to reset password right now.' });

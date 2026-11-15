@@ -10,6 +10,7 @@ import { adminMasterRouter } from './routes/admin-master.routes.ts';
 import { adminOpsRouter } from './routes/admin-ops.routes.ts';
 import { admissionsRouter } from './routes/admissions.routes.ts';
 import { authRouter } from './routes/auth.routes.ts';
+import { financeRouter } from './routes/finance.routes.ts';
 
 export function createApiApp(): express.Express {
   const app = express();
@@ -24,6 +25,7 @@ export function createApiApp(): express.Express {
   app.use('/api', academicsRouter);
   app.use('/api', adminOpsRouter);
   app.use('/api', adminMasterRouter);
+  app.use('/api', financeRouter);
 
   app.use('/api', safeApiErrorHandler);
   return app;

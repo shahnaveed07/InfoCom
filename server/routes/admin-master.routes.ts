@@ -37,6 +37,7 @@ import {
   getInstructorDetail,
   getStudentDetail,
   getUserDashboardById,
+  issueAccountSetupToken,
   listInstructorsWithMetrics,
   recordAuditLog,
   toPublicUser,
@@ -118,9 +119,11 @@ adminMasterRouter.post('/students', ...adminGuard, async (req: AuthenticatedRequ
     }
 
     const studentId = `stu-${crypto.randomUUID().slice(0, 8)}`;
-    const pwHash = await hashPassword(input.password);
+    const hasPassword = Boolean(input.password && input.password.trim().length > 0);
+    const pwHash = hasPassword ? await hashPassword(input.password!) : null;
+    const mustChangePassword = !hasPassword || Boolean(input.requirePasswordChange);
 
-    const createdUser = await prisma.$transaction(async (tx) => {
+    const { createdUser, onboarding } = await prisma.$transaction(async (tx) => {
       const studentCode = await generateUniqueStudentCode(tx);
       let departmentName: string | null = null;
       if (input.departmentId) {
@@ -139,7 +142,8 @@ adminMasterRouter.post('/students', ...adminGuard, async (req: AuthenticatedRequ
           department: departmentName,
           phone: input.phone || null,
           passwordHash: pwHash,
-          passwordUpdatedAt: new Date(),
+          passwordUpdatedAt: hasPassword ? new Date() : null,
+          mustChangePassword,
         },
       });
 
@@ -173,7 +177,15 @@ adminMasterRouter.post('/students', ...adminGuard, async (req: AuthenticatedRequ
         },
       });
 
-      return user;
+      const issuedOnboarding = !hasPassword
+        ? await issueAccountSetupToken(tx, {
+            userId: user.id,
+            createdByUserId: req.authUser!.id,
+            ttlHours: 72,
+          })
+        : null;
+
+      return { createdUser: user, onboarding: issuedOnboarding };
     });
 
     if (input.initialCourseId) {
@@ -195,14 +207,26 @@ adminMasterRouter.post('/students', ...adminGuard, async (req: AuthenticatedRequ
 
     await recordAuditLog({
       actor: req.authUser!,
-      action: 'STUDENT_CREATED',
+      action: onboarding ? 'ONBOARDING_TOKEN_ISSUED' : 'STUDENT_CREATED',
       entityType: 'user',
       entityId: createdUser.id,
-      summary: `Created student ${createdUser.name} (${createdUser.studentCode}).`,
+      summary: onboarding
+        ? `Created student ${createdUser.name} (${createdUser.studentCode}) with single-use 72h setup token.`
+        : `Created student ${createdUser.name} (${createdUser.studentCode}).`,
     });
 
     const dashboard = await getUserDashboardById(req.authUser!.id);
-    res.status(201).json({ student: toPublicUser(createdUser), dashboard });
+    res.status(201).json({
+      student: toPublicUser(createdUser),
+      ...(onboarding
+        ? {
+            onboardingToken: onboarding.rawToken,
+            onboardingPath: onboarding.onboardingPath,
+            onboardingExpiresAt: onboarding.expiresAt,
+          }
+        : {}),
+      dashboard,
+    });
   } catch (err) {
     console.error('POST /api/students error:', err);
     res.status(500).json({ error: 'Failed to create student record.' });
@@ -355,9 +379,11 @@ adminMasterRouter.post('/instructors', ...adminGuard, async (req: AuthenticatedR
     }
 
     const instructorId = `ins-${crypto.randomUUID().slice(0, 8)}`;
-    const pwHash = await hashPassword(input.password);
+    const hasPassword = Boolean(input.password && input.password.trim().length > 0);
+    const pwHash = hasPassword ? await hashPassword(input.password!) : null;
+    const mustChangePassword = !hasPassword || Boolean(input.requirePasswordChange);
 
-    const created = await prisma.$transaction(async (tx) => {
+    const { created, onboarding } = await prisma.$transaction(async (tx) => {
       const staffCode = await generateUniqueStaffCode(tx);
       let departmentName = 'Academic Faculty';
       if (input.departmentId) {
@@ -376,7 +402,8 @@ adminMasterRouter.post('/instructors', ...adminGuard, async (req: AuthenticatedR
           department: departmentName,
           phone: input.phone || null,
           passwordHash: pwHash,
-          passwordUpdatedAt: new Date(),
+          passwordUpdatedAt: hasPassword ? new Date() : null,
+          mustChangePassword,
         },
       });
 
@@ -440,22 +467,43 @@ adminMasterRouter.post('/instructors', ...adminGuard, async (req: AuthenticatedR
         });
       }
 
-      return user;
+      const issuedOnboarding = !hasPassword
+        ? await issueAccountSetupToken(tx, {
+            userId: user.id,
+            createdByUserId: req.authUser!.id,
+            ttlHours: 72,
+          })
+        : null;
+
+      return { created: user, onboarding: issuedOnboarding };
     });
 
     await recordAuditLog({
       actor: req.authUser!,
-      action: 'INSTRUCTOR_CREATED',
+      action: onboarding ? 'ONBOARDING_TOKEN_ISSUED' : 'INSTRUCTOR_CREATED',
       entityType: 'user',
       entityId: created.id,
-      summary: `Created instructor ${created.name} (${created.staffCode}).`,
+      summary: onboarding
+        ? `Created instructor ${created.name} (${created.staffCode}) with single-use 72h setup token.`
+        : `Created instructor ${created.name} (${created.staffCode}).`,
     });
 
     const [items, dashboard] = await Promise.all([
       listInstructorsWithMetrics(),
       getUserDashboardById(req.authUser!.id),
     ]);
-    res.status(201).json({ instructor: toPublicUser(created), items, dashboard });
+    res.status(201).json({
+      instructor: toPublicUser(created),
+      ...(onboarding
+        ? {
+            onboardingToken: onboarding.rawToken,
+            onboardingPath: onboarding.onboardingPath,
+            onboardingExpiresAt: onboarding.expiresAt,
+          }
+        : {}),
+      items,
+      dashboard,
+    });
   } catch (err) {
     console.error('POST /api/instructors error:', err);
     res.status(500).json({ error: 'Failed to create instructor account.' });
@@ -1454,6 +1502,7 @@ adminMasterRouter.post('/enrollments/:enrollmentId/course-transfer', ...adminGua
         const invNum = await generateNextInvoiceNumber(tx);
         const desc = `${targetCourse.code} ${targetCourse.title} Tuition (${targetBatch.name} · Course Transfer)`;
 
+        const acadRow = await tx.academy.findFirst({ select: { currency: true } });
         await tx.invoice.create({
           data: {
             id: invId,
@@ -1466,7 +1515,7 @@ adminMasterRouter.post('/enrollments/:enrollmentId/course-transfer', ...adminGua
             subtotal: targetCourse.tuitionFee,
             amountDue: targetCourse.tuitionFee,
             amountPaid: '0.00',
-            currency: 'USD',
+            currency: acadRow?.currency || 'INR',
             status: 'Unpaid',
             dueDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
             issuedByUserId: req.authUser!.id,
@@ -1576,11 +1625,19 @@ adminMasterRouter.get('/enrollments/:enrollmentId/history', requireAuth, require
     const actorMap = new Map(actors.map((u) => [u.id, u.name]));
 
     res.json({
-      enrollmentId: enrollment.id,
-      courseCode: enrollment.course.code,
-      courseTitle: enrollment.course.title,
-      studentName: enrollment.student.name,
-      studentCode: enrollment.student.studentCode,
+      enrollment: {
+        id: enrollment.id,
+        studentId: enrollment.studentId,
+        studentName: enrollment.student.name,
+        studentCode: enrollment.student.studentCode,
+        courseId: enrollment.courseId,
+        courseCode: enrollment.course.code,
+        courseTitle: enrollment.course.title,
+        cohortId: enrollment.cohortId,
+        cohort: enrollment.cohort,
+        status: enrollment.status,
+        enrolledAt: enrollment.enrolledAt.toISOString(),
+      },
       history: enrollment.history.map((h) => ({
         id: h.id,
         enrollmentId: h.enrollmentId,
@@ -1657,6 +1714,7 @@ adminMasterRouter.put('/settings', ...adminGuard, async (req: AuthenticatedReque
       });
 
       const pairs: Array<{ key: string; value: string; valueType: string }> = [
+        { key: 'academy.student_id_prefix', value: (input.policies.studentIdPrefix || 'IGS').toUpperCase(), valueType: 'string' },
         { key: 'academy.invoice_prefix', value: input.policies.invoicePrefix.toUpperCase(), valueType: 'string' },
         { key: 'academy.invoice_next_seq', value: String(input.policies.invoiceNextSeq), valueType: 'number' },
         { key: 'academy.fee_due_days', value: String(input.policies.feeDueDays), valueType: 'number' },

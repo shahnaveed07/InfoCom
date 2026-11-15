@@ -148,10 +148,10 @@ export function Sidebar({
           )}
           <div className="min-w-0">
             <span className="font-display text-sm font-semibold text-slate-900 truncate block">
-              InfoCom AMS
+              {academy?.name ?? 'IGS — InfoCom Global Services'}
             </span>
             <span className="text-[11px] text-slate-500 truncate block">
-              {academy?.name ?? 'InfoCom Academy'}
+              Computer Institute · Learn Today, Build Tomorrow.
             </span>
           </div>
         </div>

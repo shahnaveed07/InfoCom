@@ -106,8 +106,8 @@ test('opaque session and password reset tokens produce high-entropy tokens and d
   assert.equal(reset.tokenHash, hashPasswordResetToken(reset.rawToken));
   assert.notEqual(reset.rawToken, reset.tokenHash);
 
-  const parsed = parseCookies('foo=bar; nta_session=' + encodeURIComponent(token1));
-  assert.equal(parsed.nta_session, token1);
+  const parsed = parseCookies('foo=bar; igs_session=' + encodeURIComponent(token1));
+  assert.equal(parsed.igs_session, token1);
 });
 
 test('ROLE_PERMISSIONS enforces explicit boundaries across admin, instructor, and student', () => {
@@ -177,7 +177,7 @@ test('csrfOriginGuard blocks cross-origin, null-origin, and cross-site Fetch met
       host: 'localhost:3000',
       origin: 'http://localhost:3000',
       'sec-fetch-site': 'same-origin',
-      cookie: 'nta_session=opaque-session-token',
+      cookie: 'igs_session=opaque-session-token',
     },
   });
   const sameOriginRes = createMockRes();
@@ -193,7 +193,7 @@ test('csrfOriginGuard blocks cross-origin, null-origin, and cross-site Fetch met
     headers: {
       host: 'localhost:3000',
       origin: 'https://evil-site.example',
-      cookie: 'nta_session=opaque-session-token',
+      cookie: 'igs_session=opaque-session-token',
     },
   });
   const crossOriginRes = createMockRes();
@@ -210,7 +210,7 @@ test('csrfOriginGuard blocks cross-origin, null-origin, and cross-site Fetch met
     headers: {
       host: 'localhost:3000',
       origin: 'null',
-      cookie: 'nta_session=opaque-session-token',
+      cookie: 'igs_session=opaque-session-token',
     },
   });
   const nullOriginRes = createMockRes();
@@ -227,7 +227,7 @@ test('csrfOriginGuard blocks cross-origin, null-origin, and cross-site Fetch met
     headers: {
       host: 'localhost:3000',
       'sec-fetch-site': 'cross-site',
-      cookie: 'nta_session=opaque-session-token',
+      cookie: 'igs_session=opaque-session-token',
     },
   });
   const fetchSiteRes = createMockRes();
@@ -237,18 +237,17 @@ test('csrfOriginGuard blocks cross-origin, null-origin, and cross-site Fetch met
   assert.equal(allowed, false);
   assert.equal(fetchSiteRes.statusCode, 403);
 
-  // Bearer token request -> allowed even with external origin
+  // Unauthenticated POST without session cookie -> passes CSRF guard (auth middleware handles auth)
   allowed = false;
-  const bearerReq = createMockReq({
+  const unauthReq = createMockReq({
     method: 'POST',
     headers: {
       host: 'localhost:3000',
-      origin: 'https://external-client.example',
-      authorization: 'Bearer firebase-id-token',
+      origin: 'http://localhost:3000',
     },
   });
-  const bearerRes = createMockRes();
-  csrfOriginGuard(bearerReq, bearerRes.res, () => {
+  const unauthRes = createMockRes();
+  csrfOriginGuard(unauthReq, unauthRes.res, () => {
     allowed = true;
   });
   assert.equal(allowed, true);
