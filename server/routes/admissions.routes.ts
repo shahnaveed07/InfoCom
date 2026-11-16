@@ -38,6 +38,7 @@ import {
   type AuthenticatedRequest,
 } from '../middleware/auth.ts';
 import { createRateLimiter } from '../middleware/security.ts';
+import { readPrivateDocument, storePrivateDocument } from '../storage/index.ts';
 
 export const admissionsRouter = Router();
 
@@ -752,16 +753,18 @@ admissionsRouter.get(
       const [academy, courses, batches, feePlans] = await Promise.all([
         prisma.academy.findFirst({ select: { name: true, currency: true } }),
         prisma.course.findMany({
-          where: { isArchived: false },
+          where: { isPublished: true, isArchived: false },
           orderBy: { code: 'asc' },
           select: {
             id: true,
             code: true,
+            slug: true,
             title: true,
             track: true,
             category: true,
             durationWeeks: true,
             tuitionFee: true,
+            showTuitionPublicly: true,
           },
         }),
         prisma.batch.findMany({
@@ -799,11 +802,13 @@ admissionsRouter.get(
         courses: courses.map((c) => ({
           id: c.id,
           code: c.code,
+          slug: c.slug,
           title: c.title,
           track: c.track,
           category: c.category,
           durationWeeks: c.durationWeeks,
-          tuitionFee: c.tuitionFee.toFixed(2),
+          showTuitionPublicly: c.showTuitionPublicly,
+          tuitionFee: c.showTuitionPublicly ? c.tuitionFee.toFixed(2) : null,
         })),
         batches: batches.map((b) => ({
           id: b.id,
@@ -836,9 +841,11 @@ admissionsRouter.post(
       }
 
       const input = parsed.data;
-      const course = await prisma.course.findUnique({ where: { id: input.targetCourseId } });
+      const course = await prisma.course.findFirst({
+        where: { id: input.targetCourseId, isPublished: true, isArchived: false },
+      });
       if (!course) {
-        res.status(400).json({ error: 'Selected target course was not found.' });
+        res.status(400).json({ error: 'Selected target course is unavailable for public admissions.' });
         return;
       }
 
@@ -891,12 +898,20 @@ admissionsRouter.post(
         });
 
         for (const doc of input.documents ?? []) {
-          const decoded = Buffer.from(doc.contentBase64, 'base64');
-          if (decoded.byteLength === 0 || decoded.byteLength > 2 * 1024 * 1024) {
-            throw new WorkflowError(400, 'Attached document must be non-empty and at most 2 MB.');
+          let stored;
+          try {
+            stored = await storePrivateDocument({
+              fileName: doc.fileName,
+              mimeType: doc.mimeType,
+              contentBase64: doc.contentBase64,
+            });
+          } catch (storageErr) {
+            throw new WorkflowError(
+              400,
+              storageErr instanceof Error ? storageErr.message : 'Invalid attached document.'
+            );
           }
           const fileAssetId = `doc-${crypto.randomUUID().slice(0, 8)}`;
-          const checksumSha256 = crypto.createHash('sha256').update(decoded).digest('hex');
           await tx.fileAsset.create({
             data: {
               id: fileAssetId,
@@ -904,12 +919,13 @@ admissionsRouter.post(
               courseId: course.id,
               title: doc.title,
               category: doc.category,
-              fileName: doc.fileName,
-              mimeType: doc.mimeType,
-              sizeBytes: decoded.byteLength,
-              contentBase64: doc.contentBase64,
-              storageProvider: 'postgres',
-              checksumSha256,
+              fileName: stored.cleanFileName,
+              mimeType: stored.mimeType,
+              sizeBytes: stored.sizeBytes,
+              contentBase64: '',
+              storageProvider: stored.storageProvider,
+              storageKey: stored.storageKey,
+              checksumSha256: stored.checksumSha256,
               uploadedByUserId: null,
             },
           });
@@ -1096,12 +1112,20 @@ admissionsRouter.post(
         });
 
         for (const doc of input.documents ?? []) {
-          const decoded = Buffer.from(doc.contentBase64, 'base64');
-          if (decoded.byteLength === 0 || decoded.byteLength > 2 * 1024 * 1024) {
-            throw new WorkflowError(400, 'Attached document must be non-empty and at most 2 MB.');
+          let stored;
+          try {
+            stored = await storePrivateDocument({
+              fileName: doc.fileName,
+              mimeType: doc.mimeType,
+              contentBase64: doc.contentBase64,
+            });
+          } catch (storageErr) {
+            throw new WorkflowError(
+              400,
+              storageErr instanceof Error ? storageErr.message : 'Invalid attached document.'
+            );
           }
           const fileAssetId = `doc-${crypto.randomUUID().slice(0, 8)}`;
-          const checksumSha256 = crypto.createHash('sha256').update(decoded).digest('hex');
           await tx.fileAsset.create({
             data: {
               id: fileAssetId,
@@ -1109,12 +1133,13 @@ admissionsRouter.post(
               courseId: course.id,
               title: doc.title,
               category: doc.category,
-              fileName: doc.fileName,
-              mimeType: doc.mimeType,
-              sizeBytes: decoded.byteLength,
-              contentBase64: doc.contentBase64,
-              storageProvider: 'postgres',
-              checksumSha256,
+              fileName: stored.cleanFileName,
+              mimeType: stored.mimeType,
+              sizeBytes: stored.sizeBytes,
+              contentBase64: '',
+              storageProvider: stored.storageProvider,
+              storageKey: stored.storageKey,
+              checksumSha256: stored.checksumSha256,
               uploadedByUserId: req.authUser!.id,
             },
           });
@@ -1425,15 +1450,22 @@ admissionsRouter.post(
       }
 
       const input = parsed.data;
-      const decoded = Buffer.from(input.contentBase64, 'base64');
-      if (decoded.byteLength === 0 || decoded.byteLength > 2 * 1024 * 1024) {
-        res.status(400).json({ error: 'Document must be non-empty and at most 2 MB.' });
+      let stored;
+      try {
+        stored = await storePrivateDocument({
+          fileName: input.fileName,
+          mimeType: input.mimeType,
+          contentBase64: input.contentBase64,
+        });
+      } catch (storageErr) {
+        res.status(400).json({
+          error: storageErr instanceof Error ? storageErr.message : 'Invalid document upload.',
+        });
         return;
       }
 
       const fileAssetId = `doc-${crypto.randomUUID().slice(0, 8)}`;
       const admissionDocId = `admd-${crypto.randomUUID().slice(0, 8)}`;
-      const checksumSha256 = crypto.createHash('sha256').update(decoded).digest('hex');
 
       await prisma.$transaction(async (tx) => {
         await tx.fileAsset.create({
@@ -1443,12 +1475,13 @@ admissionsRouter.post(
             courseId: admission.targetCourseId,
             title: input.title,
             category: input.category,
-            fileName: input.fileName,
-            mimeType: input.mimeType,
-            sizeBytes: decoded.byteLength,
-            contentBase64: input.contentBase64,
-            storageProvider: 'postgres',
-            checksumSha256,
+            fileName: stored.cleanFileName,
+            mimeType: stored.mimeType,
+            sizeBytes: stored.sizeBytes,
+            contentBase64: '',
+            storageProvider: stored.storageProvider,
+            storageKey: stored.storageKey,
+            checksumSha256: stored.checksumSha256,
             uploadedByUserId: req.authUser!.id,
             isArchived: false,
           },
@@ -1591,7 +1624,11 @@ admissionsRouter.get(
         return;
       }
 
-      const buffer = Buffer.from(docRow.fileAsset.contentBase64, 'base64');
+      const buffer = await readPrivateDocument({
+        storageProvider: docRow.fileAsset.storageProvider,
+        storageKey: docRow.fileAsset.storageKey,
+        contentBase64: docRow.fileAsset.contentBase64,
+      });
       res.setHeader('X-Content-Type-Options', 'nosniff');
       res.setHeader('Content-Type', docRow.fileAsset.mimeType || 'application/octet-stream');
       res.setHeader(

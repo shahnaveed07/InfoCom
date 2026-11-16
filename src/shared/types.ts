@@ -117,6 +117,10 @@ export interface Course {
   instructorName: string;
   durationWeeks: number;
   tuitionFee: string;
+  slug?: string;
+  isPublished?: boolean;
+  showTuitionPublicly?: boolean;
+  isDemo?: boolean;
   isArchived?: boolean;
   modules: CourseModule[];
 }
@@ -856,4 +860,63 @@ export interface DashboardPayload {
   notifications: NotificationItem[];
   auditLogs: AuditLogEntry[];
   analytics: AcademyAnalytics;
+  isDemoEnvironment?: boolean;
+}
+
+export interface PublicAcademyInfo {
+  name: string;
+  legalName: string;
+  slogan: string;
+  address: string;
+  phone: string;
+  email: string;
+  website: string;
+  logoDataUrl: string;
+  timezone: string;
+  currency: string;
+}
+
+export interface PublicCourseSummary {
+  id: string;
+  code: string;
+  slug: string;
+  title: string;
+  track: string;
+  category: string;
+  departmentName: string | null;
+  description: string;
+  durationWeeks: number;
+  tuitionFee: string | null;
+  showTuitionPublicly: boolean;
+  currency: string;
+  moduleCount: number;
+  totalLabHours: number;
+  activeCohorts: Array<{
+    id: string;
+    code: string;
+    name: string;
+    status: CohortStatus;
+    startDate: string;
+    endDate: string;
+    capacity: number;
+  }>;
+}
+
+export interface PublicCourseDetail extends PublicCourseSummary {
+  prerequisites: string;
+  learningObjectives: string[];
+  modules: Array<{
+    id: string;
+    code: string;
+    title: string;
+    weight: number;
+    labHours: number;
+    sortOrder: number;
+  }>;
+}
+
+export interface NotificationPreferenceItem {
+  channel: 'in_app' | 'email';
+  kind: string;
+  enabled: boolean;
 }

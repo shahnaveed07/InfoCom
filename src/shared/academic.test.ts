@@ -32,6 +32,7 @@ import {
   resolveAnalyticsDateWindow,
   shouldActivatePortalOnApproval,
   shouldActivatePortalOnPayment,
+  slugifyCourseTitle,
   toCents,
 } from './academic';
 import {
@@ -787,8 +788,6 @@ test('Phase G financial adjustments, invoice recalculation, and bounded refunds'
   // Refundable cents tracking across multiple prior refunds
   assert.equal(computeRefundableCents('5000.00', ['1500.00', '1000.00']), 250_000);
   assert.equal(computeRefundableCents('5000.00', ['6000.00']), 0);
+  assert.equal(slugifyCourseTitle('Web Development & APIs (2026)!'), 'web-development-apis-2026');
+  assert.equal(slugifyCourseTitle('   ---   '), 'course');
 });
-
-
-
-

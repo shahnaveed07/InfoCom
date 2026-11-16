@@ -177,6 +177,19 @@ adminMasterRouter.post('/students', ...adminGuard, async (req: AuthenticatedRequ
         },
       });
 
+      if (input.guardianName?.trim()) {
+        await tx.guardian.create({
+          data: {
+            id: `grd-${crypto.randomUUID().slice(0, 8)}`,
+            studentProfileId: `sp-${user.id}`,
+            fullName: input.guardianName.trim(),
+            relationship: input.guardianRelationship?.trim() || 'Parent / Guardian',
+            phone: input.guardianPhone?.trim() || '',
+            isPrimary: true,
+          },
+        });
+      }
+
       const issuedOnboarding = !hasPassword
         ? await issueAccountSetupToken(tx, {
             userId: user.id,
@@ -200,8 +213,8 @@ adminMasterRouter.post('/students', ...adminGuard, async (req: AuthenticatedRequ
         courseId: input.initialCourseId,
         cohortId: batch?.id,
         cohort: batch?.name ?? 'Cohort A · Autumn',
-        status: 'Active',
-        issueTuitionInvoice: true,
+        status: input.enrollmentStatus ?? 'Active',
+        issueTuitionInvoice: input.issueTuitionInvoice ?? true,
       });
     }
 
@@ -348,6 +361,61 @@ adminMasterRouter.patch('/students/:studentId', ...adminGuard, async (req: Authe
   } catch (err) {
     console.error('PATCH /api/students/:studentId error:', err);
     res.status(500).json({ error: 'Failed to update student record.' });
+  }
+});
+
+adminMasterRouter.post('/students/:studentId/reset-password', ...adminGuard, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const target = await prisma.user.findFirst({
+      where: { id: req.params.studentId, role: 'student' },
+    });
+    if (!target) {
+      res.status(404).json({ error: 'Student account not found.' });
+      return;
+    }
+    if (target.status === 'suspended' || target.status === 'archived') {
+      res.status(400).json({
+        error: `Cannot issue password reset link for a ${target.status} student account.`,
+      });
+      return;
+    }
+
+    const issued = await prisma.$transaction(async (tx) => {
+      const token = await issueAccountSetupToken(tx, {
+        userId: target.id,
+        createdByUserId: req.authUser!.id,
+        ttlHours: 72,
+      });
+      await tx.deliveryLog.create({
+        data: {
+          id: `del-${crypto.randomUUID().slice(0, 8)}`,
+          userId: target.id,
+          channel: 'in_app',
+          recipient: target.email,
+          status: 'Delivered',
+        },
+      });
+      return token;
+    });
+
+    await recordAuditLog({
+      actor: req.authUser!,
+      action: 'STUDENT_PASSWORD_RESET_ISSUED',
+      entityType: 'user',
+      entityId: target.id,
+      summary: `Issued single-use 72h password setup/reset link for student ${target.email}.`,
+    });
+
+    res.json({
+      ok: true,
+      onboardingToken: issued.rawToken,
+      onboardingPath: issued.onboardingPath,
+      onboardingExpiresAt: issued.expiresAt,
+      user: toPublicUser(target),
+    });
+  } catch (err) {
+    console.error('POST /api/students/:studentId/reset-password error:', err);
+    res.status(500).json({ error: 'Failed to issue student password reset link.' });
   }
 });
 
@@ -917,6 +985,15 @@ adminMasterRouter.patch('/courses/:courseId', ...adminGuard, async (req: Authent
     }
 
     const input = parsed.data;
+    if (input.slug !== undefined) {
+      const conflict = await prisma.course.findFirst({
+        where: { slug: input.slug, NOT: { id: existing.id } },
+      });
+      if (conflict) {
+        res.status(409).json({ error: `Course slug "${input.slug}" is already assigned to ${conflict.code}.` });
+        return;
+      }
+    }
     if (input.modules) {
       const totalWeight = input.modules.reduce((acc, m) => acc + m.weight, 0);
       if (totalWeight !== 100) {
@@ -929,6 +1006,7 @@ adminMasterRouter.patch('/courses/:courseId', ...adminGuard, async (req: Authent
       await tx.course.update({
         where: { id: existing.id },
         data: {
+          ...(input.slug !== undefined ? { slug: input.slug } : {}),
           ...(input.title !== undefined ? { title: input.title } : {}),
           ...(input.track !== undefined ? { track: input.track } : {}),
           ...(input.category !== undefined ? { category: input.category } : {}),
@@ -942,6 +1020,8 @@ adminMasterRouter.patch('/courses/:courseId', ...adminGuard, async (req: Authent
           ...(input.instructorId !== undefined ? { instructorId: input.instructorId } : {}),
           ...(input.durationWeeks !== undefined ? { durationWeeks: input.durationWeeks } : {}),
           ...(input.tuitionFee !== undefined ? { tuitionFee: Number(input.tuitionFee).toFixed(2) } : {}),
+          ...(input.isPublished !== undefined ? { isPublished: input.isPublished } : {}),
+          ...(input.showTuitionPublicly !== undefined ? { showTuitionPublicly: input.showTuitionPublicly } : {}),
           ...(input.isArchived !== undefined ? { isArchived: input.isArchived } : {}),
         },
       });

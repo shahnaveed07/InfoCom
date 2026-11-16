@@ -5,13 +5,6 @@ export const loginSchema = z.object({
   password: z.string().min(8, 'Password must be at least 8 characters.'),
 });
 
-export const registerSchema = z.object({
-  name: z.string().trim().min(2, 'Full name must be at least 2 characters.').max(120),
-  email: z.string().trim().email('Valid email address is required.'),
-  password: z.string().min(8, 'Password must be at least 8 characters.').max(128),
-  phone: z.string().trim().max(40).optional().default(''),
-});
-
 export const changePasswordSchema = z.object({
   currentPassword: z.string().min(8, 'Current password is required.'),
   newPassword: z
@@ -231,6 +224,14 @@ export const createCourseSchema = z.object({
   instructorId: z.string().trim().min(1),
   durationWeeks: z.coerce.number().int().min(1).max(104),
   tuitionFee: z.string().trim().regex(/^\d+(\.\d{1,2})?$/, 'Tuition fee must be a valid non-negative decimal.'),
+  slug: z
+    .string()
+    .trim()
+    .max(120)
+    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'Slug must contain lowercase letters, numbers, and hyphens only.')
+    .optional(),
+  isPublished: z.boolean().optional().default(false),
+  showTuitionPublicly: z.boolean().optional().default(true),
   modules: z
     .array(
       z.object({
@@ -561,9 +562,14 @@ export const createStudentSchema = z.object({
   dateOfBirth: z.string().trim().optional().nullable(),
   address: z.string().trim().max(400).optional().default(''),
   emergencyContact: z.string().trim().max(240).optional().default(''),
+  guardianName: z.string().trim().max(120).optional().default(''),
+  guardianRelationship: z.string().trim().max(60).optional().default(''),
+  guardianPhone: z.string().trim().max(40).optional().default(''),
   academicStanding: z.string().trim().max(60).optional().default('Good Standing'),
   initialCourseId: z.string().trim().optional(),
   initialCohortId: z.string().trim().optional(),
+  enrollmentStatus: z.enum(['Active', 'Waitlisted']).optional().default('Active'),
+  issueTuitionInvoice: z.boolean().optional().default(true),
 });
 
 export const updateStudentSchema = z.object({
@@ -746,4 +752,17 @@ export const updateAcademySettingsSchema = z.object({
       signatoryTitle: z.string().trim().min(2).max(120),
     })
     .optional(),
+});
+
+export const notificationPreferencesUpdateSchema = z.object({
+  preferences: z
+    .array(
+      z.object({
+        channel: z.enum(['in_app', 'email']),
+        kind: z.string().trim().min(1).max(40),
+        enabled: z.boolean(),
+      })
+    )
+    .min(1)
+    .max(40),
 });

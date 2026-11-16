@@ -19,10 +19,11 @@ import {
   createFeeStructureSchema,
   createInvoiceSchema,
   createScholarshipSchema,
+  loginSchema,
   markAttendanceSchema,
+  notificationPreferencesUpdateSchema,
   recordPaymentSchema,
   refundPaymentSchema,
-  registerSchema,
   saveAssessmentGradeSchema,
   updateEnrollmentStatusSchema,
   verifyAdmissionDocumentSchema,
@@ -57,13 +58,17 @@ test('computeCertificateEligibility enforces completion, weighted score, and att
   assert.equal(eligible.reasons.length, 0);
 });
 
-test('Zod schemas reject invalid registration, invoice, payment, and course inputs', () => {
-  const regBad = registerSchema.safeParse({
-    name: 'A',
+test('Zod schemas reject invalid login, notification preference, invoice, payment, and course inputs', () => {
+  const loginBad = loginSchema.safeParse({
     email: 'not-an-email',
     password: 'short',
   });
-  assert.equal(regBad.success, false);
+  assert.equal(loginBad.success, false);
+
+  const prefGood = notificationPreferencesUpdateSchema.safeParse({
+    preferences: [{ channel: 'email', kind: 'all', enabled: true }],
+  });
+  assert.equal(prefGood.success, true);
 
   const invBad = createInvoiceSchema.safeParse({
     studentId: 'stu-1',

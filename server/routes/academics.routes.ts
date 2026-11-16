@@ -4,6 +4,7 @@ import { z } from 'zod';
 import {
   isInactiveEnrollmentStatus,
   isValidEnrollmentTransition,
+  slugifyCourseTitle,
 } from '../../src/shared/academic.ts';
 import type { EnrollmentStatus } from '../../src/shared/types.ts';
 import {
@@ -260,12 +261,24 @@ academicsRouter.post('/courses', requireAuth, requireRoles('admin'), async (req:
 
     const courseId = `crs-${crypto.randomUUID().slice(0, 8)}`;
     const tuitionStr = Number(input.tuitionFee).toFixed(2);
+    const baseSlug = input.slug?.trim() || slugifyCourseTitle(input.title);
+    const existingSlug = await prisma.course.findUnique({ where: { slug: baseSlug } });
+    if (existingSlug && input.slug) {
+      res.status(409).json({ error: `Course slug "${baseSlug}" is already in use.` });
+      return;
+    }
+    const finalSlug = existingSlug ? `${baseSlug}-${upperCode.toLowerCase()}` : baseSlug;
+    const dupFinalSlug = existingSlug
+      ? await prisma.course.findUnique({ where: { slug: finalSlug } })
+      : null;
+    const resolvedSlug = dupFinalSlug ? `${baseSlug}-${courseId.slice(-6)}` : finalSlug;
 
     await prisma.$transaction(async (tx) => {
       await tx.course.create({
         data: {
           id: courseId,
           code: upperCode,
+          slug: resolvedSlug,
           title: input.title,
           track: input.track,
           category: input.category || 'Technical Bootcamp',
@@ -279,6 +292,8 @@ academicsRouter.post('/courses', requireAuth, requireRoles('admin'), async (req:
           instructorId: instructor.id,
           durationWeeks: input.durationWeeks,
           tuitionFee: tuitionStr,
+          isPublished: input.isPublished ?? false,
+          showTuitionPublicly: input.showTuitionPublicly ?? true,
           isArchived: false,
         },
       });

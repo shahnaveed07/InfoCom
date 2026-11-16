@@ -909,3 +909,13 @@ export function formatInvoiceNumber(prefix: string, seq: number): string {
   return `${cleanPrefix}-${String(seq).padStart(4, '0')}`;
 }
 
+export function slugifyCourseTitle(input: string): string {
+  const clean = input
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+  return clean || 'course';
+}

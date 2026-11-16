@@ -4,7 +4,6 @@ import {
   changePasswordSchema,
   forgotPasswordSchema,
   loginSchema,
-  registerSchema,
   resetPasswordSchema,
 } from '../../src/shared/validation.ts';
 import {
@@ -12,7 +11,6 @@ import {
   findUserById,
   getUserDashboardById,
   recordAuditLog,
-  registerStudentAccount,
   runSessionReminderSweep,
   toPublicUser,
 } from '../ams-service.ts';
@@ -211,55 +209,11 @@ authRouter.post('/auth/login', loginLimiter, async (req: Request, res: Response)
   }
 });
 
-authRouter.post('/auth/register', registerLimiter, async (req: Request, res: Response) => {
-  try {
-    // Explicitly reject any client attempt to self-assign admin or instructor role
-    if (
-      req.body &&
-      typeof req.body === 'object' &&
-      'role' in req.body &&
-      req.body.role !== undefined &&
-      String(req.body.role).trim().toLowerCase() !== 'student'
-    ) {
-      await recordAuditLog({
-        actor: {
-          email:
-            typeof req.body.email === 'string'
-              ? req.body.email.trim().toLowerCase()
-              : 'anonymous',
-          role: 'anonymous',
-        },
-        action: 'PRIVILEGE_ESCALATION_BLOCKED',
-        entityType: 'user',
-        entityId: 'public-register',
-        ipAddress: getClientIp(req),
-        summary: `Blocked attempt to register with elevated role "${String(req.body.role)}".`,
-      });
-      res.status(403).json({
-        error: 'Public registration is strictly limited to student accounts.',
-      });
-      return;
-    }
-
-    const parsed = registerSchema.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid registration data.' });
-      return;
-    }
-
-    const created = await registerStudentAccount(parsed.data);
-    if (!created.ok) {
-      res.status(409).json({ error: created.error });
-      return;
-    }
-
-    const { rawToken } = await issueOpaqueSession(req, created.user);
-    setSessionCookie(res, rawToken, req);
-    res.status(201).json({ user: toPublicUser(created.user) });
-  } catch (err) {
-    console.error('POST /api/auth/register error:', err);
-    res.status(500).json({ error: 'Failed to create account.' });
-  }
+authRouter.post('/auth/register', registerLimiter, async (_req: Request, res: Response) => {
+  res.status(410).json({
+    error:
+      'Public self-registration is disabled. Accounts are issued by IGS — InfoCom Global Services Administration.',
+  });
 });
 
 authRouter.post('/auth/logout', async (req: Request, res: Response) => {

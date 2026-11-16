@@ -311,24 +311,28 @@ model Guardian {
 // ============================================================================
 
 model Course {
-  id                 String   @id
-  code               String   @unique
-  title              String
-  track              String
-  category           String   @default("Technical Bootcamp")
-  description        String   @default("")
-  prerequisites      String   @default("")
-  learningObjectives Json     @default("[]") @map("learning_objectives")
-  gradingConfig      Json     @default("{}") @map("grading_config")
-  departmentId       String?  @map("department_id")
-  instructorId       String   @map("instructor_id")
-  durationWeeks      Int      @default(8) @map("duration_weeks")
-  tuitionFee         Decimal  @default(1200.00) @map("tuition_fee") @db.Decimal(12, 2)
-  passingScore       Int      @default(60) @map("passing_score")
-  minAttendanceRate  Int      @default(75) @map("min_attendance_rate")
-  isArchived         Boolean  @default(false) @map("is_archived")
-  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt          DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id                  String   @id
+  code                String   @unique
+  slug                String?  @unique
+  title               String
+  track               String
+  category            String   @default("Technical Bootcamp")
+  description         String   @default("")
+  prerequisites       String   @default("")
+  learningObjectives  Json     @default("[]") @map("learning_objectives")
+  gradingConfig       Json     @default("{}") @map("grading_config")
+  departmentId        String?  @map("department_id")
+  instructorId        String   @map("instructor_id")
+  durationWeeks       Int      @default(8) @map("duration_weeks")
+  tuitionFee          Decimal  @default(1200.00) @map("tuition_fee") @db.Decimal(12, 2)
+  passingScore        Int      @default(60) @map("passing_score")
+  minAttendanceRate   Int      @default(75) @map("min_attendance_rate")
+  isPublished         Boolean  @default(false) @map("is_published")
+  showTuitionPublicly Boolean  @default(true) @map("show_tuition_publicly")
+  isDemo              Boolean  @default(false) @map("is_demo")
+  isArchived          Boolean  @default(false) @map("is_archived")
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   department            Department?            @relation(fields: [departmentId], references: [id], onDelete: SetNull)
   instructor            User                   @relation("CoursePrimaryInstructor", fields: [instructorId], references: [id], onDelete: Restrict)
@@ -351,6 +355,7 @@ model Course {
   @@index([instructorId])
   @@index([departmentId])
   @@index([isArchived])
+  @@index([isPublished, isArchived])
   @@map("courses")
 }
 
@@ -992,8 +997,9 @@ model FileAsset {
   fileName         String   @map("file_name")
   mimeType         String   @map("mime_type")
   sizeBytes        Int      @map("size_bytes")
-  contentBase64    String   @map("content_base64")
+  contentBase64    String?  @default("") @map("content_base64")
   storageProvider  String   @default("postgres") @map("storage_provider")
+  storageKey       String?  @map("storage_key")
   checksumSha256   String?  @map("checksum_sha256")
   uploadedByUserId String?  @map("uploaded_by_user_id")
   isArchived       Boolean  @default(false) @map("is_archived")
@@ -1032,4 +1038,26 @@ model AuditLog {
   @@index([entityType, entityId])
   @@index([actorUserId])
   @@map("audit_logs")
+}
+
+// ============================================================================
+// PERSISTENT BACKGROUND JOB QUEUE
+// ============================================================================
+
+model BackgroundJob {
+  id          String    @id
+  jobType     String    @map("job_type")
+  payload     Json      @default("{}")
+  status      String    @default("Pending") // 'Pending' | 'Processing' | 'Completed' | 'Failed'
+  attempts    Int       @default(0)
+  maxAttempts Int       @default(3) @map("max_attempts")
+  runAfter    DateTime  @default(now()) @map("run_after") @db.Timestamptz(6)
+  lastError   String?   @map("last_error")
+  lockedAt    DateTime? @map("locked_at") @db.Timestamptz(6)
+  completedAt DateTime? @map("completed_at") @db.Timestamptz(6)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([status, runAfter])
+  @@map("background_jobs")
 }

@@ -22,8 +22,10 @@ import {
   recalculateInvoiceTotals,
   resolveAnalyticsDateWindow,
   shouldActivatePortalOnPayment,
+  slugifyCourseTitle,
   toCents,
 } from '../src/shared/academic.ts';
+import { readPrivateDocument } from './storage/index.ts';
 import type {
   AcademyPolicySummary,
   AcademySettingsPayload,
@@ -339,139 +341,7 @@ export async function findUserByEmail(email: string): Promise<PrismaUser | null>
   }
 }
 
-export async function registerStudentAccount(params: {
-  name: string;
-  email: string;
-  password: string;
-  phone?: string;
-}): Promise<{ ok: true; user: PrismaUser } | { ok: false; error: string }> {
-  const normalizedEmail = params.email.trim().toLowerCase();
-  const existing = await findUserByEmail(normalizedEmail);
-  if (existing) {
-    return { ok: false, error: 'An account with this email already exists.' };
-  }
-
-  const newId = `stu-${crypto.randomUUID().slice(0, 8)}`;
-  const passwordHash = await hashPassword(params.password);
-
-  try {
-    const createdUser = await prisma.$transaction(async (tx) => {
-      const studentCode = await generateUniqueStudentCode(tx);
-      const inserted = await tx.user.create({
-        data: {
-          id: newId,
-          name: params.name.trim(),
-          email: normalizedEmail,
-          role: 'student', // Public registration ALWAYS creates student role
-          status: 'active',
-          studentCode,
-          phone: params.phone?.trim() || null,
-          passwordHash,
-          passwordUpdatedAt: new Date(),
-        },
-      });
-
-      const roleRow = await tx.role.findUnique({ where: { code: 'student' } });
-      if (roleRow) {
-        await tx.userRole.upsert({
-          where: { userId_roleId: { userId: inserted.id, roleId: roleRow.id } },
-          update: {},
-          create: {
-            id: `ur-${inserted.id}-student`,
-            userId: inserted.id,
-            roleId: roleRow.id,
-          },
-        });
-      }
-
-      await tx.studentProfile.create({
-        data: {
-          id: `sp-${inserted.id}`,
-          userId: inserted.id,
-          studentCode,
-        },
-      });
-
-      const firstCourse = await tx.course.findFirst({
-        where: { isArchived: false },
-        include: { instructor: true },
-        orderBy: { createdAt: 'asc' },
-      });
-
-      if (firstCourse) {
-        const matchingBatch = await tx.batch.findFirst({
-          where: { courseId: firstCourse.id, status: 'Active' },
-          orderBy: { startDate: 'asc' },
-        });
-        const cohortName = matchingBatch?.name ?? 'Cohort A · Autumn';
-        const enrId = `enr-${crypto.randomUUID().slice(0, 8)}`;
-
-        await tx.enrollment.create({
-          data: {
-            id: enrId,
-            studentId: inserted.id,
-            courseId: firstCourse.id,
-            cohortId: matchingBatch?.id ?? null,
-            cohort: cohortName,
-            status: 'Active',
-            completedModuleIds: [],
-            tuitionSnapshot: firstCourse.tuitionFee,
-            batchNameSnapshot: cohortName,
-            instructorNameSnapshot: firstCourse.instructor?.name ?? null,
-          },
-        });
-
-        await tx.enrollmentHistory.create({
-          data: {
-            id: `eh-${crypto.randomUUID().slice(0, 8)}`,
-            enrollmentId: enrId,
-            previousStatus: null,
-            newStatus: 'Active',
-            newBatchId: matchingBatch?.id ?? null,
-            reason: 'Initial student self-registration',
-            changedByUserId: inserted.id,
-          },
-        });
-
-        const notif = await tx.notification.create({
-          data: {
-            id: `not-${crypto.randomUUID().slice(0, 8)}`,
-            userId: inserted.id,
-            kind: 'enrollment',
-            title: `Welcome · ${firstCourse.code}`,
-            message: `Welcome to InfoCom AMS. You have been enrolled in ${firstCourse.title} (${cohortName}).`,
-            relatedCourseId: firstCourse.id,
-            read: false,
-          },
-        });
-
-        await tx.deliveryLog.create({
-          data: {
-            id: `del-${crypto.randomUUID().slice(0, 8)}`,
-            notificationId: notif.id,
-            userId: inserted.id,
-            channel: 'in_app',
-            recipient: inserted.email,
-            status: 'Delivered',
-          },
-        });
-      }
-      return inserted;
-    });
-
-    await recordAuditLog({
-      actor: { id: createdUser.id, email: createdUser.email, role: createdUser.role },
-      action: 'STUDENT_REGISTERED',
-      entityType: 'user',
-      entityId: createdUser.id,
-      summary: `New student registered: ${createdUser.name} (${createdUser.email}).`,
-    });
-
-    return { ok: true, user: createdUser };
-  } catch (err) {
-    throw new Error('Failed to create student account.', { cause: err });
-  }
-}
+// Public student self-registration is intentionally removed; student accounts are provisioned by Academy Administration.
 
 export async function runSessionReminderSweep(nowMs = Date.now()): Promise<NotificationItem[]> {
   try {
@@ -721,6 +591,10 @@ export async function buildDashboardForUser(userRow: PrismaUser): Promise<Dashbo
       instructorName: userMap.get(c.instructorId)?.name ?? 'Instructor',
       durationWeeks: c.durationWeeks,
       tuitionFee: c.tuitionFee.toFixed(2),
+      slug: c.slug || slugifyCourseTitle(c.title),
+      isPublished: c.isPublished,
+      showTuitionPublicly: c.showTuitionPublicly,
+      isDemo: c.isDemo,
       isArchived: c.isArchived,
       modules: allModules
         .filter((m) => m.courseId === c.id)
@@ -1178,6 +1052,7 @@ export async function buildDashboardForUser(userRow: PrismaUser): Promise<Dashbo
           createdAt: a.createdAt.toISOString(),
         })),
         analytics,
+        isDemoEnvironment: process.env.NODE_ENV !== 'production',
       };
     }
 
@@ -1275,6 +1150,7 @@ export async function buildDashboardForUser(userRow: PrismaUser): Promise<Dashbo
           outstandingCents: 0,
           collectionRatePct: 0,
         },
+        isDemoEnvironment: process.env.NODE_ENV !== 'production',
       };
     }
 
@@ -1328,6 +1204,7 @@ export async function buildDashboardForUser(userRow: PrismaUser): Promise<Dashbo
           lateWeightPct: policies.lateWeightPct,
         }).rate,
       },
+      isDemoEnvironment: process.env.NODE_ENV !== 'production',
     };
   } catch (err) {
     throw new Error('Failed to load InfoCom dashboard.', { cause: err });
@@ -2883,7 +2760,15 @@ export async function getActiveDocumentContent(
         return 'FORBIDDEN' as const;
       }
     }
-    return doc;
+    const buffer = await readPrivateDocument({
+      storageProvider: doc.storageProvider,
+      storageKey: doc.storageKey,
+      contentBase64: doc.contentBase64,
+    });
+    return {
+      ...doc,
+      buffer,
+    };
   } catch (err) {
     throw new Error('Failed to retrieve document content.', { cause: err });
   }
