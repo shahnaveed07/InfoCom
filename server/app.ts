@@ -1,6 +1,6 @@
 import express from 'express';
 import { resolveAppEnvironment } from './db/config.ts';
-import { prisma } from './db/prisma.ts';
+import { checkDatabaseReadiness } from './db/prisma.ts';
 import {
   createSafeCorsMiddleware,
   csrfOriginGuard,
@@ -33,19 +33,14 @@ export function createApiApp(): express.Express {
   });
 
   app.get('/api/health/ready', async (_req, res) => {
-    try {
-      await prisma.$queryRawUnsafe('SELECT 1');
-      res.status(200).json({
-        status: 'ready',
-        database: 'connected',
-      });
-    } catch (err) {
-      console.error('Database readiness check failed:', err);
-      res.status(503).json({
-        status: 'degraded',
-        database: 'unavailable',
-      });
-    }
+    const readiness = await checkDatabaseReadiness();
+    res.status(readiness.ready ? 200 : 503).json({
+      status: readiness.status,
+      database: readiness.database,
+      mode: readiness.mode,
+      latencyMs: readiness.latencyMs,
+      ...(readiness.errorCode ? { code: readiness.errorCode } : {}),
+    });
   });
 
   app.use('/api', csrfOriginGuard);
