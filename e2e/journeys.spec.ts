@@ -169,7 +169,7 @@ test.describe('End-to-End Role Journeys (Public, Admin, Student, Instructor)', (
 
     // Enter a Grade in Course Tracking
     await page.getByRole('button', { name: 'Course Tracking', exact: true }).click();
-    await page.getByRole('button', { name: /IGS-202/i }).first().click();
+    await page.getByRole('tab', { name: /IGS-202/i }).first().click();
 
     await page.getByRole('button', { name: `Edit grade for ${studentName} on MOD-1` }).click();
     await page.locator('#grade-score').fill('91');
@@ -183,7 +183,7 @@ test.describe('End-to-End Role Journeys (Public, Admin, Student, Instructor)', (
     // Reload and confirm instructor changes persisted in DB
     await page.reload({ waitUntil: 'networkidle' });
     await page.getByRole('button', { name: 'Course Tracking', exact: true }).click();
-    await page.getByRole('button', { name: /IGS-202/i }).first().click();
+    await page.getByRole('tab', { name: /IGS-202/i }).first().click();
     await expect(
       page.getByRole('button', { name: `Edit grade for ${studentName} on MOD-1` })
     ).toContainText('91%');
@@ -221,7 +221,10 @@ test.describe('End-to-End Role Journeys (Public, Admin, Student, Instructor)', (
       await expect(studentPage.getByText('100%').first()).toBeVisible();
       await expect(studentPage.getByText('91%').first()).toBeVisible();
 
-      await studentPage.getByRole('button', { name: 'Fees & Receipts', exact: true }).click();
+      await studentPage
+        .getByRole('navigation', { name: 'Primary navigation' })
+        .getByRole('button', { name: 'Fees & Receipts', exact: true })
+        .click();
       await expect(studentPage.getByText(`E2E Web Tuition ${suffix}`)).toBeVisible();
       await expect(studentPage.getByText(/₹14,000\.00/).first()).toBeVisible();
       await expect(studentPage.getByText('Paid', { exact: true }).first()).toBeVisible();

@@ -20,7 +20,7 @@ Single-repository full-stack Academy Management System built for **IGS — InfoC
 
 ## Key Features
 
-- **Public Institute Website (`/`, `/courses`, `/about`, `/admissions`, `/contact`, `/verify-certificate`):** Public website for **IGS — InfoCom Global Services**, serving live published courses, cohort schedules, online admissions applications, public certificate verification, and portal sign-in (`/login`).
+- **Public Institute Website (`/`, `/courses`, `/about`, `/admissions`, `/contact`, `/verify-certificate`):** Public website for **IGS — InfoCom Global Services**, serving live published courses, cohort schedules, online admissions applications, public certificate verification, and portal sign-in (`/login`), with API-first demo catalog fallback (`VITE_PUBLIC_DATA_MODE=auto`) when the backend is unavailable.
 - **Admin-Controlled Student & Staff Onboarding (`/portal`):** Public self-registration is disabled (`410 Gone`). Admins create students, instructors, and admin accounts and issue single-use onboarding/password-reset links (`/login?setupToken=...` / `/login?resetToken=...`).
 - **Role-Based Workspaces (`admin`, `instructor`, `student`):** Server-enforced RBAC with instructor assignment scoping and strict student record isolation.
 - **Academy Administration & Analytics:** Academy branding/settings, departments, academic years, terms, classrooms, live KPI analytics, and audit logs.
@@ -41,8 +41,10 @@ Single-repository full-stack Academy Management System built for **IGS — InfoC
 | [`docs/DATABASE.md`](docs/DATABASE.md) | PostgreSQL + Prisma schema, migrations, seeding, backup/restore, and rollback |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | RBAC permissions matrix, Argon2id, opaque sessions, CSRF/CORS, and anti-IDOR rules |
 | [`docs/API.md`](docs/API.md) | REST API endpoint catalog under `/api/*` |
-| [`docs/TESTING.md`](docs/TESTING.md) | Unit, integration, typecheck, and build verification suite |
+| [`docs/TESTING.md`](docs/TESTING.md) | Unit, integration, typecheck, Playwright E2E, and build verification suite |
 | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) | Environment setup, build, database migrations, and runtime notes |
+| [`docs/404_ROOT_CAUSE.md`](docs/404_ROOT_CAUSE.md) | Root-cause analysis for SPA routing, `/api/*` 404s, health endpoints, and bundled asset fixes |
+| [`docs/PUBLIC_DEMO_FALLBACK.md`](docs/PUBLIC_DEMO_FALLBACK.md) | API-first public demo fallback modes, error classification, recovery, and portal boundaries |
 
 ---
 
@@ -70,11 +72,12 @@ npm run dev
 npm run db:migrate-documents -- --dry-run
 npm run email:verify
 
-# 6. TypeScript check, production builds (dist/ + dist-server/server.js), and tests
+# 6. TypeScript check, production builds (dist/ + dist-server/server.js), unit/integration tests, and Playwright E2E
 npm run lint
 npm run build
 npm run build:server
 npm test
+npm run test:e2e
 
 # 7. Run compiled production server
 NODE_ENV=production npm start

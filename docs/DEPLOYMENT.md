@@ -11,7 +11,11 @@ Configure runtime environment variables cleanly without committing secrets:
 | `SESSION_SECRET` | Recommended in Prod | Cryptographic entropy secret (32+ bytes) |
 | `ADMIN_BOOTSTRAP_SECRET` | Multi-admin CLI | Required when running `npm run admin:bootstrap -- --allow-additional` after first admin exists |
 | `APP_URL` | Yes in Prod | Public canonical URL used for CORS allowlist, CSRF origin validation, onboarding/reset links, and QR certificate verification |
-| `CORS_ALLOWED_ORIGINS` | Optional | Comma-separated extra allowed origins |
+| `CORS_ALLOWED_ORIGINS` | Optional | Comma-separated extra allowed origins (checked by both CORS and CSRF origin guards) |
+| `CORS_CROSS_SITE_COOKIES` | Optional | Set `true` only if frontend and API are deployed on separate HTTPS origins requiring `SameSite=None; Secure` cookies (default `false`) |
+| `VITE_API_BASE_URL` | Optional (Build-time) | Optional base URL (e.g. `https://api.example.com`) when static frontend is decoupled from Express `/api/*`; defaults to same-origin relative `/api/*` |
+| `VITE_PUBLIC_DATA_MODE` | Optional (Build-time) | `auto` (default, API-first with demo fallback on outage), `demo`, or `api` |
+| `VITE_ENABLE_PUBLIC_DEMO_FALLBACK` | Optional (Build-time) | `true` (default) or `false` to toggle automatic fallback in `auto` mode |
 | `PORT` | Optional | HTTP listening port (`Number(process.env.PORT) || 3000`) |
 | `NODE_ENV` | `production` / `development` | Switches Vite dev middleware vs. static `dist/` serving, `Secure` cookie flag, and hides `isDemo` courses in public endpoints |
 | `STORAGE_PROVIDER` | Optional | Private document storage driver: `local` (default, uses `STORAGE_LOCAL_DIR`) or `s3` (`STORAGE_S3_BUCKET`, `STORAGE_S3_REGION`, `STORAGE_S3_ENDPOINT`, credentials) |

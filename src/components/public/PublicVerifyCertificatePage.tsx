@@ -2,17 +2,22 @@ import React, { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Award, CheckCircle2, Search, XCircle } from 'lucide-react';
 import type { PublicAcademyInfo } from '../../shared/types';
-import { api, type VerifiedCertificateInfo } from '../../utils/api';
+import { api, isBackendUnavailableError, type VerifiedCertificateInfo } from '../../utils/api';
+import { usePublicSiteData } from '../../utils/public-data';
 
 interface PublicVerifyCertificatePageProps {
   academy: PublicAcademyInfo | null;
 }
+
+const VERIFY_UNAVAILABLE_MESSAGE =
+  'Certificate verification service is temporarily unavailable.';
 
 export function PublicVerifyCertificatePage({
   academy,
 }: PublicVerifyCertificatePageProps) {
   const [searchParams] = useSearchParams();
   const initialQuery = searchParams.get('verifyCert') ?? '';
+  const { academy: siteAcademy } = usePublicSiteData();
 
   const [certQuery, setCertQuery] = useState(initialQuery);
   const [certResult, setCertResult] = useState<VerifiedCertificateInfo | null>(null);
@@ -22,18 +27,31 @@ export function PublicVerifyCertificatePage({
   useEffect(() => {
     const trimmed = initialQuery.trim();
     if (!trimmed) return;
+    let active = true;
     setCertQuery(trimmed);
     setVerifying(true);
     setCertError('');
     api
       .verifyCertificate(trimmed)
-      .then((res) => setCertResult(res.certificate))
-      .catch((err) =>
+      .then((res) => {
+        if (active) setCertResult(res.certificate);
+      })
+      .catch((err) => {
+        if (!active) return;
         setCertError(
-          err instanceof Error ? err.message : 'Certificate verification failed.'
-        )
-      )
-      .finally(() => setVerifying(false));
+          isBackendUnavailableError(err)
+            ? VERIFY_UNAVAILABLE_MESSAGE
+            : err instanceof Error
+              ? err.message
+              : 'Certificate verification failed.'
+        );
+      })
+      .finally(() => {
+        if (active) setVerifying(false);
+      });
+    return () => {
+      active = false;
+    };
   }, [initialQuery]);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -50,14 +68,19 @@ export function PublicVerifyCertificatePage({
       setCertResult(res.certificate);
     } catch (err) {
       setCertError(
-        err instanceof Error ? err.message : 'Certificate verification failed.'
+        isBackendUnavailableError(err)
+          ? VERIFY_UNAVAILABLE_MESSAGE
+          : err instanceof Error
+            ? err.message
+            : 'Certificate verification failed.'
       );
     } finally {
       setVerifying(false);
     }
   }
 
-  const instituteName = academy?.name || 'IGS — InfoCom Global Services';
+  const effectiveAcademy = academy ?? siteAcademy;
+  const instituteName = effectiveAcademy?.name || 'IGS — InfoCom Global Services';
 
   return (
     <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-12 lg:py-16 space-y-8">

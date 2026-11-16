@@ -1,13 +1,13 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowRight, BookOpen, CheckCircle2, MapPin, ShieldCheck } from 'lucide-react';
+import studioLabImage from '../../assets/images/academy_lab_studio_1794576422024.jpg';
 import type { PublicAcademyInfo } from '../../shared/types';
+import { usePublicSiteData } from '../../utils/public-data';
 
 interface PublicAboutPageProps {
   academy: PublicAcademyInfo | null;
 }
-
-const STUDIO_IMAGE_PATH = '/src/assets/images/academy_lab_studio_1794576422024.jpg';
 
 const FOCUS_AREAS = [
   {
@@ -28,11 +28,13 @@ const FOCUS_AREAS = [
 ] as const;
 
 export function PublicAboutPage({ academy }: PublicAboutPageProps) {
+  const { academy: siteAcademy } = usePublicSiteData();
   const [imageFailed, setImageFailed] = useState(false);
-  const instituteName = academy?.name || 'IGS — InfoCom Global Services';
-  const slogan = academy?.slogan || 'Learn Today, Build Tomorrow.';
+  const effectiveAcademy = academy ?? siteAcademy;
+  const instituteName = effectiveAcademy?.name || 'IGS — InfoCom Global Services';
+  const slogan = effectiveAcademy?.slogan || 'Learn Today, Build Tomorrow.';
   const address =
-    academy?.address ||
+    effectiveAcademy?.address ||
     'Downtown Sopore, Opposite Hassan Motors Petrol Pump, Sopore, Jammu and Kashmir, India.';
 
   return (
@@ -73,7 +75,7 @@ export function PublicAboutPage({ academy }: PublicAboutPageProps) {
           <div className="h-full min-h-[280px] rounded-xl overflow-hidden border border-slate-200 bg-slate-100">
             {!imageFailed ? (
               <img
-                src={STUDIO_IMAGE_PATH}
+                src={studioLabImage}
                 alt="Students collaborating with instructor in computer laboratory at IGS InfoCom Global Services"
                 referrerPolicy="no-referrer"
                 onError={() => setImageFailed(true)}

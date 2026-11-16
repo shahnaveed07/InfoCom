@@ -337,7 +337,21 @@ test('Phase 3 Security & Authorization Integration Suite', async (t) => {
     let stuACookie = '';
     let stuBCookie = '';
 
-    await t.test('1. Security headers omit X-Frame-Options and include X-Content-Type-Options', async () => {
+    await t.test('1. Health/readiness, unknown /api/* JSON 404, and security headers behave correctly', async () => {
+      const health = await apiFetch('/api/health');
+      assert.equal(health.res.status, 200);
+      assert.equal(health.json?.status, 'ok');
+
+      const ready = await apiFetch('/api/health/ready');
+      assert.equal(ready.res.status, 200);
+      assert.equal(ready.json?.status, 'ready');
+      assert.equal(ready.json?.database, 'connected');
+
+      const missingApi = await apiFetch('/api/unknown-route-check');
+      assert.equal(missingApi.res.status, 404);
+      assert.match(missingApi.res.headers.get('content-type') ?? '', /application\/json/i);
+      assert.equal(missingApi.json?.code, 'API_ROUTE_NOT_FOUND');
+
       const { res } = await apiFetch('/api/auth/me');
       assert.equal(res.status, 200);
       assert.equal(res.headers.get('x-content-type-options'), 'nosniff');

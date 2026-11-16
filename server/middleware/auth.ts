@@ -29,18 +29,32 @@ export function extractSessionToken(req: Request): string | undefined {
   return cookies[SESSION_COOKIE_NAME];
 }
 
-export function setSessionCookie(res: Response, rawToken: string, req?: Request): void {
+function resolveCookiePolicy(req?: Request): {
+  sameSite: 'lax' | 'none';
+  secure: boolean;
+} {
+  const crossSite = process.env.CORS_CROSS_SITE_COOKIES === 'true';
   const secure =
-    process.env.NODE_ENV === 'production' || (req ? isSecureRequest(req) : false);
+    crossSite ||
+    process.env.NODE_ENV === 'production' ||
+    (req ? isSecureRequest(req) : false);
+  return {
+    sameSite: crossSite ? 'none' : 'lax',
+    secure,
+  };
+}
+
+export function setSessionCookie(res: Response, rawToken: string, req?: Request): void {
+  const { sameSite, secure } = resolveCookiePolicy(req);
   res.clearCookie(LEGACY_SESSION_COOKIE_NAME, {
     httpOnly: true,
-    sameSite: 'lax',
+    sameSite,
     secure,
     path: '/',
   });
   res.cookie(SESSION_COOKIE_NAME, rawToken, {
     httpOnly: true,
-    sameSite: 'lax',
+    sameSite,
     secure,
     path: '/',
     maxAge: SESSION_TTL_MS,
@@ -48,17 +62,16 @@ export function setSessionCookie(res: Response, rawToken: string, req?: Request)
 }
 
 export function clearSessionCookie(res: Response, req?: Request): void {
-  const secure =
-    process.env.NODE_ENV === 'production' || (req ? isSecureRequest(req) : false);
+  const { sameSite, secure } = resolveCookiePolicy(req);
   res.clearCookie(LEGACY_SESSION_COOKIE_NAME, {
     httpOnly: true,
-    sameSite: 'lax',
+    sameSite,
     secure,
     path: '/',
   });
   res.clearCookie(SESSION_COOKIE_NAME, {
     httpOnly: true,
-    sameSite: 'lax',
+    sameSite,
     secure,
     path: '/',
   });

@@ -61,3 +61,10 @@ jobs:
 
       - name: Build production client and server bundles
         run: npm run build && npm run build:server
+
+      - name: Install Playwright Chromium browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright browser E2E suite
+        run: npm run test:e2e
+

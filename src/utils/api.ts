@@ -75,29 +75,247 @@ export interface PublicAdmissionCatalog {
   feePlans: FeePlanSummary[];
 }
 
-async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(url, {
-    credentials: 'same-origin',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(options?.headers ?? {}),
-    },
-    ...options,
-  });
+export type ApiErrorKind =
+  | 'network_error'
+  | 'api_route_missing'
+  | 'html_fallback'
+  | 'database_unavailable'
+  | 'service_unavailable'
+  | 'not_found'
+  | 'invalid_response'
+  | 'http_error';
 
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const message =
-      typeof data?.error === 'string'
-        ? data.error
-        : `Request failed (${res.status})`;
-    throw new Error(message);
+export class ApiError extends Error {
+  readonly status: number;
+  readonly contentType: string;
+  readonly code: string;
+  readonly kind: ApiErrorKind;
+  readonly isNetworkError: boolean;
+  readonly isHtmlResponse: boolean;
+
+  constructor(
+    message: string,
+    opts: {
+      status: number;
+      contentType: string;
+      code: string;
+      kind: ApiErrorKind;
+      isNetworkError?: boolean;
+      isHtmlResponse?: boolean;
+    }
+  ) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = opts.status;
+    this.contentType = opts.contentType;
+    this.code = opts.code;
+    this.kind = opts.kind;
+    this.isNetworkError = Boolean(opts.isNetworkError);
+    this.isHtmlResponse = Boolean(opts.isHtmlResponse);
   }
-  return data as T;
+}
+
+export function isBackendUnavailableError(err: unknown): boolean {
+  if (err instanceof ApiError) {
+    return (
+      err.kind === 'network_error' ||
+      err.kind === 'api_route_missing' ||
+      err.kind === 'html_fallback' ||
+      err.kind === 'database_unavailable' ||
+      err.kind === 'service_unavailable' ||
+      err.kind === 'invalid_response' ||
+      err.status >= 500
+    );
+  }
+  return false;
+}
+
+export interface BackendReadinessResult {
+  backendReachable: boolean;
+  databaseReady: boolean;
+  status: 'ready' | 'degraded' | 'offline';
+  reason?: string;
+}
+
+function readEnvValue(key: string): string | undefined {
+  const metaEnv = (import.meta as unknown as { env?: Record<string, string | undefined> })?.env;
+  if (metaEnv && typeof metaEnv[key] === 'string') {
+    return metaEnv[key];
+  }
+  if (typeof process !== 'undefined' && process.env && typeof process.env[key] === 'string') {
+    return process.env[key];
+  }
+  return undefined;
+}
+
+export function resolveApiBaseUrl(): string {
+  const raw = (readEnvValue('VITE_API_BASE_URL') ?? '').trim();
+  if (!raw) return '';
+  return raw.replace(/\/+$/, '');
+}
+
+export function resolveApiUrl(path: string): string {
+  if (/^https?:\/\//i.test(path)) return path;
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  const baseUrl = resolveApiBaseUrl();
+  return baseUrl ? `${baseUrl}${normalizedPath}` : normalizedPath;
+}
+
+function resolveFetchCredentials(): RequestCredentials {
+  const baseUrl = resolveApiBaseUrl();
+  if (!baseUrl) return 'same-origin';
+  if (typeof window !== 'undefined' && window.location?.origin) {
+    try {
+      const targetOrigin = new URL(baseUrl, window.location.origin).origin;
+      return targetOrigin === window.location.origin ? 'same-origin' : 'include';
+    } catch {
+      return 'include';
+    }
+  }
+  return 'include';
+}
+
+function looksLikeHtml(contentType: string, rawBody: string): boolean {
+  if (contentType.toLowerCase().includes('text/html')) return true;
+  return /^\s*(<!doctype\s+html|<html[\s>])/i.test(rawBody);
+}
+
+async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
+  const targetUrl = resolveApiUrl(url);
+  let res: Response;
+  try {
+    res = await fetch(targetUrl, {
+      credentials: resolveFetchCredentials(),
+      headers: {
+        'Content-Type': 'application/json',
+        ...(options?.headers ?? {}),
+      },
+      ...options,
+    });
+  } catch (err) {
+    throw new ApiError(
+      err instanceof Error && err.message
+        ? `Backend service unreachable: ${err.message}`
+        : 'Unable to reach the IGS backend service.',
+      {
+        status: 0,
+        contentType: '',
+        code: 'NETWORK_ERROR',
+        kind: 'network_error',
+        isNetworkError: true,
+      }
+    );
+  }
+
+  const contentType = res.headers.get('content-type') ?? '';
+  let rawText = '';
+  try {
+    rawText = await res.text();
+  } catch {
+    throw new ApiError('Failed to read response body from API.', {
+      status: res.status,
+      contentType,
+      code: 'READ_ERROR',
+      kind: 'invalid_response',
+    });
+  }
+
+  if (looksLikeHtml(contentType, rawText)) {
+    throw new ApiError(
+      res.status === 404
+        ? 'API route returned a static hosting HTML 404 page instead of JSON.'
+        : 'API endpoint returned an HTML page instead of JSON.',
+      {
+        status: res.status,
+        contentType,
+        code: res.status === 404 ? 'HOSTING_HTML_404' : 'HTML_RESPONSE',
+        kind: res.status === 404 ? 'api_route_missing' : 'html_fallback',
+        isHtmlResponse: true,
+      }
+    );
+  }
+
+  let parsed: Record<string, unknown> | null = null;
+  if (rawText.trim().length > 0) {
+    try {
+      const jsonVal = JSON.parse(rawText);
+      if (jsonVal === null || typeof jsonVal !== 'object') {
+        throw new Error('Non-object JSON payload');
+      }
+      parsed = jsonVal as Record<string, unknown>;
+    } catch {
+      throw new ApiError(`API returned malformed JSON (${res.status}).`, {
+        status: res.status,
+        contentType,
+        code: 'INVALID_JSON',
+        kind: 'invalid_response',
+      });
+    }
+  }
+
+  if (!res.ok) {
+    const serverMessage =
+      typeof parsed?.error === 'string'
+        ? parsed.error
+        : `Request failed (${res.status})`;
+    const serverCode = typeof parsed?.code === 'string' ? parsed.code : '';
+    const dbState = typeof parsed?.database === 'string' ? parsed.database : '';
+
+    if (res.status === 503 && dbState === 'unavailable') {
+      throw new ApiError(serverMessage, {
+        status: res.status,
+        contentType,
+        code: serverCode || 'DATABASE_UNAVAILABLE',
+        kind: 'database_unavailable',
+      });
+    }
+    if (res.status === 502 || res.status === 503 || res.status === 504) {
+      throw new ApiError(serverMessage, {
+        status: res.status,
+        contentType,
+        code: serverCode || 'SERVICE_UNAVAILABLE',
+        kind: 'service_unavailable',
+      });
+    }
+    if (res.status === 404 && serverCode === 'API_ROUTE_NOT_FOUND') {
+      throw new ApiError(serverMessage, {
+        status: res.status,
+        contentType,
+        code: 'API_ROUTE_NOT_FOUND',
+        kind: 'api_route_missing',
+      });
+    }
+    if (res.status === 404) {
+      throw new ApiError(serverMessage, {
+        status: res.status,
+        contentType,
+        code: serverCode || 'NOT_FOUND',
+        kind: 'not_found',
+      });
+    }
+
+    throw new ApiError(serverMessage, {
+      status: res.status,
+      contentType,
+      code: serverCode || `HTTP_${res.status}`,
+      kind: 'http_error',
+    });
+  }
+
+  if (!parsed) {
+    throw new ApiError('API returned an empty non-JSON response.', {
+      status: res.status,
+      contentType,
+      code: 'EMPTY_RESPONSE',
+      kind: 'invalid_response',
+    });
+  }
+
+  return parsed as T;
 }
 
 async function downloadBinaryFile(url: string, fallbackFileName: string): Promise<void> {
-  const res = await fetch(url, { credentials: 'same-origin' });
+  const res = await fetch(resolveApiUrl(url), { credentials: resolveFetchCredentials() });
   if (!res.ok) {
     const errData = await res.json().catch(() => ({}));
     throw new Error(
@@ -121,20 +339,70 @@ async function downloadBinaryFile(url: string, fallbackFileName: string): Promis
 }
 
 export const api = {
-  getPublicAcademy: () => requestJson<PublicAcademyInfo>('/api/public/academy'),
+  getHealth: (signal?: AbortSignal) =>
+    requestJson<{
+      status: string;
+      service?: string;
+      environment?: string;
+      timestamp?: string;
+    }>('/api/health', { signal }),
 
-  getPublicCourses: () =>
+  getReadiness: async (signal?: AbortSignal): Promise<BackendReadinessResult> => {
+    try {
+      const data = await requestJson<{ status: string; database: string }>(
+        '/api/health/ready',
+        { signal }
+      );
+      if (data.status === 'ready' && data.database === 'connected') {
+        return { backendReachable: true, databaseReady: true, status: 'ready' };
+      }
+      return {
+        backendReachable: true,
+        databaseReady: false,
+        status: 'degraded',
+        reason: 'Database unavailable',
+      };
+    } catch (err) {
+      if (err instanceof ApiError && err.kind === 'database_unavailable') {
+        return {
+          backendReachable: true,
+          databaseReady: false,
+          status: 'degraded',
+          reason: err.message,
+        };
+      }
+      if (err instanceof ApiError && err.kind === 'service_unavailable' && err.status === 503) {
+        return {
+          backendReachable: true,
+          databaseReady: false,
+          status: 'degraded',
+          reason: err.message,
+        };
+      }
+      return {
+        backendReachable: false,
+        databaseReady: false,
+        status: 'offline',
+        reason: err instanceof Error ? err.message : 'Backend unreachable',
+      };
+    }
+  },
+
+  getPublicAcademy: (signal?: AbortSignal) =>
+    requestJson<PublicAcademyInfo>('/api/public/academy', { signal }),
+
+  getPublicCourses: (signal?: AbortSignal) =>
     requestJson<{
       courses: PublicCourseSummary[];
       currency: string;
       isDemoEnvironment?: boolean;
-    }>('/api/public/courses'),
+    }>('/api/public/courses', { signal }),
 
-  getPublicCourseDetail: (slugOrId: string) =>
+  getPublicCourseDetail: (slugOrId: string, signal?: AbortSignal) =>
     requestJson<{
       course: PublicCourseDetail;
       isDemoEnvironment?: boolean;
-    }>(`/api/public/courses/${encodeURIComponent(slugOrId)}`),
+    }>(`/api/public/courses/${encodeURIComponent(slugOrId)}`, { signal }),
 
   getMe: () => requestJson<{ user: UserPublic | null }>('/api/auth/me'),
 
@@ -235,8 +503,8 @@ export const api = {
   fetchAdmissionDetail: (id: string) =>
     requestJson<AdmissionDetailPayload>(`/api/admissions/${id}`),
 
-  fetchPublicAdmissionCatalog: () =>
-    requestJson<PublicAdmissionCatalog>('/api/admissions/public/catalog'),
+  fetchPublicAdmissionCatalog: (signal?: AbortSignal) =>
+    requestJson<PublicAdmissionCatalog>('/api/admissions/public/catalog', { signal }),
 
   submitPublicAdmission: (payload: Record<string, unknown>) =>
     requestJson<{ admissionId: string; applicationNumber: string; status: AdmissionStatus }>(
@@ -375,8 +643,8 @@ export const api = {
     fallbackFileName = 'document'
   ) => {
     const res = await fetch(
-      `/api/admissions/${admissionId}/documents/${docId}/download`,
-      { credentials: 'same-origin' }
+      resolveApiUrl(`/api/admissions/${admissionId}/documents/${docId}/download`),
+      { credentials: resolveFetchCredentials() }
     );
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));

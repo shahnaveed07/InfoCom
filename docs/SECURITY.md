@@ -29,7 +29,7 @@ InfoCom enforces server-side Role-Based Access Control (RBAC) across three expli
 - Only the **SHA-256 hash** (`auth_sessions.token_hash`) is persisted in PostgreSQL; the raw cookie token is never stored in the database.
 - `server/middleware/auth.ts` sets `igs_session` cookies with:
   - `HttpOnly: true` (inaccessible to client JavaScript)
-  - `SameSite: 'lax'`
+  - `SameSite: 'lax'` (or `'none'` with `Secure: true` when `CORS_CROSS_SITE_COOKIES=true` for separated origins over HTTPS)
   - `Path: '/'`
   - `Secure: true` automatically in production or when served over HTTPS (`req.secure` or `x-forwarded-proto: https`)
   - 7-day absolute TTL (`SESSION_TTL_MS`)
@@ -57,7 +57,7 @@ Every protected request resolves `igs_session` by hashing the cookie value and q
 Implemented in `server/app.ts` and `server/middleware/security.ts`:
 - **Security Headers (`helmet`)**: Sets `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `Cross-Origin-Opener-Policy: same-origin-allow-popups`, `Permissions-Policy`, and `Strict-Transport-Security` over HTTPS (omits `X-Frame-Options` so embedded preview iframes function properly).
 - **Safe CORS (`createSafeCorsMiddleware`)**: Restricts credentialed browser cross-origin access to an explicit allowlist (`localhost:3000`, `127.0.0.1:3000`, `APP_URL`, and `CORS_ALLOWED_ORIGINS`).
-- **CSRF Protection (`csrfOriginGuard`)**: Protects all cookie-authenticated state-changing requests (`POST`, `PUT`, `PATCH`, `DELETE`) by rejecting `Sec-Fetch-Site: cross-site`, `Origin: null`, malformed origins, and `Origin`/`Referer` hosts that do not match the request host or `APP_URL`.
+- **CSRF Protection (`csrfOriginGuard`)**: Protects all cookie-authenticated state-changing requests (`POST`, `PUT`, `PATCH`, `DELETE`) by rejecting `Sec-Fetch-Site: cross-site`, `Origin: null`, malformed origins, and `Origin`/`Referer` hosts that do not match the request host, `APP_URL`, or `CORS_ALLOWED_ORIGINS`.
 - **Rate Limiting (`createRateLimiter`)**: Applied to `/api/auth/login` (10 req / 15m per IP+email), `/api/auth/register` (10 req / 15m), `/api/auth/forgot-password` (5 req / 15m), `/api/auth/reset-password` (10 req / 15m), `/api/auth/change-password` (10 req / 15m), and `/api/admissions/public` (15 req / 15m). Returns `429` with `Retry-After`.
 - **Background Token Redaction**: After transactional onboarding/password-reset email jobs complete (or exhaust retries), `processPendingJobs()` redacts raw token links from `BackgroundJob.payload` (`[REDACTED AFTER DELIVERY]`).
 - **Input Validation & Size Limits**: Strict Zod schemas (`src/shared/validation.ts`), `64kb` JSON cap on `/api/auth/*`, and `5mb` cap on `/api/*`.

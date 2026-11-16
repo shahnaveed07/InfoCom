@@ -210,6 +210,12 @@ export function csrfOriginGuard(req: Request, res: Response, next: NextFunction)
     const appHost = extractOriginHost(process.env.APP_URL);
     if (appHost) allowedHosts.add(appHost);
   }
+  if (process.env.CORS_ALLOWED_ORIGINS) {
+    for (const entry of process.env.CORS_ALLOWED_ORIGINS.split(',')) {
+      const host = extractOriginHost(entry.trim());
+      if (host) allowedHosts.add(host);
+    }
+  }
 
   if (allowedHosts.size > 0 && !allowedHosts.has(sourceHost)) {
     res.status(403).json({ error: 'Cross-origin state-changing request rejected.' });

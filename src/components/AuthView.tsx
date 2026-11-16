@@ -12,6 +12,7 @@ import {
   MapPin,
   ShieldCheck,
 } from 'lucide-react';
+import studioLabImage from '../assets/images/academy_lab_studio_1794576422024.jpg';
 import type { PublicAcademyInfo, UserPublic } from '../shared/types';
 import { api } from '../utils/api';
 import { BrandCrest } from './public/BrandCrest';
@@ -20,8 +21,6 @@ interface AuthViewProps {
   academy?: PublicAcademyInfo | null;
   onAuthenticated: (user: UserPublic) => void;
 }
-
-const STUDIO_IMAGE_PATH = '/src/assets/images/academy_lab_studio_1794576422024.jpg';
 
 export function AuthView({ academy, onAuthenticated }: AuthViewProps) {
   const [mode, setMode] = useState<'login' | 'forgot'>('login');
@@ -198,7 +197,7 @@ export function AuthView({ academy, onAuthenticated }: AuthViewProps) {
           <div className="relative aspect-[4/3] w-full overflow-hidden rounded-lg border border-slate-700/80 bg-slate-800">
             {!imageFailed ? (
               <img
-                src={STUDIO_IMAGE_PATH}
+                src={studioLabImage}
                 alt="IGS — InfoCom Global Services computer institute training lab with instructor guiding students at workstations"
                 referrerPolicy="no-referrer"
                 onError={() => setImageFailed(true)}

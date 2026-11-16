@@ -19,10 +19,13 @@ All endpoints are mounted under `/api` via `server/app.ts` and protected by `sec
 
 ---
 
-## 2. Public Website API (`server/routes/public.routes.ts`)
+## 2. Health, Readiness & Public Website API (`server/app.ts`, `server/routes/public.routes.ts`)
 
 | Method & Path | Auth | Purpose |
 | --- | --- | --- |
+| `GET /api/health` | Public | Lightweight process health probe (`200 { status: 'ok', service: 'igs-ams-api', ... }`) |
+| `GET /api/health/ready` | Public | Database connectivity readiness probe (`200 { status: 'ready', database: 'connected' }` or `503 { status: 'degraded', database: 'unavailable' }`) |
+| `ANY /api/*` (unmatched) | Public | Always returns structured JSON `404 { error: 'API endpoint not found.', code: 'API_ROUTE_NOT_FOUND' }` instead of SPA `index.html` |
 | `GET /api/public/academy` | Public | Official IGS Sopore branding, slogan, campus address, logo URL & summary stats (zero PII) |
 | `GET /api/public/courses` | Public | Published courses (`isPublished = true`), departments, and upcoming public cohorts (tuition masked when `showTuitionPublicly = false`) |
 | `GET /api/public/courses/:slugOrId` | Public | Published course detail, syllabus modules, and upcoming cohorts (returns `404` if unpublished) |

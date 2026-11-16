@@ -6,6 +6,8 @@ data/
 coverage/
 .playwright-cli/
 .playwright-report/
+playwright-report/
+playwright/.cache/
 test-results/
 .DS_Store
 *.log

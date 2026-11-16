@@ -2,20 +2,23 @@ import React from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowRight, Globe, Mail, MapPin, Phone } from 'lucide-react';
 import type { PublicAcademyInfo } from '../../shared/types';
+import { usePublicSiteData } from '../../utils/public-data';
 
 interface PublicContactPageProps {
   academy: PublicAcademyInfo | null;
 }
 
 export function PublicContactPage({ academy }: PublicContactPageProps) {
-  const instituteName = academy?.name || 'IGS — InfoCom Global Services';
-  const slogan = academy?.slogan || 'Learn Today, Build Tomorrow.';
+  const { academy: siteAcademy } = usePublicSiteData();
+  const effectiveAcademy = academy ?? siteAcademy;
+  const instituteName = effectiveAcademy?.name || 'IGS — InfoCom Global Services';
+  const slogan = effectiveAcademy?.slogan || 'Learn Today, Build Tomorrow.';
   const address =
-    academy?.address ||
+    effectiveAcademy?.address ||
     'Downtown Sopore, Opposite Hassan Motors Petrol Pump, Sopore, Jammu and Kashmir, India.';
-  const phone = academy?.phone?.trim() || '';
-  const email = academy?.email?.trim() || '';
-  const website = academy?.website?.trim() || '';
+  const phone = effectiveAcademy?.phone?.trim() || '';
+  const email = effectiveAcademy?.email?.trim() || '';
+  const website = effectiveAcademy?.website?.trim() || '';
 
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-12 lg:py-16 space-y-10">

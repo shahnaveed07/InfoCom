@@ -3,18 +3,29 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { AlertCircle, ArrowRight, CheckCircle2, FilePlus2, Upload } from 'lucide-react';
 import { formatMoney } from '../../shared/academic';
 import type { PublicAcademyInfo } from '../../shared/types';
-import { api, type PublicAdmissionCatalog } from '../../utils/api';
+import { api, isBackendUnavailableError, type PublicAdmissionCatalog } from '../../utils/api';
+import {
+  fetchPublicAdmissionCatalogWithFallback,
+  usePublicSiteData,
+  type PublicDataSource,
+} from '../../utils/public-data';
 
 interface PublicAdmissionsPageProps {
   academy: PublicAcademyInfo | null;
 }
 
+const OFFLINE_SUBMIT_MESSAGE =
+  'Admission submission is temporarily unavailable while the institute portal is being connected. Your information has not been submitted.';
+
 export function PublicAdmissionsPage({ academy }: PublicAdmissionsPageProps) {
   const [searchParams] = useSearchParams();
   const initialCourseParam = searchParams.get('course') ?? '';
+  const { academy: siteAcademy, source: siteSource } = usePublicSiteData();
 
   const [catalog, setCatalog] = useState<PublicAdmissionCatalog | null>(null);
   const [catalogLoading, setCatalogLoading] = useState(true);
+  const [catalogSource, setCatalogSource] = useState<PublicDataSource>('live');
+  const [backendAvailableForSubmission, setBackendAvailableForSubmission] = useState(true);
   const [appName, setAppName] = useState('');
   const [appEmail, setAppEmail] = useState('');
   const [appPhone, setAppPhone] = useState('');
@@ -44,28 +55,39 @@ export function PublicAdmissionsPage({ academy }: PublicAdmissionsPageProps) {
   } | null>(null);
 
   useEffect(() => {
+    const controller = new AbortController();
     let active = true;
     setCatalogLoading(true);
-    api
-      .fetchPublicAdmissionCatalog()
-      .then((data) => {
+
+    fetchPublicAdmissionCatalogWithFallback({ signal: controller.signal })
+      .then((res) => {
         if (!active) return;
+        const data = res.catalog;
         setCatalog(data);
-        const preferredCourse =
-          data.courses.find((c) => c.id === initialCourseParam) ?? data.courses[0];
-        if (preferredCourse) {
-          setAppCourseId(preferredCourse.id);
-          const matchingBatch = data.batches.find(
-            (b) => b.courseId === preferredCourse.id
-          );
-          setAppBatchId(matchingBatch?.id ?? '');
-        }
+        setCatalogSource(res.source);
+        setBackendAvailableForSubmission(res.backendAvailableForSubmission);
+        setAppCourseId((prevCourseId) => {
+          const stillValid = prevCourseId && data.courses.some((c) => c.id === prevCourseId);
+          if (stillValid) return prevCourseId;
+          const preferredCourse =
+            data.courses.find((c) => c.id === initialCourseParam) ?? data.courses[0];
+          if (preferredCourse) {
+            const matchingBatch = data.batches.find(
+              (b) => b.courseId === preferredCourse.id
+            );
+            setAppBatchId((prevBatch) => prevBatch || matchingBatch?.id || '');
+            return preferredCourse.id;
+          }
+          return '';
+        });
         if (data.feePlans[0]) {
-          setAppFeePlanId(data.feePlans[0].id);
+          setAppFeePlanId((prevFeePlan) => prevFeePlan || data.feePlans[0].id);
         }
       })
       .catch((err) => {
         if (!active) return;
+        if (err instanceof DOMException && err.name === 'AbortError') return;
+        setBackendAvailableForSubmission(false);
         setAppError(
           err instanceof Error
             ? err.message
@@ -77,8 +99,9 @@ export function PublicAdmissionsPage({ academy }: PublicAdmissionsPageProps) {
       });
     return () => {
       active = false;
+      controller.abort();
     };
-  }, [initialCourseParam]);
+  }, [initialCourseParam, siteSource]);
 
   function handleCourseSelect(nextCourseId: string) {
     setAppCourseId(nextCourseId);
@@ -137,6 +160,11 @@ export function PublicAdmissionsPage({ academy }: PublicAdmissionsPageProps) {
       }
     }
 
+    if (!backendAvailableForSubmission) {
+      setAppError(OFFLINE_SUBMIT_MESSAGE);
+      return;
+    }
+
     const selectedCourse = catalog?.courses.find((c) => c.id === appCourseId);
     const selectedBatch = catalog?.batches.find((b) => b.id === appBatchId);
 
@@ -188,15 +216,21 @@ export function PublicAdmissionsPage({ academy }: PublicAdmissionsPageProps) {
       setAppDocMime('');
       setAppDocBase64('');
     } catch (err) {
-      setAppError(
-        err instanceof Error ? err.message : 'Unable to submit admission application.'
-      );
+      if (isBackendUnavailableError(err)) {
+        setBackendAvailableForSubmission(false);
+        setAppError(OFFLINE_SUBMIT_MESSAGE);
+      } else {
+        setAppError(
+          err instanceof Error ? err.message : 'Unable to submit admission application.'
+        );
+      }
     } finally {
       setAppSubmitting(false);
     }
   }
 
-  const instituteName = academy?.name || 'IGS — InfoCom Global Services';
+  const effectiveAcademy = academy ?? siteAcademy;
+  const instituteName = effectiveAcademy?.name || 'IGS — InfoCom Global Services';
 
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-12 space-y-8">
@@ -212,6 +246,19 @@ export function PublicAdmissionsPage({ academy }: PublicAdmissionsPageProps) {
         </div>
         <FilePlus2 className="w-7 h-7 text-blue-800 shrink-0 hidden sm:block" />
       </div>
+
+      {(!backendAvailableForSubmission || catalogSource === 'demo') && (
+        <div
+          role="status"
+          data-testid="admissions-offline-notice"
+          className="flex items-start gap-2.5 p-4 rounded-xl bg-amber-50 border border-amber-300 text-xs text-amber-950"
+        >
+          <AlertCircle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+          <span>
+            <strong>Preview Mode Notice:</strong> Program and fee-plan choices are populated from sample institute data while the backend portal is connecting. Live online submission requires an active backend connection.
+          </span>
+        </div>
+      )}
 
       {appError && (
         <div
@@ -248,7 +295,7 @@ export function PublicAdmissionsPage({ academy }: PublicAdmissionsPageProps) {
       )}
 
       <div className="bg-white border border-slate-200 rounded-xl p-6 sm:p-8">
-        {catalogLoading ? (
+        {catalogLoading && !catalog ? (
           <div className="py-12 text-center text-sm text-slate-500">
             Loading published programs and open batches...
           </div>

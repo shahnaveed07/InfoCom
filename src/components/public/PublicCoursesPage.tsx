@@ -1,45 +1,26 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowRight, BookOpen, Search } from 'lucide-react';
 import { formatMoney } from '../../shared/academic';
-import type { PublicAcademyInfo, PublicCourseSummary } from '../../shared/types';
-import { api } from '../../utils/api';
+import type { PublicAcademyInfo } from '../../shared/types';
+import { usePublicSiteData } from '../../utils/public-data';
+import { DemoPreviewBanner } from './DemoPreviewBanner';
 
 interface PublicCoursesPageProps {
   academy: PublicAcademyInfo | null;
 }
 
 export function PublicCoursesPage({ academy }: PublicCoursesPageProps) {
-  const [courses, setCourses] = useState<PublicCourseSummary[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const {
+    academy: siteAcademy,
+    courses,
+    loading,
+    error,
+    source,
+    isDemoEnvironment,
+  } = usePublicSiteData();
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('All');
-  const [isDemoEnv, setIsDemoEnv] = useState(false);
-
-  useEffect(() => {
-    let active = true;
-    setLoading(true);
-    api
-      .getPublicCourses()
-      .then((res) => {
-        if (!active) return;
-        setCourses(res.courses);
-        setIsDemoEnv(Boolean(res.isDemoEnvironment));
-      })
-      .catch((err) => {
-        if (!active) return;
-        setError(
-          err instanceof Error ? err.message : 'Unable to load published programs.'
-        );
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
 
   const categories = useMemo(() => {
     const set = new Set<string>();
@@ -61,15 +42,17 @@ export function PublicCoursesPage({ academy }: PublicCoursesPageProps) {
     });
   }, [courses, categoryFilter, search]);
 
-  const currency = academy?.currency || 'INR';
-  const showDemoNotice = isDemoEnv || courses.some((c) => Boolean(c.isDemo));
+  const effectiveAcademy = academy ?? siteAcademy;
+  const currency = effectiveAcademy?.currency || 'INR';
+  const showDevNotice =
+    source === 'live' && (isDemoEnvironment || courses.some((c) => Boolean(c.isDemo)));
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 space-y-8">
       <div className="border-b border-slate-200 pb-6 flex flex-col md:flex-row md:items-end justify-between gap-4">
         <div>
           <p className="text-xs font-semibold text-blue-800">
-            {academy?.name || 'IGS — InfoCom Global Services'}
+            {effectiveAcademy?.name || 'IGS — InfoCom Global Services'}
           </p>
           <h1 className="mt-1 font-display text-3xl font-bold tracking-tight text-slate-900">
             Training Programs Catalog
@@ -88,16 +71,7 @@ export function PublicCoursesPage({ academy }: PublicCoursesPageProps) {
         </Link>
       </div>
 
-      {showDemoNotice && (
-        <div
-          role="status"
-          className="px-4 py-2.5 bg-amber-50 border border-amber-300 rounded-lg text-xs text-amber-950 flex flex-wrap items-center justify-between gap-2"
-        >
-          <span>
-            <strong>Development Sample Catalog:</strong> Marked sample programs come from the local development seed (<code>NODE_ENV=development</code>) and are excluded automatically in production.
-          </span>
-        </div>
-      )}
+      {showDevNotice && <DemoPreviewBanner source="live" isDemoEnvironment />}
 
       {/* Filters */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">

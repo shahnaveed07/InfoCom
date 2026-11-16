@@ -2,7 +2,9 @@ import React, { useState } from 'react';
 import { Link, NavLink } from 'react-router-dom';
 import { Menu, X } from 'lucide-react';
 import type { PublicAcademyInfo, UserPublic } from '../../shared/types';
+import { usePublicSiteData } from '../../utils/public-data';
 import { BrandCrest } from './BrandCrest';
+import { DemoPreviewBanner } from './DemoPreviewBanner';
 
 interface PublicLayoutProps {
   academy: PublicAcademyInfo | null;
@@ -24,11 +26,13 @@ export function PublicLayout({
   children,
 }: PublicLayoutProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const publicSite = usePublicSiteData();
 
-  const instituteName = academy?.name || 'IGS — InfoCom Global Services';
-  const slogan = academy?.slogan || 'Learn Today, Build Tomorrow.';
+  const effectiveAcademy = academy ?? publicSite.academy;
+  const instituteName = effectiveAcademy?.name || 'IGS — InfoCom Global Services';
+  const slogan = effectiveAcademy?.slogan || 'Learn Today, Build Tomorrow.';
   const address =
-    academy?.address ||
+    effectiveAcademy?.address ||
     'Downtown Sopore, Opposite Hassan Motors Petrol Pump, Sopore, Jammu and Kashmir, India.';
 
   const portalLabel = currentUser ? 'Open Portal' : 'Portal Login';
@@ -44,7 +48,7 @@ export function PublicLayout({
             className="flex items-center gap-3 text-slate-900 whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 rounded-md"
           >
             <BrandCrest
-              logoDataUrl={academy?.logoDataUrl}
+              logoDataUrl={effectiveAcademy?.logoDataUrl}
               name={instituteName}
               sizeClass="h-10 w-auto max-w-[128px]"
             />
@@ -124,6 +128,14 @@ export function PublicLayout({
         )}
       </header>
 
+      {publicSite.initialized && publicSite.source === 'demo' && (
+        <div className="bg-amber-50/70 border-b border-amber-200">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2.5">
+            <DemoPreviewBanner source="demo" />
+          </div>
+        </div>
+      )}
+
       <main className="flex-1">{children}</main>
 
       <footer className="bg-slate-900 text-slate-300 border-t border-slate-800">
@@ -131,7 +143,7 @@ export function PublicLayout({
           <div className="md:col-span-5 space-y-3">
             <div className="flex items-center gap-3 text-white">
               <BrandCrest
-                logoDataUrl={academy?.logoDataUrl}
+                logoDataUrl={effectiveAcademy?.logoDataUrl}
                 name={instituteName}
                 sizeClass="h-12 w-auto max-w-[150px]"
                 darkSurface
@@ -178,38 +190,38 @@ export function PublicLayout({
             <p className="font-display font-semibold text-white text-sm">Campus &amp; Portal</p>
             <div className="space-y-1.5 text-slate-400">
               <p>{address}</p>
-              {academy?.phone && academy.phone.trim().length > 0 && (
+              {effectiveAcademy?.phone && effectiveAcademy.phone.trim().length > 0 && (
                 <p>
                   Phone:{' '}
                   <a
-                    href={`tel:${academy.phone.trim()}`}
+                    href={`tel:${effectiveAcademy.phone.trim()}`}
                     className="text-slate-200 hover:text-white font-mono"
                   >
-                    {academy.phone.trim()}
+                    {effectiveAcademy.phone.trim()}
                   </a>
                 </p>
               )}
-              {academy?.email && academy.email.trim().length > 0 && (
+              {effectiveAcademy?.email && effectiveAcademy.email.trim().length > 0 && (
                 <p>
                   Email:{' '}
                   <a
-                    href={`mailto:${academy.email.trim()}`}
+                    href={`mailto:${effectiveAcademy.email.trim()}`}
                     className="text-slate-200 hover:text-white"
                   >
-                    {academy.email.trim()}
+                    {effectiveAcademy.email.trim()}
                   </a>
                 </p>
               )}
-              {academy?.website && academy.website.trim().length > 0 && (
+              {effectiveAcademy?.website && effectiveAcademy.website.trim().length > 0 && (
                 <p>
                   Website:{' '}
                   <a
-                    href={academy.website.trim()}
+                    href={effectiveAcademy.website.trim()}
                     target="_blank"
                     rel="noreferrer"
                     className="text-slate-200 hover:text-white"
                   >
-                    {academy.website.trim()}
+                    {effectiveAcademy.website.trim()}
                   </a>
                 </p>
               )}

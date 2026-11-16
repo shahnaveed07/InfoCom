@@ -1,15 +1,15 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowRight, BookOpen, CheckCircle2, MapPin, ShieldCheck } from 'lucide-react';
+import studioLabImage from '../../assets/images/academy_lab_studio_1794576422024.jpg';
 import { formatMoney } from '../../shared/academic';
-import type { PublicAcademyInfo, PublicCourseSummary } from '../../shared/types';
-import { api } from '../../utils/api';
+import type { PublicAcademyInfo } from '../../shared/types';
+import { usePublicSiteData } from '../../utils/public-data';
+import { DemoPreviewBanner } from './DemoPreviewBanner';
 
 interface PublicHomePageProps {
   academy: PublicAcademyInfo | null;
 }
-
-const STUDIO_IMAGE_PATH = '/src/assets/images/academy_lab_studio_1794576422024.jpg';
 
 const ADMISSIONS_STEPS = [
   {
@@ -35,44 +35,26 @@ const ADMISSIONS_STEPS = [
 ] as const;
 
 export function PublicHomePage({ academy }: PublicHomePageProps) {
-  const [courses, setCourses] = useState<PublicCourseSummary[]>([]);
-  const [loadingCourses, setLoadingCourses] = useState(true);
-  const [courseError, setCourseError] = useState('');
-  const [isDemoEnv, setIsDemoEnv] = useState(false);
+  const {
+    academy: siteAcademy,
+    courses,
+    loading: loadingCourses,
+    error: courseError,
+    source,
+    isDemoEnvironment,
+  } = usePublicSiteData();
   const [imageFailed, setImageFailed] = useState(false);
 
-  useEffect(() => {
-    let active = true;
-    setLoadingCourses(true);
-    api
-      .getPublicCourses()
-      .then((res) => {
-        if (!active) return;
-        setCourses(res.courses);
-        setIsDemoEnv(Boolean(res.isDemoEnvironment));
-      })
-      .catch((err) => {
-        if (!active) return;
-        setCourseError(
-          err instanceof Error ? err.message : 'Unable to load published programs.'
-        );
-      })
-      .finally(() => {
-        if (active) setLoadingCourses(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  const instituteName = academy?.name || 'IGS — InfoCom Global Services';
-  const slogan = academy?.slogan || 'Learn Today, Build Tomorrow.';
+  const effectiveAcademy = academy ?? siteAcademy;
+  const instituteName = effectiveAcademy?.name || 'IGS — InfoCom Global Services';
+  const slogan = effectiveAcademy?.slogan || 'Learn Today, Build Tomorrow.';
   const address =
-    academy?.address ||
+    effectiveAcademy?.address ||
     'Downtown Sopore, Opposite Hassan Motors Petrol Pump, Sopore, Jammu and Kashmir, India.';
-  const currency = academy?.currency || 'INR';
+  const currency = effectiveAcademy?.currency || 'INR';
   const featuredCourses = courses.slice(0, 6);
-  const showDemoNotice = isDemoEnv || featuredCourses.some((c) => Boolean(c.isDemo));
+  const showDevNotice =
+    source === 'live' && (isDemoEnvironment || featuredCourses.some((c) => Boolean(c.isDemo)));
 
   return (
     <div>
@@ -121,7 +103,7 @@ export function PublicHomePage({ academy }: PublicHomePageProps) {
             <div className="h-full min-h-[280px] lg:min-h-[380px] rounded-xl overflow-hidden border border-slate-700 bg-slate-800 relative">
               {!imageFailed ? (
                 <img
-                  src={STUDIO_IMAGE_PATH}
+                  src={studioLabImage}
                   alt="IGS — InfoCom Global Services computer institute workstation lab with instructor"
                   referrerPolicy="no-referrer"
                   onError={() => setImageFailed(true)}
@@ -156,7 +138,9 @@ export function PublicHomePage({ academy }: PublicHomePageProps) {
               Published Training Programs
             </h2>
             <p className="mt-1.5 text-sm text-slate-600 max-w-2xl">
-              Live institute curriculum managed directly from the {instituteName} Academic Catalog.
+              {source === 'demo'
+                ? `Sample IGS computer education programs previewed for ${instituteName}.`
+                : `Live institute curriculum managed directly from the ${instituteName} Academic Catalog.`}
             </p>
           </div>
           <Link
@@ -168,13 +152,8 @@ export function PublicHomePage({ academy }: PublicHomePageProps) {
           </Link>
         </div>
 
-        {showDemoNotice && (
-          <div
-            role="status"
-            className="mt-6 px-4 py-2.5 bg-amber-50 border border-amber-300 rounded-lg text-xs text-amber-950"
-          >
-            <strong>Development Sample Catalog:</strong> Marked sample programs come from the local development seed (<code>NODE_ENV=development</code>) and are excluded automatically in production.
-          </div>
+        {showDevNotice && (
+          <DemoPreviewBanner source="live" isDemoEnvironment className="mt-6" />
         )}
 
         {loadingCourses ? (

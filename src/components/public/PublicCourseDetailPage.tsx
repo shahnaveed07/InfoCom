@@ -3,7 +3,13 @@ import { Link, useParams } from 'react-router-dom';
 import { ArrowLeft, ArrowRight, CheckCircle2, Clock, Layers } from 'lucide-react';
 import { formatMoney } from '../../shared/academic';
 import type { PublicAcademyInfo, PublicCourseDetail } from '../../shared/types';
-import { api } from '../../utils/api';
+import { ApiError } from '../../utils/api';
+import {
+  fetchPublicCourseDetailWithFallback,
+  usePublicSiteData,
+  type PublicDataSource,
+} from '../../utils/public-data';
+import { DemoPreviewBanner } from './DemoPreviewBanner';
 
 interface PublicCourseDetailPageProps {
   academy: PublicAcademyInfo | null;
@@ -11,36 +17,66 @@ interface PublicCourseDetailPageProps {
 
 export function PublicCourseDetailPage({ academy }: PublicCourseDetailPageProps) {
   const { slug } = useParams<{ slug: string }>();
+  const { academy: siteAcademy, source: siteSource } = usePublicSiteData();
   const [course, setCourse] = useState<PublicCourseDetail | null>(null);
+  const [loadedSlug, setLoadedSlug] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [notFound, setNotFound] = useState(false);
+  const [detailSource, setDetailSource] = useState<PublicDataSource>('live');
   const [isDemoEnv, setIsDemoEnv] = useState(false);
 
   useEffect(() => {
-    if (!slug) return;
+    if (!slug) {
+      setCourse(null);
+      setLoadedSlug('');
+      setNotFound(true);
+      setLoading(false);
+      return;
+    }
+
+    const controller = new AbortController();
     let active = true;
-    setLoading(true);
+    if (loadedSlug !== slug) {
+      setLoading(true);
+    }
     setError('');
-    api
-      .getPublicCourseDetail(slug)
+    setNotFound(false);
+
+    fetchPublicCourseDetailWithFallback(slug, { signal: controller.signal })
       .then((res) => {
         if (!active) return;
         setCourse(res.course);
+        setLoadedSlug(slug);
+        setDetailSource(res.source);
         setIsDemoEnv(Boolean(res.isDemoEnvironment));
       })
       .catch((err) => {
         if (!active) return;
-        setError(
-          err instanceof Error ? err.message : 'Unable to load course details.'
-        );
+        if (err instanceof DOMException && err.name === 'AbortError') return;
+        setCourse(null);
+        setLoadedSlug('');
+        if (err instanceof ApiError && err.kind === 'not_found') {
+          setNotFound(true);
+          setError(err.message || 'This training program is either unpublished or unavailable.');
+        } else {
+          setNotFound(false);
+          setError(
+            err instanceof Error
+              ? err.message
+              : 'Course syllabus details are temporarily unavailable.'
+          );
+        }
       })
       .finally(() => {
         if (active) setLoading(false);
       });
+
     return () => {
       active = false;
+      controller.abort();
     };
-  }, [slug]);
+  }, [slug, siteSource]);
 
   if (loading) {
     return (
@@ -55,10 +91,12 @@ export function PublicCourseDetailPage({ academy }: PublicCourseDetailPageProps)
     return (
       <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-16 text-center space-y-4">
         <h1 className="font-display text-2xl font-bold text-slate-900">
-          Program Not Found
+          {notFound ? 'Program Not Found' : 'Program Details Temporarily Unavailable'}
         </h1>
         <p className="text-sm text-slate-600">
-          {error || 'This training program is either unpublished or unavailable.'}
+          {notFound
+            ? error || 'This training program is either unpublished or unavailable.'
+            : error || 'Unable to load syllabus details while the institute portal is connecting.'}
         </p>
         <Link
           to="/courses"
@@ -71,7 +109,9 @@ export function PublicCourseDetailPage({ academy }: PublicCourseDetailPageProps)
     );
   }
 
-  const currency = course.currency || academy?.currency || 'INR';
+  const effectiveAcademy = academy ?? siteAcademy;
+  const currency = course.currency || effectiveAcademy?.currency || 'INR';
+  const showSampleBadge = Boolean(course.isDemo || detailSource === 'demo');
 
   return (
     <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-12 space-y-10">
@@ -85,21 +125,11 @@ export function PublicCourseDetailPage({ academy }: PublicCourseDetailPageProps)
         </Link>
       </div>
 
-      {(isDemoEnv || course.isDemo) && (
-        <div
-          role="status"
-          className="px-4 py-2.5 bg-amber-50 border border-amber-300 rounded-lg text-xs text-amber-950"
-        >
-          {course.isDemo ? (
-            <>
-              <strong>Development Sample Program:</strong> This syllabus is a seeded development fixture (<code>NODE_ENV=development</code>) and is excluded automatically in production environments.
-            </>
-          ) : (
-            <>
-              <strong>Development Environment Notice:</strong> Local development sample catalog data is active alongside Admin-published programs and is excluded automatically in production.
-            </>
-          )}
-        </div>
+      {detailSource === 'demo' && siteSource !== 'demo' && (
+        <DemoPreviewBanner source="demo" variant="detail" />
+      )}
+      {detailSource === 'live' && (isDemoEnv || course.isDemo) && (
+        <DemoPreviewBanner source="live" isDemoEnvironment variant="detail" />
       )}
 
       {/* Header */}
@@ -115,7 +145,7 @@ export function PublicCourseDetailPage({ academy }: PublicCourseDetailPageProps)
                 <span>{course.departmentName}</span>
               </>
             )}
-            {course.isDemo && (
+            {showSampleBadge && (
               <span className="px-1.5 py-0.5 text-[10px] font-medium bg-amber-50 text-amber-900 border border-amber-300 rounded">
                 Sample Program
               </span>

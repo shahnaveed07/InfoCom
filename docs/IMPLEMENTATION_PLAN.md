@@ -16,5 +16,7 @@ All phases below have been implemented and stabilized against the single **Postg
    - `npm run db:seed:demo` (`prisma/seed-demo.ts`) requires `NODE_ENV=development` and `ALLOW_DEMO_SEED=true`, uses env-provided or ephemeral generated passwords (zero hardcoded secrets), and hides `isDemo` courses from public endpoints in production.
 4. **Academic, Admissions, Finance, Storage, Email & Reporting Operations:**
    - Completed multi-type assessments, bulk attendance & audit history, fee plans/structures/discounts/scholarships/refunds, private object storage (`local`/`s3`) + SHA-256 verified legacy Base64 migration (`npm run db:migrate-documents`), branded PDF+QR certificates, persistent `BackgroundJob` email queue + `npm run email:verify`, and role-scoped CSV/PDF exports.
-5. **CI & Package Management Standardization:**
-   - Standardized on `npm` with a synchronized `package-lock.json` for reproducible `npm ci` runs in GitHub Actions (`.github/workflows/ci.yml`).
+5. **CI, Package Management & 404/Fallback Stabilization:**
+   - Standardized on `npm` with a synchronized `package-lock.json` and full Playwright browser E2E verification (`npm run test:e2e`) in GitHub Actions (`.github/workflows/ci.yml`).
+   - Added `/api/health`, `/api/health/ready`, terminal `/api/*` JSON `404` handler, bundled Vite ES asset imports, configurable `VITE_API_BASE_URL`, and API-first `DEMO PREVIEW` fallback (`docs/404_ROOT_CAUSE.md`, `docs/PUBLIC_DEMO_FALLBACK.md`).
+
