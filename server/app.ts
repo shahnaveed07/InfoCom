@@ -11,6 +11,8 @@ import { adminOpsRouter } from './routes/admin-ops.routes.ts';
 import { admissionsRouter } from './routes/admissions.routes.ts';
 import { authRouter } from './routes/auth.routes.ts';
 import { financeRouter } from './routes/finance.routes.ts';
+import { publicRouter } from './routes/public.routes.ts';
+import { reportsRouter } from './routes/reports.routes.ts';
 
 export function createApiApp(): express.Express {
   const app = express();
@@ -20,6 +22,8 @@ export function createApiApp(): express.Express {
   app.use(express.json({ limit: '5mb' }));
 
   app.use('/api', csrfOriginGuard);
+  app.use('/api/public', publicRouter);
+  app.use('/api/reports', reportsRouter);
   app.use('/api', authRouter);
   app.use('/api', admissionsRouter);
   app.use('/api', academicsRouter);

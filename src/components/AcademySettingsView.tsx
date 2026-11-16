@@ -901,22 +901,16 @@ export function AcademySettingsView({
                     Institution Logo (PNG, JPEG, WebP, or SVG under 480 KB)
                   </span>
                   <div className="flex flex-wrap items-center gap-4">
-                    {logoDataUrl ? (
-                      <img
-                        src={logoDataUrl}
-                        alt="Academy logo preview"
-                        className="w-12 h-12 rounded-lg border border-slate-200 object-contain bg-white p-1"
-                      />
-                    ) : (
-                      <div className="w-12 h-12 rounded-lg border border-dashed border-slate-300 flex items-center justify-center text-slate-400">
-                        <GraduationCap className="w-5 h-5" />
-                      </div>
-                    )}
+                    <img
+                      src={logoDataUrl || '/assets/aistudio/IMG-20261110-WA0004_ac23d401.jpg'}
+                      alt="Academy logo preview"
+                      className="h-14 w-auto max-w-[160px] rounded-lg border border-slate-200 object-contain bg-[#EAEAE8] p-1"
+                    />
                     <label
                       htmlFor="acad-logo-upload"
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg cursor-pointer"
                     >
-                      <span>{logoDataUrl ? 'Replace Logo' : 'Upload Logo'}</span>
+                      <span>{logoDataUrl ? 'Replace Logo' : 'Upload Custom Override'}</span>
                       <input
                         id="acad-logo-upload"
                         type="file"

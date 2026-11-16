@@ -23,8 +23,12 @@ import type {
   InstructorDirectoryRow,
   InstructorPermissionKey,
   InvoiceDetailPayload,
+  NotificationPreferenceItem,
   PaginatedStudentsResult,
   PaymentMethod,
+  PublicAcademyInfo,
+  PublicCourseDetail,
+  PublicCourseSummary,
   StudentDetailPayload,
   UserAccountStatus,
   UserPublic,
@@ -92,24 +96,49 @@ async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
   return data as T;
 }
 
+async function downloadBinaryFile(url: string, fallbackFileName: string): Promise<void> {
+  const res = await fetch(url, { credentials: 'same-origin' });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(
+      typeof errData?.error === 'string'
+        ? errData.error
+        : `Failed to download file (${res.status}).`
+    );
+  }
+  const disposition = res.headers.get('content-disposition') ?? '';
+  const match = /filename="([^"]+)"/.exec(disposition);
+  const fileName = match?.[1] || fallbackFileName;
+  const blob = await res.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = objectUrl;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(objectUrl);
+}
+
 export const api = {
+  getPublicAcademy: () => requestJson<PublicAcademyInfo>('/api/public/academy'),
+
+  getPublicCourses: () =>
+    requestJson<{ academy: PublicAcademyInfo; courses: PublicCourseSummary[] }>(
+      '/api/public/courses'
+    ),
+
+  getPublicCourseDetail: (slugOrId: string) =>
+    requestJson<{ academy: PublicAcademyInfo; course: PublicCourseDetail }>(
+      `/api/public/courses/${encodeURIComponent(slugOrId)}`
+    ),
+
   getMe: () => requestJson<{ user: UserPublic | null }>('/api/auth/me'),
 
   login: (email: string, password: string) =>
     requestJson<{ user: UserPublic }>('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
-    }),
-
-  register: (payload: {
-    name: string;
-    email: string;
-    password: string;
-    phone?: string;
-  }) =>
-    requestJson<{ user: UserPublic }>('/api/auth/register', {
-      method: 'POST',
-      body: JSON.stringify(payload),
     }),
 
   logout: () =>
@@ -411,6 +440,7 @@ export const api = {
   // Courses & Cohorts
   createCourse: (payload: {
     code: string;
+    slug?: string;
     title: string;
     track: string;
     category?: string;
@@ -420,6 +450,8 @@ export const api = {
     learningObjectives?: string[];
     passingScore?: number;
     minAttendanceRate?: number;
+    isPublished?: boolean;
+    showTuitionPublicly?: boolean;
     gradingConfig?: {
       scaleName?: string;
       passingGrade?: string;
@@ -435,7 +467,7 @@ export const api = {
       labHours: number;
     }>;
   }) =>
-    requestJson<{ courseId: string; dashboard: DashboardPayload }>('/api/courses', {
+    requestJson<{ courseId: string; slug?: string; dashboard: DashboardPayload }>('/api/courses', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
@@ -443,6 +475,7 @@ export const api = {
   updateCourse: (
     courseId: string,
     payload: {
+      slug?: string;
       title?: string;
       track?: string;
       category?: string;
@@ -452,6 +485,8 @@ export const api = {
       learningObjectives?: string[];
       passingScore?: number;
       minAttendanceRate?: number;
+      isPublished?: boolean;
+      showTuitionPublicly?: boolean;
       gradingConfig?: {
         scaleName?: string;
         passingGrade?: string;
@@ -966,6 +1001,9 @@ export const api = {
       method: 'PATCH',
     }),
 
+  downloadDocumentAsset: (docId: string, fallbackFileName = 'document') =>
+    downloadBinaryFile(`/api/documents/${encodeURIComponent(docId)}/download`, fallbackFileName),
+
   // Certificates
   issueCertificate: (payload: { studentId: string; courseId: string }) =>
     requestJson<{ certificateCode: string; dashboard: DashboardPayload }>(
@@ -990,7 +1028,13 @@ export const api = {
       `/api/certificates/verify/${encodeURIComponent(codeOrHash.trim())}`
     ),
 
-  // Notifications
+  downloadCertificatePdf: (certId: string, certificateCode: string) =>
+    downloadBinaryFile(
+      `/api/certificates/${encodeURIComponent(certId)}/download`,
+      `${certificateCode}.pdf`
+    ),
+
+  // Notifications & Reports
   runSessionReminders: () =>
     requestJson<{ createdCount: number; dashboard: DashboardPayload }>(
       '/api/notifications/run-reminders',
@@ -1007,6 +1051,33 @@ export const api = {
     requestJson<{ dashboard: DashboardPayload }>(
       '/api/notifications/read-all',
       { method: 'POST' }
+    ),
+
+  getNotificationPreferences: () =>
+    requestJson<{ preferences: NotificationPreferenceItem[] }>(
+      '/api/notifications/preferences'
+    ),
+
+  updateNotificationPreferences: (preferences: NotificationPreferenceItem[]) =>
+    requestJson<{ ok: boolean; preferences: NotificationPreferenceItem[] }>(
+      '/api/notifications/preferences',
+      {
+        method: 'PUT',
+        body: JSON.stringify({ preferences }),
+      }
+    ),
+
+  downloadReport: (
+    kind:
+      | 'academic-progress'
+      | 'attendance-summary'
+      | 'financial-collections'
+      | 'admissions-funnel',
+    format: 'csv' | 'pdf'
+  ) =>
+    downloadBinaryFile(
+      `/api/reports/${encodeURIComponent(kind)}?format=${format}`,
+      `igs-${kind}.${format}`
     ),
 
   // Phase 4 Admin Analytics & Master Data
@@ -1059,9 +1130,14 @@ export const api = {
     dateOfBirth?: string | null;
     address?: string;
     emergencyContact?: string;
+    guardianName?: string;
+    guardianRelationship?: string;
+    guardianPhone?: string;
     academicStanding?: string;
     initialCourseId?: string;
     initialCohortId?: string;
+    enrollmentStatus?: 'Active' | 'Waitlisted';
+    issueTuitionInvoice?: boolean;
   }) =>
     requestJson<{
       student: UserPublic;
@@ -1076,6 +1152,17 @@ export const api = {
         body: JSON.stringify(payload),
       }
     ),
+
+  resetStudentPassword: (studentId: string) =>
+    requestJson<{
+      ok: boolean;
+      onboardingToken: string;
+      onboardingPath: string;
+      onboardingExpiresAt: string;
+      user: UserPublic;
+    }>(`/api/students/${encodeURIComponent(studentId)}/reset-password`, {
+      method: 'POST',
+    }),
 
   getStudentDetail: (studentId: string) =>
     requestJson<StudentDetailPayload>(`/api/students/${studentId}/detail`),

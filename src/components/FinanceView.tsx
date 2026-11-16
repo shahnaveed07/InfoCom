@@ -4,6 +4,7 @@ import {
   BadgePercent,
   CheckCircle2,
   CreditCard,
+  Download,
   FileText,
   GraduationCap,
   Layers,
@@ -69,6 +70,7 @@ export function FinanceView({
 
   const [notice, setNotice] = useState('');
   const [errorBanner, setErrorBanner] = useState('');
+  const [exportingFormat, setExportingFormat] = useState<'csv' | 'pdf' | null>(null);
 
   // Issue Invoice modal state
   const [invoiceModalOpen, setInvoiceModalOpen] = useState(false);
@@ -597,24 +599,70 @@ export function FinanceView({
             </button>
           </div>
 
-          {isAdmin && sectionTab === 'ledger' && (
-            <button
-              type="button"
-              onClick={() => {
-                const selectedCourse = data.courses.find((c) => c.id === courseId);
-                if (selectedCourse) {
-                  setAmountDue(selectedCourse.tuitionFee);
-                  setDescription(`${selectedCourse.code} ${selectedCourse.title} Tuition`);
-                }
-                setSelectedFeeStructureId('');
-                setInvError('');
-                setInvoiceModalOpen(true);
-              }}
-              className="inline-flex items-center gap-2 px-4 py-2 text-xs font-medium text-white bg-blue-700 hover:bg-blue-800 rounded-lg cursor-pointer whitespace-nowrap shrink-0"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Issue Fee Invoice</span>
-            </button>
+          {isAdmin && (
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <button
+                type="button"
+                disabled={exportingFormat !== null}
+                onClick={async () => {
+                  setErrorBanner('');
+                  setExportingFormat('csv');
+                  try {
+                    await api.downloadReport('financial-collections', 'csv');
+                  } catch (err) {
+                    setErrorBanner(
+                      err instanceof Error ? err.message : 'Unable to export finance CSV.'
+                    );
+                  } finally {
+                    setExportingFormat(null);
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg cursor-pointer whitespace-nowrap disabled:opacity-60"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>{exportingFormat === 'csv' ? 'Exporting...' : 'Ledger CSV'}</span>
+              </button>
+              <button
+                type="button"
+                disabled={exportingFormat !== null}
+                onClick={async () => {
+                  setErrorBanner('');
+                  setExportingFormat('pdf');
+                  try {
+                    await api.downloadReport('financial-collections', 'pdf');
+                  } catch (err) {
+                    setErrorBanner(
+                      err instanceof Error ? err.message : 'Unable to export finance PDF.'
+                    );
+                  } finally {
+                    setExportingFormat(null);
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg cursor-pointer whitespace-nowrap disabled:opacity-60"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>{exportingFormat === 'pdf' ? 'Generating...' : 'Ledger PDF'}</span>
+              </button>
+              {sectionTab === 'ledger' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const selectedCourse = data.courses.find((c) => c.id === courseId);
+                    if (selectedCourse) {
+                      setAmountDue(selectedCourse.tuitionFee);
+                      setDescription(`${selectedCourse.code} ${selectedCourse.title} Tuition`);
+                    }
+                    setSelectedFeeStructureId('');
+                    setInvError('');
+                    setInvoiceModalOpen(true);
+                  }}
+                  className="inline-flex items-center gap-2 px-4 py-2 text-xs font-medium text-white bg-blue-700 hover:bg-blue-800 rounded-lg cursor-pointer whitespace-nowrap"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>Issue Fee Invoice</span>
+                </button>
+              )}
+            </div>
           )}
         </div>
 
@@ -2463,14 +2511,15 @@ export function FinanceView({
             {/* Official Letterhead */}
             <div className="flex items-start justify-between gap-4 border-b border-slate-200 pb-4">
               <div className="flex items-start gap-3">
-                {invoicePreview.academy.logoDataUrl && (
-                  <img
-                    src={invoicePreview.academy.logoDataUrl}
-                    alt={`${invoicePreview.academy.name} logo`}
-                    referrerPolicy="no-referrer"
-                    className="w-12 h-12 object-contain border border-slate-200 rounded-lg p-1 bg-white shrink-0"
-                  />
-                )}
+                <img
+                  src={
+                    invoicePreview.academy.logoDataUrl ||
+                    '/assets/aistudio/IMG-20261110-WA0004_ac23d401.jpg'
+                  }
+                  alt={`${invoicePreview.academy.name} logo`}
+                  referrerPolicy="no-referrer"
+                  className="h-12 w-auto max-w-[140px] object-contain border border-slate-200 rounded-lg p-1 bg-[#EAEAE8] shrink-0"
+                />
                 <div>
                   <p className="text-xs font-semibold text-blue-700">
                     {invoicePreview.academy.name} · Official Fee Invoice

@@ -1,5 +1,6 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
+  AlertCircle,
   Award,
   Bell,
   CalendarClock,
@@ -10,6 +11,7 @@ import {
   CreditCard,
   FileText,
   MapPin,
+  Sliders,
 } from 'lucide-react';
 import {
   calculateLetterGrade,
@@ -18,7 +20,8 @@ import {
   isInactiveEnrollmentStatus,
   toCents,
 } from '../shared/academic';
-import type { DashboardPayload } from '../shared/types';
+import type { DashboardPayload, NotificationPreferenceItem } from '../shared/types';
+import { api } from '../utils/api';
 import type { NavSection } from './Sidebar';
 
 interface StudentDashboardProps {
@@ -35,6 +38,72 @@ export function StudentDashboard({
   onNavigate,
 }: StudentDashboardProps) {
   const [notifFilter, setNotifFilter] = useState<'all' | 'unread'>('all');
+  const [prefs, setPrefs] = useState<NotificationPreferenceItem[]>([]);
+  const [prefsNotice, setPrefsNotice] = useState('');
+  const [prefsError, setPrefsError] = useState('');
+  const [savingPrefs, setSavingPrefs] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    api
+      .getNotificationPreferences()
+      .then((res) => {
+        if (active) setPrefs(res.preferences);
+      })
+      .catch(() => {
+        // Non-blocking fallback
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  async function handleTogglePreference(
+    kind: string,
+    channel: NotificationPreferenceItem['channel']
+  ) {
+    const updated = prefs.map((item) =>
+      item.kind === kind && item.channel === channel
+        ? { ...item, enabled: !item.enabled }
+        : item
+    );
+    setPrefs(updated);
+    setSavingPrefs(true);
+    setPrefsError('');
+    setPrefsNotice('');
+    try {
+      const res = await api.updateNotificationPreferences(updated);
+      setPrefs(res.preferences);
+      setPrefsNotice('Alert channel preference saved.');
+    } catch (err) {
+      setPrefsError(
+        err instanceof Error ? err.message : 'Unable to save preference.'
+      );
+    } finally {
+      setSavingPrefs(false);
+    }
+  }
+
+  const prefKinds = useMemo(() => {
+    const labels: Record<string, string> = {
+      all: 'All Institute Alerts',
+      attendance: 'Attendance Updates',
+      reminder: 'Class Reminders',
+      grade: 'Module & Exam Grades',
+      enrollment: 'Enrollment Status',
+      finance: 'Tuition & Receipts',
+      certificate: 'Certificates',
+    };
+    const kinds = Array.from(new Set(prefs.map((p) => p.kind)));
+    return kinds.map((kind) => ({
+      kind,
+      label: labels[kind] ?? kind,
+      inAppEnabled:
+        prefs.find((p) => p.kind === kind && p.channel === 'in_app')?.enabled ?? true,
+      emailEnabled:
+        prefs.find((p) => p.kind === kind && p.channel === 'email')?.enabled ?? true,
+    }));
+  }, [prefs]);
 
   const report = useMemo(
     () =>
@@ -410,110 +479,179 @@ export function StudentDashboard({
           </section>
         </div>
 
-        {/* Right Column: Automated Notification Center */}
-        <section
-          id="student-notifications-panel"
-          aria-label="Automated notifications"
-          className="bg-white border border-slate-200 rounded-xl overflow-hidden flex flex-col h-fit"
-        >
-          <div className="px-5 py-4 border-b border-slate-200 space-y-3">
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <Bell className="w-4 h-4 text-blue-700" />
-                <h2 className="font-display text-base font-semibold text-slate-900">
-                  Notification Center
-                </h2>
+        {/* Right Column: Automated Notification Center & Preferences */}
+        <div className="space-y-6 h-fit">
+          <section
+            id="student-notifications-panel"
+            aria-label="Automated notifications"
+            className="bg-white border border-slate-200 rounded-xl overflow-hidden flex flex-col"
+          >
+            <div className="px-5 py-4 border-b border-slate-200 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Bell className="w-4 h-4 text-blue-700" />
+                  <h2 className="font-display text-base font-semibold text-slate-900">
+                    Notification Center
+                  </h2>
+                </div>
+                {unreadCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={onMarkAllRead}
+                    className="inline-flex items-center gap-1 text-xs font-medium text-blue-700 hover:text-blue-900 cursor-pointer whitespace-nowrap"
+                  >
+                    <CheckCheck className="w-3.5 h-3.5" />
+                    <span>Mark all read</span>
+                  </button>
+                )}
               </div>
-              {unreadCount > 0 && (
+
+              <div
+                className="grid grid-cols-2 gap-1 p-1 bg-slate-100 rounded-lg"
+                role="group"
+                aria-label="Filter notifications"
+              >
                 <button
                   type="button"
-                  onClick={onMarkAllRead}
-                  className="inline-flex items-center gap-1 text-xs font-medium text-blue-700 hover:text-blue-900 cursor-pointer whitespace-nowrap"
-                >
-                  <CheckCheck className="w-3.5 h-3.5" />
-                  <span>Mark all read</span>
-                </button>
-              )}
-            </div>
-
-            <div
-              className="grid grid-cols-2 gap-1 p-1 bg-slate-100 rounded-lg"
-              role="group"
-              aria-label="Filter notifications"
-            >
-              <button
-                type="button"
-                onClick={() => setNotifFilter('all')}
-                className={`py-1.5 text-xs font-medium rounded-md cursor-pointer ${
-                  notifFilter === 'all'
-                    ? 'bg-white text-slate-900 shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                All ({data.notifications.length})
-              </button>
-              <button
-                type="button"
-                onClick={() => setNotifFilter('unread')}
-                className={`py-1.5 text-xs font-medium rounded-md cursor-pointer ${
-                  notifFilter === 'unread'
-                    ? 'bg-white text-slate-900 shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                Unread ({unreadCount})
-              </button>
-            </div>
-          </div>
-
-          <div className="divide-y divide-slate-200 max-h-[620px] overflow-y-auto">
-            {sortedNotifications.length === 0 ? (
-              <div className="p-8 text-center text-xs text-slate-500">
-                {notifFilter === 'unread'
-                  ? 'All caught up — no unread notifications.'
-                  : 'No notifications yet.'}
-              </div>
-            ) : (
-              sortedNotifications.map((n) => (
-                <div
-                  key={n.id}
-                  className={`p-4 transition-colors ${
-                    n.read ? 'bg-white' : 'bg-blue-50/40'
+                  onClick={() => setNotifFilter('all')}
+                  className={`py-1.5 text-xs font-medium rounded-md cursor-pointer ${
+                    notifFilter === 'all'
+                      ? 'bg-white text-slate-900 shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="text-xs font-semibold text-slate-900">
-                        {n.title}
-                      </p>
-                      <p className="text-xs text-slate-600 mt-1 leading-relaxed">
-                        {n.message}
-                      </p>
-                      <p className="font-mono text-[11px] text-slate-400 mt-1.5 tabular-nums">
-                        {new Date(n.createdAt).toLocaleString('en-IN', {
-                          month: 'short',
-                          day: 'numeric',
-                          hour: 'numeric',
-                          minute: '2-digit',
-                        })}
-                      </p>
-                    </div>
-                    {!n.read && (
-                      <button
-                        type="button"
-                        onClick={() => onMarkNotificationRead(n.id)}
-                        aria-label={`Mark notification "${n.title}" as read`}
-                        className="p-1.5 rounded-md text-blue-700 hover:bg-blue-100 shrink-0 cursor-pointer"
-                      >
-                        <Check className="w-3.5 h-3.5" />
-                      </button>
-                    )}
-                  </div>
+                  All ({data.notifications.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setNotifFilter('unread')}
+                  className={`py-1.5 text-xs font-medium rounded-md cursor-pointer ${
+                    notifFilter === 'unread'
+                      ? 'bg-white text-slate-900 shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Unread ({unreadCount})
+                </button>
+              </div>
+            </div>
+
+            <div className="divide-y divide-slate-200 max-h-[500px] overflow-y-auto">
+              {sortedNotifications.length === 0 ? (
+                <div className="p-8 text-center text-xs text-slate-500">
+                  {notifFilter === 'unread'
+                    ? 'All caught up — no unread notifications.'
+                    : 'No notifications yet.'}
                 </div>
-              ))
-            )}
-          </div>
-        </section>
+              ) : (
+                sortedNotifications.map((n) => (
+                  <div
+                    key={n.id}
+                    className={`p-4 transition-colors ${
+                      n.read ? 'bg-white' : 'bg-blue-50/40'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-xs font-semibold text-slate-900">
+                          {n.title}
+                        </p>
+                        <p className="text-xs text-slate-600 mt-1 leading-relaxed">
+                          {n.message}
+                        </p>
+                        <p className="font-mono text-[11px] text-slate-400 mt-1.5 tabular-nums">
+                          {new Date(n.createdAt).toLocaleString('en-IN', {
+                            month: 'short',
+                            day: 'numeric',
+                            hour: 'numeric',
+                            minute: '2-digit',
+                          })}
+                        </p>
+                      </div>
+                      {!n.read && (
+                        <button
+                          type="button"
+                          onClick={() => onMarkNotificationRead(n.id)}
+                          aria-label={`Mark notification "${n.title}" as read`}
+                          className="p-1.5 rounded-md text-blue-700 hover:bg-blue-100 shrink-0 cursor-pointer"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </section>
+
+          {prefs.length > 0 && (
+            <section
+              aria-label="Notification preferences"
+              className="bg-white border border-slate-200 rounded-xl overflow-hidden"
+            >
+              <div className="px-5 py-3.5 border-b border-slate-200 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Sliders className="w-4 h-4 text-blue-700" />
+                  <h2 className="font-display text-sm font-semibold text-slate-900">
+                    Notification Preferences
+                  </h2>
+                </div>
+                {savingPrefs && (
+                  <span className="text-[11px] text-slate-500">Saving...</span>
+                )}
+              </div>
+
+              {prefsNotice && (
+                <div className="mx-4 mt-3 px-3 py-2 rounded-md bg-emerald-50 border border-emerald-200 text-[11px] font-medium text-emerald-800">
+                  {prefsNotice}
+                </div>
+              )}
+
+              {prefsError && (
+                <div className="mx-4 mt-3 flex items-center gap-1.5 px-3 py-2 rounded-md bg-red-50 border border-red-200 text-[11px] text-red-800">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                  <span>{prefsError}</span>
+                </div>
+              )}
+
+              <div className="divide-y divide-slate-200">
+                {prefKinds.map((pref) => (
+                  <div
+                    key={pref.kind}
+                    className="px-4 py-3 flex items-center justify-between gap-3 text-xs"
+                  >
+                    <span className="font-medium text-slate-800">
+                      {pref.label}
+                    </span>
+                    <div className="flex items-center gap-3 shrink-0">
+                      <label className="inline-flex items-center gap-1.5 text-slate-600 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={pref.inAppEnabled}
+                          onChange={() =>
+                            handleTogglePreference(pref.kind, 'in_app')
+                          }
+                        />
+                        <span>In-App</span>
+                      </label>
+                      <label className="inline-flex items-center gap-1.5 text-slate-600 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={pref.emailEnabled}
+                          onChange={() =>
+                            handleTogglePreference(pref.kind, 'email')
+                          }
+                        />
+                        <span>Email</span>
+                      </label>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+        </div>
       </div>
     </div>
   );

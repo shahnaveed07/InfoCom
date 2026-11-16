@@ -5,17 +5,19 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "start": "node server.ts",
+    "start": "node dist-server/server.js",
     "build": "vite build",
+    "build:server": "esbuild server.ts --bundle --platform=node --format=esm --packages=external --outfile=dist-server/server.js",
     "preview": "vite preview",
-    "clean": "rm -rf dist server.js",
+    "clean": "rm -rf dist dist-server",
     "lint": "tsc --noEmit",
-    "test": "tsx --test --test-concurrency=1 src/shared/academic.test.ts src/shared/validation.test.ts server/auth.test.ts server/db/config.test.ts server/security.integration.test.ts server/phase4.integration.test.ts server/phase5.integration.test.ts server/phase6.integration.test.ts server/phase7.integration.test.ts",
+    "test": "tsx --test --test-concurrency=1 src/shared/academic.test.ts src/shared/validation.test.ts server/auth.test.ts server/db/config.test.ts server/security.integration.test.ts server/phase4.integration.test.ts server/phase5.integration.test.ts server/phase6.integration.test.ts server/phase7.integration.test.ts server/public-and-phase7.integration.test.ts",
     "admin:bootstrap": "tsx scripts/bootstrap-admin.ts",
     "db:generate": "tsx scripts/prisma-run.ts generate",
     "db:migrate:deploy": "tsx scripts/prisma-run.ts migrate deploy",
     "db:migrate:status": "tsx scripts/prisma-run.ts migrate status",
     "db:seed": "tsx prisma/seed.ts",
+    "db:seed:demo": "tsx prisma/seed-demo.ts",
     "db:migrate-json": "tsx scripts/migrate-json.ts"
   },
   "dependencies": {

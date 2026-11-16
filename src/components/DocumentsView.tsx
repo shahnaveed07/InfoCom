@@ -10,6 +10,7 @@ import {
   X,
 } from 'lucide-react';
 import type { DashboardPayload, DocumentCategory } from '../shared/types';
+import { api } from '../utils/api';
 
 interface DocumentsViewProps {
   data: DashboardPayload;
@@ -44,6 +45,7 @@ export function DocumentsView({
   const [formError, setFormError] = useState('');
   const [notice, setNotice] = useState('');
   const [uploading, setUploading] = useState(false);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
   const visibleDocs = useMemo(() => {
     return data.documents.filter((d) => {
@@ -200,13 +202,26 @@ export function DocumentsView({
                       </td>
                       <td className="py-3 px-5 text-right whitespace-nowrap">
                         <div className="inline-flex items-center gap-2">
-                          <a
-                            href={`/api/documents/${doc.id}/download`}
-                            className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-md"
+                          <button
+                            type="button"
+                            disabled={downloadingId === doc.id}
+                            onClick={async () => {
+                              setDownloadingId(doc.id);
+                              try {
+                                await api.downloadDocumentAsset(doc.id, doc.fileName);
+                              } catch (err) {
+                                setNotice(
+                                  err instanceof Error ? err.message : 'Unable to download document.'
+                                );
+                              } finally {
+                                setDownloadingId(null);
+                              }
+                            }}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-md cursor-pointer disabled:opacity-60"
                           >
                             <Download className="w-3.5 h-3.5" />
-                            <span>Download</span>
-                          </a>
+                            <span>{downloadingId === doc.id ? 'Downloading...' : 'Download'}</span>
+                          </button>
                           {canArchive && (
                             <button
                               type="button"

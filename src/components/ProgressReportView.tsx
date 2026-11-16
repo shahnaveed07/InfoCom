@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import {
+  AlertCircle,
   AlertTriangle,
   Award,
   CheckCircle2,
@@ -13,6 +14,7 @@ import {
   type StudentProgressReport,
 } from '../shared/academic';
 import type { DashboardPayload } from '../shared/types';
+import { api } from '../utils/api';
 
 interface ProgressReportViewProps {
   data: DashboardPayload;
@@ -34,6 +36,8 @@ export function ProgressReportView({
   );
   const [draftRemarks, setDraftRemarks] = useState<Record<string, string>>({});
   const [savedNotice, setSavedNotice] = useState('');
+  const [exportError, setExportError] = useState('');
+  const [exportingFormat, setExportingFormat] = useState<'csv' | 'pdf' | null>(null);
 
   const targetStudent = isInstructor
     ? data.students.find((s) => s.id === selectedStudentId) ?? data.students[0]
@@ -98,6 +102,20 @@ export function ProgressReportView({
       summary,
     });
     setSavedNotice('Instructor evaluation remark saved to report.');
+  }
+
+  async function handleExportAcademicReport(format: 'csv' | 'pdf') {
+    setExportError('');
+    setExportingFormat(format);
+    try {
+      await api.downloadReport('academic-progress', format);
+    } catch (err) {
+      setExportError(
+        err instanceof Error ? err.message : `Unable to export ${format.toUpperCase()} report.`
+      );
+    } finally {
+      setExportingFormat(null);
+    }
   }
 
   function renderStanding(standing: StudentProgressReport['standing']) {
@@ -171,7 +189,29 @@ export function ProgressReportView({
           </div>
         )}
 
-        <div className="flex items-center gap-2.5 shrink-0">
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          {isInstructor && (
+            <>
+              <button
+                type="button"
+                disabled={exportingFormat !== null}
+                onClick={() => handleExportAcademicReport('csv')}
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 cursor-pointer whitespace-nowrap disabled:opacity-60"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>{exportingFormat === 'csv' ? 'Exporting...' : 'Cohort CSV'}</span>
+              </button>
+              <button
+                type="button"
+                disabled={exportingFormat !== null}
+                onClick={() => handleExportAcademicReport('pdf')}
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 cursor-pointer whitespace-nowrap disabled:opacity-60"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>{exportingFormat === 'pdf' ? 'Generating...' : 'Cohort PDF'}</span>
+              </button>
+            </>
+          )}
           <button
             type="button"
             onClick={handleDownloadText}
@@ -198,6 +238,16 @@ export function ProgressReportView({
         >
           <CheckCircle2 className="w-4 h-4 text-emerald-700" />
           <span>{savedNotice}</span>
+        </div>
+      )}
+
+      {exportError && (
+        <div
+          role="alert"
+          className="no-print flex items-center gap-2 px-4 py-2.5 rounded-lg bg-red-50 border border-red-200 text-xs font-medium text-red-800"
+        >
+          <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+          <span>{exportError}</span>
         </div>
       )}
 

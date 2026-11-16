@@ -4,6 +4,7 @@ import {
   BellRing,
   CheckCircle2,
   Clock,
+  Download,
   History,
   Send,
   ShieldCheck,
@@ -61,6 +62,7 @@ export function AttendanceAlertsView({
   const [statusBanner, setStatusBanner] = useState('');
   const [errorBanner, setErrorBanner] = useState('');
   const [runningSweep, setRunningSweep] = useState(false);
+  const [exportingFormat, setExportingFormat] = useState<'csv' | 'pdf' | null>(null);
 
   const [historyEntries, setHistoryEntries] = useState<AttendanceAuditEntry[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -288,17 +290,61 @@ export function AttendanceAlertsView({
             </select>
           </div>
 
-          <button
-            type="button"
-            onClick={handleRunReminderSweep}
-            disabled={runningSweep}
-            className="inline-flex items-center justify-center gap-2 px-4 py-2 text-xs font-medium text-white bg-blue-700 hover:bg-blue-800 disabled:opacity-60 rounded-lg transition-colors cursor-pointer whitespace-nowrap shrink-0"
-          >
-            <Send className="w-3.5 h-3.5" />
-            <span>
-              {runningSweep ? 'Running Sweep...' : 'Send Upcoming Session Reminders'}
-            </span>
-          </button>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              disabled={exportingFormat !== null}
+              onClick={async () => {
+                setErrorBanner('');
+                setExportingFormat('csv');
+                try {
+                  await api.downloadReport('attendance-summary', 'csv');
+                } catch (err) {
+                  setErrorBanner(
+                    err instanceof Error ? err.message : 'Unable to export attendance CSV.'
+                  );
+                } finally {
+                  setExportingFormat(null);
+                }
+              }}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg cursor-pointer whitespace-nowrap disabled:opacity-60"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>{exportingFormat === 'csv' ? 'Exporting...' : 'Export CSV'}</span>
+            </button>
+            <button
+              type="button"
+              disabled={exportingFormat !== null}
+              onClick={async () => {
+                setErrorBanner('');
+                setExportingFormat('pdf');
+                try {
+                  await api.downloadReport('attendance-summary', 'pdf');
+                } catch (err) {
+                  setErrorBanner(
+                    err instanceof Error ? err.message : 'Unable to export attendance PDF.'
+                  );
+                } finally {
+                  setExportingFormat(null);
+                }
+              }}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg cursor-pointer whitespace-nowrap disabled:opacity-60"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>{exportingFormat === 'pdf' ? 'Generating...' : 'Export PDF'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleRunReminderSweep}
+              disabled={runningSweep}
+              className="inline-flex items-center justify-center gap-2 px-4 py-2 text-xs font-medium text-white bg-blue-700 hover:bg-blue-800 disabled:opacity-60 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+            >
+              <Send className="w-3.5 h-3.5" />
+              <span>
+                {runningSweep ? 'Running Sweep...' : 'Send Upcoming Session Reminders'}
+              </span>
+            </button>
+          </div>
         </div>
 
         {statusBanner && (

@@ -152,6 +152,7 @@ test('Phase 5 Admission & Enrollment Workflow Integration Suite', async (t) => {
         instructorId: instId,
         durationWeeks: 8,
         tuitionFee: '1200.00',
+        isPublished: true,
         modules: [{ code: 'M1', title: 'Foundations', weight: 100, labHours: 10 }],
       },
     });
@@ -169,6 +170,7 @@ test('Phase 5 Admission & Enrollment Workflow Integration Suite', async (t) => {
         instructorId: instId,
         durationWeeks: 10,
         tuitionFee: '1500.00',
+        isPublished: true,
         modules: [{ code: 'M1', title: 'Analytics', weight: 100, labHours: 12 }],
       },
     });

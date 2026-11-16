@@ -1,24 +1,20 @@
 import path from 'node:path';
 import express from 'express';
-import { createServer as createViteServer } from 'vite';
-import { runSessionReminderSweep } from './server/ams-service.ts';
 import { createApiApp } from './server/app.ts';
 import { disconnectPrisma } from './server/db/prisma.ts';
+import { startBackgroundWorker, stopBackgroundWorker } from './server/jobs/worker.ts';
 
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 async function startServer() {
   const app = createApiApp();
 
-  // Periodic 5-minute automated reminder sweep (lazy, catches any transient DB error)
-  setInterval(() => {
-    runSessionReminderSweep().catch((err) => {
-      console.error('Background session reminder sweep error:', err);
-    });
-  }, 5 * 60 * 1000);
+  // Persistent PostgreSQL background worker (email notifications + session reminders)
+  startBackgroundWorker(30_000);
 
   // Frontend serving (Vite dev middleware in development, static dist in production)
   if (process.env.NODE_ENV !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
@@ -33,10 +29,11 @@ async function startServer() {
   }
 
   const server = app.listen(PORT, '0.0.0.0', () => {
-    console.log(`InfoCom Academy Management System listening on http://localhost:${PORT}`);
+    console.log(`IGS — InfoCom Global Services AMS listening on http://localhost:${PORT}`);
   });
 
   const shutdown = async () => {
+    stopBackgroundWorker();
     server.close();
     await disconnectPrisma().catch(() => undefined);
     process.exit(0);

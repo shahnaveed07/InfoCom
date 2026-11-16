@@ -113,6 +113,7 @@ export function AdmissionsView({ data, onDashboardUpdate }: AdmissionsViewProps)
   const [searchQuery, setSearchQuery] = useState('');
   const [statusNotice, setStatusNotice] = useState('');
   const [actionError, setActionError] = useState('');
+  const [exportingFormat, setExportingFormat] = useState<'csv' | 'pdf' | null>(null);
 
   // Create / Edit Draft Modal state
   const [formModalOpen, setFormModalOpen] = useState(false);
@@ -700,14 +701,58 @@ export function AdmissionsView({ data, onDashboardUpdate }: AdmissionsViewProps)
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={openNewApplicationModal}
-            className="inline-flex items-center justify-center gap-2 px-4 py-2 text-xs font-medium text-white bg-blue-700 hover:bg-blue-800 rounded-lg cursor-pointer whitespace-nowrap shrink-0"
-          >
-            <Plus className="w-4 h-4" />
-            <span>New Admission Application</span>
-          </button>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              disabled={exportingFormat !== null}
+              onClick={async () => {
+                setActionError('');
+                setExportingFormat('csv');
+                try {
+                  await api.downloadReport('admissions-funnel', 'csv');
+                } catch (err) {
+                  setActionError(
+                    err instanceof Error ? err.message : 'Unable to export admissions CSV.'
+                  );
+                } finally {
+                  setExportingFormat(null);
+                }
+              }}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg cursor-pointer whitespace-nowrap disabled:opacity-60"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>{exportingFormat === 'csv' ? 'Exporting...' : 'CSV'}</span>
+            </button>
+            <button
+              type="button"
+              disabled={exportingFormat !== null}
+              onClick={async () => {
+                setActionError('');
+                setExportingFormat('pdf');
+                try {
+                  await api.downloadReport('admissions-funnel', 'pdf');
+                } catch (err) {
+                  setActionError(
+                    err instanceof Error ? err.message : 'Unable to export admissions PDF.'
+                  );
+                } finally {
+                  setExportingFormat(null);
+                }
+              }}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg cursor-pointer whitespace-nowrap disabled:opacity-60"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>{exportingFormat === 'pdf' ? 'Generating...' : 'PDF'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={openNewApplicationModal}
+              className="inline-flex items-center justify-center gap-2 px-4 py-2 text-xs font-medium text-white bg-blue-700 hover:bg-blue-800 rounded-lg cursor-pointer whitespace-nowrap"
+            >
+              <Plus className="w-4 h-4" />
+              <span>New Admission Application</span>
+            </button>
+          </div>
         </div>
 
         <div

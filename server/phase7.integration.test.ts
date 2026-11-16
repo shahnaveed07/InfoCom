@@ -356,7 +356,14 @@ test('Phase G Financial Management (FeePlans, FeeStructures, Discounts, Scholars
     await prisma.payment.deleteMany({ where: { invoiceId: { in: createdInvoiceIds } } });
     await prisma.invoiceItem.deleteMany({ where: { invoiceId: { in: createdInvoiceIds } } });
     await prisma.invoice.deleteMany({ where: { id: { in: createdInvoiceIds } } });
-    await prisma.feeStructure.deleteMany({ where: { id: { in: createdFeeStructureIds } } });
+    await prisma.feeStructure.deleteMany({
+      where: {
+        OR: [
+          { id: { in: createdFeeStructureIds } },
+          { courseId: { in: createdCourseIds } },
+        ],
+      },
+    });
     await prisma.feePlan.deleteMany({ where: { id: { in: createdFeePlanIds } } });
     await prisma.discount.deleteMany({ where: { id: { in: createdDiscountIds } } });
     await prisma.scholarship.deleteMany({ where: { id: { in: createdScholarshipIds } } });

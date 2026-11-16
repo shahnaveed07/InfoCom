@@ -3,6 +3,7 @@ import {
   AlertCircle,
   Award,
   CheckCircle2,
+  Download,
   Printer,
   Search,
   ShieldCheck,
@@ -17,7 +18,8 @@ import {
   isInactiveEnrollmentStatus,
 } from '../shared/academic';
 import type { CertificateRecord, DashboardPayload } from '../shared/types';
-import type { VerifiedCertificateInfo } from '../utils/api';
+import { api, type VerifiedCertificateInfo } from '../utils/api';
+import { BrandCrest } from './public/BrandCrest';
 
 interface CertificatesViewProps {
   data: DashboardPayload;
@@ -50,6 +52,7 @@ export function CertificatesView({
   const [revokeReason, setRevokeReason] = useState('');
   const [notice, setNotice] = useState('');
   const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
   const minCompletionPolicy = data.policies?.certificateMinCompletionPct ?? 100;
   const minScorePolicy = data.policies?.certificateMinScore ?? 60;
@@ -176,6 +179,20 @@ export function CertificatesView({
     setNotice(`Certificate ${revokeTarget.certificateCode} revoked.`);
     setRevokeTarget(null);
     setRevokeReason('');
+  }
+
+  async function handleDownloadPdf(cert: CertificateRecord) {
+    setDownloadingId(cert.id);
+    setNotice('');
+    try {
+      await api.downloadCertificatePdf(cert.id, cert.certificateCode);
+    } catch (err) {
+      setNotice(
+        err instanceof Error ? err.message : 'Unable to download official PDF certificate.'
+      );
+    } finally {
+      setDownloadingId(null);
+    }
   }
 
   return (
@@ -318,6 +335,15 @@ export function CertificatesView({
                           <Award className="w-3.5 h-3.5" />
                           <span>View</span>
                         </button>
+                        <button
+                          type="button"
+                          disabled={downloadingId === cert.id}
+                          onClick={() => handleDownloadPdf(cert)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-md cursor-pointer disabled:opacity-60"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          <span>{downloadingId === cert.id ? 'Generating...' : 'PDF'}</span>
+                        </button>
                         {isAdmin && cert.status === 'Issued' && (
                           <button
                             type="button"
@@ -438,6 +464,13 @@ export function CertificatesView({
               </button>
             </div>
             <div>
+              <div className="flex justify-center mb-3">
+                <BrandCrest
+                  logoDataUrl={data.academy?.logoDataUrl}
+                  name={data.academy?.name ?? 'IGS — InfoCom Global Services'}
+                  sizeClass="h-14 w-auto max-w-[200px]"
+                />
+              </div>
               <p className="text-xs font-semibold tracking-widest uppercase text-blue-700">
                 {data.academy?.name ?? 'IGS — InfoCom Global Services'} · Computer Institute
               </p>
@@ -476,14 +509,25 @@ export function CertificatesView({
                 <div className="text-[11px]">Hash: {previewCert.verificationHash}</div>
               </div>
             </div>
-            <div className="no-print pt-2 flex justify-center">
+            <div className="no-print pt-2 flex flex-wrap justify-center gap-3">
+              <button
+                type="button"
+                disabled={downloadingId === previewCert.id}
+                onClick={() => handleDownloadPdf(previewCert)}
+                className="inline-flex items-center gap-2 px-4 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg cursor-pointer disabled:opacity-60"
+              >
+                <Download className="w-4 h-4" />
+                <span>
+                  {downloadingId === previewCert.id ? 'Generating PDF...' : 'Download Official PDF'}
+                </span>
+              </button>
               <button
                 type="button"
                 onClick={() => window.print()}
                 className="inline-flex items-center gap-2 px-4 py-2 text-xs font-medium text-white bg-blue-700 hover:bg-blue-800 rounded-lg cursor-pointer"
               >
                 <Printer className="w-4 h-4" />
-                <span>Print Official Certificate</span>
+                <span>Print Certificate</span>
               </button>
             </div>
           </div>

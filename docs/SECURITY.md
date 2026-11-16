@@ -18,17 +18,16 @@ InfoCom enforces server-side Role-Based Access Control (RBAC) across three expli
 | Audit logs (`audit:read`) | Yes | No | No |
 
 ### Privilege Escalation Prevention & Protected Admin Bootstrap
-- **Public Registration (`POST /api/auth/register`)**: Rejects any request specifying a non-student `role` with `403 Forbidden`, logs a `PRIVILEGE_ESCALATION_BLOCKED` audit entry, and creates exclusively `student` accounts.
-- **Public SSO (`POST /api/auth/firebase`)**: Creates only `student` accounts for unrecognized Google accounts; never auto-elevates based on email address.
+- **Public Registration Disabled (`POST /api/auth/register`)**: Returns `410 Gone`. Public account self-registration is disabled; student, instructor, and admin accounts are created exclusively by authorized academy administrators.
 - **Protected Initial-Admin Bootstrap CLI (`npm run admin:bootstrap`)**: Executed via `scripts/bootstrap-admin.ts`. Creates an initial `admin` account with Argon2id hashing and minimum 12-character password enforcement. If an active admin already exists, creation is blocked unless both `--allow-additional` and `ADMIN_BOOTSTRAP_SECRET` are supplied.
-- **Authorized Admin Creation**: Existing admins may provision additional admin or instructor accounts via `POST /api/users`.
+- **Authorized Admin Creation**: Existing admins provision student accounts via **Students → Create Student** (`POST /api/students`) and instructor/admin accounts via `POST /api/users` or `POST /api/instructors`, generating single-use onboarding tokens (`/login?setupToken=...`).
 
 ## 2. Authentication, Opaque Sessions & Lifecycle Controls
 
 ### Opaque Session Architecture
 - `server/auth.ts` generates 256-bit cryptographically random session tokens (`crypto.randomBytes(32).toString('base64url')`).
 - Only the **SHA-256 hash** (`auth_sessions.token_hash`) is persisted in PostgreSQL; the raw cookie token is never stored in the database.
-- `server/middleware/auth.ts` sets `nta_session` cookies with:
+- `server/middleware/auth.ts` sets `igs_session` cookies with:
   - `HttpOnly: true` (inaccessible to client JavaScript)
   - `SameSite: 'lax'`
   - `Path: '/'`
@@ -36,7 +35,7 @@ InfoCom enforces server-side Role-Based Access Control (RBAC) across three expli
   - 7-day absolute TTL (`SESSION_TTL_MS`)
 
 ### Session Validation, Expiration & Revocation
-Every protected request resolves `nta_session` by hashing the cookie value and querying `auth_sessions` in PostgreSQL:
+Every protected request resolves `igs_session` by hashing the cookie value and querying `auth_sessions` in PostgreSQL:
 - Rejects expired sessions (`expiresAt <= now`) and marks them expired.
 - Rejects revoked sessions (`revokedAt !== null`), including logout (`POST /api/auth/logout`), password change (`POST /api/auth/change-password` revokes sibling sessions), password reset (`POST /api/auth/reset-password` revokes all sessions), role change, and account deactivation/suspension (`PATCH /api/users/:id`).
 - Enforces `user.status === 'active'` and verifies `session.roleCode === user.role`.

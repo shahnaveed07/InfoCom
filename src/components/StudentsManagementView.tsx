@@ -13,6 +13,7 @@ import {
   FolderOpen,
   GraduationCap,
   KeyRound,
+  PauseCircle,
   Plus,
   RotateCcw,
   Search,
@@ -79,10 +80,16 @@ export function StudentsManagementView({
   const [cEmergency, setCEmergency] = useState('');
   const [cAddress, setCAddress] = useState('');
   const [cStanding, setCStanding] = useState('Good Standing');
+  const [cGuardianName, setCGuardianName] = useState('');
+  const [cGuardianRelation, setCGuardianRelation] = useState('');
+  const [cGuardianPhone, setCGuardianPhone] = useState('');
   const [cCourseId, setCCourseId] = useState('');
   const [cCohortId, setCCohortId] = useState('');
+  const [cEnrollmentStatus, setCEnrollmentStatus] = useState<'Active' | 'Waitlisted'>('Active');
+  const [cIssueInvoice, setCIssueInvoice] = useState(true);
   const [cError, setCError] = useState('');
   const [cSaving, setCSaving] = useState(false);
+  const [rowActionBusy, setRowActionBusy] = useState<string | null>(null);
   const [onboardingLink, setOnboardingLink] = useState<{
     studentName: string;
     studentCode: string;
@@ -193,9 +200,18 @@ export function StudentsManagementView({
         dateOfBirth: cDob || null,
         address: cAddress.trim(),
         emergencyContact: cEmergency.trim(),
+        guardianName: cGuardianName.trim(),
+        guardianRelationship: cGuardianRelation.trim(),
+        guardianPhone: cGuardianPhone.trim(),
         academicStanding: cStanding.trim() || 'Good Standing',
         initialCourseId: cCourseId || undefined,
         initialCohortId: cCohortId || undefined,
+        ...(cCourseId
+          ? {
+              enrollmentStatus: cEnrollmentStatus,
+              issueTuitionInvoice: cIssueInvoice,
+            }
+          : {}),
       });
       onDashboardUpdate(res.dashboard);
       setCreateOpen(false);
@@ -206,8 +222,13 @@ export function StudentsManagementView({
       setCDob('');
       setCEmergency('');
       setCAddress('');
+      setCGuardianName('');
+      setCGuardianRelation('');
+      setCGuardianPhone('');
       setCCourseId('');
       setCCohortId('');
+      setCEnrollmentStatus('Active');
+      setCIssueInvoice(true);
       if (res.onboardingPath) {
         setOnboardingLink({
           studentName: res.student.name,
@@ -225,6 +246,50 @@ export function StudentsManagementView({
       setCError(err instanceof Error ? err.message : 'Unable to create student.');
     } finally {
       setCSaving(false);
+    }
+  }
+
+  async function handleSuspendToggle(row: StudentDirectoryRow) {
+    const nextStatus: UserAccountStatus =
+      row.user.status === 'suspended' ? 'active' : 'suspended';
+    setRowActionBusy(row.user.id);
+    setError('');
+    try {
+      const res = await api.updateStudent(row.user.id, { status: nextStatus });
+      onDashboardUpdate(res.dashboard);
+      if (selectedDetail?.student.user.id === row.user.id) {
+        setSelectedDetail(res.detail);
+      }
+      setNotice(
+        `${row.user.name} account is now ${nextStatus === 'suspended' ? 'suspended (sessions revoked)' : 'active'}.`
+      );
+      await loadDirectory();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to update student status.');
+    } finally {
+      setRowActionBusy(null);
+    }
+  }
+
+  async function handleResetStudentPassword(row: StudentDirectoryRow) {
+    setRowActionBusy(row.user.id);
+    setError('');
+    try {
+      const res = await api.resetStudentPassword(row.user.id);
+      const displayName = res.user.name || row.user.name;
+      const displayCode = res.user.studentCode ?? row.user.studentCode ?? '';
+      setOnboardingLink({
+        studentName: displayName,
+        studentCode: displayCode,
+        url: `${window.location.origin}${res.onboardingPath}`,
+      });
+      setNotice(
+        `Issued password-reset setup link for ${displayName}${displayCode ? ` (${displayCode})` : ''}. Existing sessions revoked.`
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to issue password reset link.');
+    } finally {
+      setRowActionBusy(null);
     }
   }
 
@@ -329,7 +394,31 @@ export function StudentsManagementView({
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              disabled={rowActionBusy === student.user.id}
+              onClick={() => handleResetStudentPassword(student)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-blue-800 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 cursor-pointer whitespace-nowrap disabled:opacity-60"
+            >
+              <KeyRound className="w-3.5 h-3.5" />
+              <span>Reset Password</span>
+            </button>
+            {student.user.status !== 'archived' && (
+              <button
+                type="button"
+                disabled={rowActionBusy === student.user.id}
+                onClick={() => handleSuspendToggle(student)}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border cursor-pointer whitespace-nowrap disabled:opacity-60 ${
+                  student.user.status === 'suspended'
+                    ? 'text-emerald-800 bg-emerald-50 border-emerald-200 hover:bg-emerald-100'
+                    : 'text-amber-800 bg-amber-50 border-amber-200 hover:bg-amber-100'
+                }`}
+              >
+                <PauseCircle className="w-3.5 h-3.5" />
+                <span>{student.user.status === 'suspended' ? 'Activate' : 'Suspend'}</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={() => openEditModal(student)}
@@ -361,6 +450,46 @@ export function StudentsManagementView({
             </button>
           </div>
         </div>
+
+        {onboardingLink && (
+          <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-xs font-semibold text-blue-900">
+                <KeyRound className="w-4 h-4 text-blue-700 shrink-0" />
+                <span>
+                  Student Onboarding Setup Link · {onboardingLink.studentName}{' '}
+                  {onboardingLink.studentCode ? `(${onboardingLink.studentCode})` : ''}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setOnboardingLink(null)}
+                aria-label="Dismiss student onboarding link"
+                className="text-blue-700 hover:text-blue-900 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+              <input
+                type="text"
+                readOnly
+                value={onboardingLink.url}
+                aria-label="Student onboarding setup URL"
+                onFocus={(e) => e.currentTarget.select()}
+                className="flex-1 px-3 py-1.5 text-xs font-mono bg-white border border-blue-200 rounded-lg text-slate-900"
+              />
+              <button
+                type="button"
+                onClick={handleCopyOnboardingUrl}
+                className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-blue-700 hover:bg-blue-800 rounded-lg cursor-pointer whitespace-nowrap"
+              >
+                {copiedLink ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                <span>{copiedLink ? 'Copied' : 'Copy Link'}</span>
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Summary Strip */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -1147,7 +1276,7 @@ export function StudentsManagementView({
                         {formatCents(row.outstandingCents, currency)}
                       </td>
                       <td className="py-3 px-5 text-right whitespace-nowrap">
-                        <div className="inline-flex items-center gap-2">
+                        <div className="inline-flex items-center gap-1.5">
                           <button
                             type="button"
                             disabled={detailLoading}
@@ -1163,6 +1292,28 @@ export function StudentsManagementView({
                           >
                             Edit
                           </button>
+                          <button
+                            type="button"
+                            disabled={rowActionBusy === row.user.id}
+                            onClick={() => handleResetStudentPassword(row)}
+                            className="px-2.5 py-1 text-xs font-medium text-blue-800 bg-white border border-blue-200 hover:bg-blue-50 rounded-md cursor-pointer disabled:opacity-60"
+                          >
+                            Reset PW
+                          </button>
+                          {row.user.status !== 'archived' && (
+                            <button
+                              type="button"
+                              disabled={rowActionBusy === row.user.id}
+                              onClick={() => handleSuspendToggle(row)}
+                              className={`px-2.5 py-1 text-xs font-medium rounded-md cursor-pointer disabled:opacity-60 ${
+                                row.user.status === 'suspended'
+                                  ? 'text-emerald-700 hover:bg-emerald-50'
+                                  : 'text-amber-700 hover:bg-amber-50'
+                              }`}
+                            >
+                              {row.user.status === 'suspended' ? 'Activate' : 'Suspend'}
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={() => setConfirmRow(row)}
@@ -1453,55 +1604,140 @@ export function StudentsManagementView({
                 </div>
               </div>
 
-              <div className="border-t border-slate-200 pt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="border-t border-slate-200 pt-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label
-                    htmlFor="new-stu-course"
+                    htmlFor="new-stu-guardian-name"
                     className="block text-xs font-medium text-slate-700 mb-1"
                   >
-                    Initial Course Enrollment (Optional)
+                    Guardian / Parent Name
                   </label>
-                  <select
-                    id="new-stu-course"
-                    value={cCourseId}
-                    onChange={(e) => {
-                      setCCourseId(e.target.value);
-                      setCCohortId('');
-                    }}
+                  <input
+                    id="new-stu-guardian-name"
+                    type="text"
+                    value={cGuardianName}
+                    onChange={(e) => setCGuardianName(e.target.value)}
+                    placeholder="Optional"
                     className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="new-stu-guardian-rel"
+                    className="block text-xs font-medium text-slate-700 mb-1"
                   >
-                    <option value="">None (Enroll later)</option>
-                    {data.courses
-                      .filter((c) => !c.isArchived)
-                      .map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.code} — {c.title}
+                    Relationship
+                  </label>
+                  <input
+                    id="new-stu-guardian-rel"
+                    type="text"
+                    value={cGuardianRelation}
+                    onChange={(e) => setCGuardianRelation(e.target.value)}
+                    placeholder="Father / Mother / Guardian"
+                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="new-stu-guardian-phone"
+                    className="block text-xs font-medium text-slate-700 mb-1"
+                  >
+                    Guardian Phone
+                  </label>
+                  <input
+                    id="new-stu-guardian-phone"
+                    type="tel"
+                    value={cGuardianPhone}
+                    onChange={(e) => setCGuardianPhone(e.target.value)}
+                    placeholder="Optional"
+                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
+                  />
+                </div>
+              </div>
+
+              <div className="border-t border-slate-200 pt-3 space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label
+                      htmlFor="new-stu-course"
+                      className="block text-xs font-medium text-slate-700 mb-1"
+                    >
+                      Initial Course Enrollment (Optional)
+                    </label>
+                    <select
+                      id="new-stu-course"
+                      value={cCourseId}
+                      onChange={(e) => {
+                        setCCourseId(e.target.value);
+                        setCCohortId('');
+                      }}
+                      className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
+                    >
+                      <option value="">None (Enroll later)</option>
+                      {data.courses
+                        .filter((c) => !c.isArchived)
+                        .map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.code} — {c.title}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="new-stu-batch"
+                      className="block text-xs font-medium text-slate-700 mb-1"
+                    >
+                      Initial Cohort Batch
+                    </label>
+                    <select
+                      id="new-stu-batch"
+                      disabled={!cCourseId}
+                      value={cCohortId}
+                      onChange={(e) => setCCohortId(e.target.value)}
+                      className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg disabled:bg-slate-50"
+                    >
+                      <option value="">Auto-select Active Batch</option>
+                      {courseCohorts.map((coh) => (
+                        <option key={coh.id} value={coh.id}>
+                          {coh.name} ({coh.code})
                         </option>
                       ))}
-                  </select>
+                    </select>
+                  </div>
                 </div>
-                <div>
-                  <label
-                    htmlFor="new-stu-batch"
-                    className="block text-xs font-medium text-slate-700 mb-1"
-                  >
-                    Initial Cohort Batch
-                  </label>
-                  <select
-                    id="new-stu-batch"
-                    disabled={!cCourseId}
-                    value={cCohortId}
-                    onChange={(e) => setCCohortId(e.target.value)}
-                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg disabled:bg-slate-50"
-                  >
-                    <option value="">Auto-select Active Batch</option>
-                    {courseCohorts.map((coh) => (
-                      <option key={coh.id} value={coh.id}>
-                        {coh.name} ({coh.code})
-                      </option>
-                    ))}
-                  </select>
-                </div>
+
+                {cCourseId && (
+                  <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <label
+                        htmlFor="new-stu-enr-status"
+                        className="text-xs font-medium text-slate-700"
+                      >
+                        Enrollment Status
+                      </label>
+                      <select
+                        id="new-stu-enr-status"
+                        value={cEnrollmentStatus}
+                        onChange={(e) =>
+                          setCEnrollmentStatus(e.target.value as 'Active' | 'Waitlisted')
+                        }
+                        className="px-2.5 py-1 text-xs bg-white border border-slate-300 rounded-md"
+                      >
+                        <option value="Active">Active</option>
+                        <option value="Waitlisted">Waitlisted</option>
+                      </select>
+                    </div>
+                    <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={cIssueInvoice}
+                        onChange={(e) => setCIssueInvoice(e.target.checked)}
+                      />
+                      <span>Generate Tuition Invoice on Enrollment</span>
+                    </label>
+                  </div>
+                )}
               </div>
 
               <p className="text-[11px] text-slate-500">

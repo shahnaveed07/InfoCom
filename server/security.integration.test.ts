@@ -363,7 +363,7 @@ test('Phase 3 Security & Authorization Integration Suite', async (t) => {
       }
     });
 
-    await t.test('3. Privilege escalation via public registration is strictly blocked (403)', async () => {
+    await t.test('3. Public self-registration endpoint is disabled (410 Gone) for all roles including student', async () => {
       const adminAttempt = await apiFetch('/api/auth/register', {
         method: 'POST',
         body: {
@@ -373,7 +373,7 @@ test('Phase 3 Security & Authorization Integration Suite', async (t) => {
           role: 'admin',
         },
       });
-      assert.equal(adminAttempt.res.status, 403);
+      assert.equal(adminAttempt.res.status, 410);
 
       const instAttempt = await apiFetch('/api/auth/register', {
         method: 'POST',
@@ -384,10 +384,9 @@ test('Phase 3 Security & Authorization Integration Suite', async (t) => {
           role: 'instructor',
         },
       });
-      assert.equal(instAttempt.res.status, 403);
+      assert.equal(instAttempt.res.status, 410);
 
-      // Valid public registration creates ONLY a student account with HttpOnly cookie
-      const studentOk = await apiFetch('/api/auth/register', {
+      const studentAttempt = await apiFetch('/api/auth/register', {
         method: 'POST',
         body: {
           name: 'Public Learner',
@@ -395,13 +394,10 @@ test('Phase 3 Security & Authorization Integration Suite', async (t) => {
           password,
         },
       });
-      assert.equal(studentOk.res.status, 201);
-      assert.equal((studentOk.json?.user as { role: string }).role, 'student');
-      const regUserId = (studentOk.json?.user as { id: string }).id;
-      createdUserIds.push(regUserId);
+      assert.equal(studentAttempt.res.status, 410);
 
-      const cookies = getSetCookieHeaders(studentOk.res);
-      assert.ok(cookies.some((c) => c.includes('HttpOnly') && c.includes('SameSite=Lax') && c.includes('Path=/')));
+      const createdSelfReg = await prisma.user.findUnique({ where: { email: selfRegEmail } });
+      assert.equal(createdSelfReg, null);
     });
 
     await t.test('4. Login sets opaque session cookie hashed in DB and upgrades legacy scrypt to Argon2id', async () => {

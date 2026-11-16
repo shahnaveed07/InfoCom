@@ -1,10 +1,13 @@
 import React, { useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   AlertCircle,
   Archive,
   Building2,
   CheckCircle2,
   Edit3,
+  ExternalLink,
+  Globe,
   Layers,
   Plus,
   RotateCcw,
@@ -20,6 +23,7 @@ interface CoursesCohortsViewProps {
   data: DashboardPayload;
   onCreateCourse: (payload: {
     code: string;
+    slug?: string;
     title: string;
     track: string;
     category?: string;
@@ -37,6 +41,8 @@ interface CoursesCohortsViewProps {
     instructorId: string;
     durationWeeks: number;
     tuitionFee: string;
+    isPublished?: boolean;
+    showTuitionPublicly?: boolean;
     modules: Array<{
       code: string;
       title: string;
@@ -83,6 +89,7 @@ export function CoursesCohortsView({
 
   // Course form state (shared by Create & Edit)
   const [cCode, setCCode] = useState('');
+  const [cSlug, setCSlug] = useState('');
   const [cTitle, setCTitle] = useState('');
   const [cTrack, setCTrack] = useState('Software & Cloud');
   const [cCategory, setCCategory] = useState('Technical Bootcamp');
@@ -97,6 +104,8 @@ export function CoursesCohortsView({
   const [cInstructorId, setCInstructorId] = useState(instructors[0]?.id ?? '');
   const [cWeeks, setCWeeks] = useState('8');
   const [cTuition, setCTuition] = useState('1450.00');
+  const [cIsPublished, setCIsPublished] = useState(true);
+  const [cShowTuitionPublicly, setCShowTuitionPublicly] = useState(true);
   const [cModules, setCModules] = useState<
     Array<{ id?: string; code: string; title: string; weight: number; labHours: number }>
   >([
@@ -105,6 +114,7 @@ export function CoursesCohortsView({
   ]);
   const [cError, setCError] = useState('');
   const [cSaving, setCSaving] = useState(false);
+  const [publishingId, setPublishingId] = useState<string | null>(null);
 
   // Cohort form state
   const [cohCode, setCohCode] = useState('');
@@ -129,6 +139,7 @@ export function CoursesCohortsView({
   function openCreateCourseModal() {
     setEditingCourse(null);
     setCCode('');
+    setCSlug('');
     setCTitle('');
     setCTrack('Software Engineering');
     setCCategory('Technical Bootcamp');
@@ -143,6 +154,8 @@ export function CoursesCohortsView({
     setCInstructorId(instructors[0]?.id ?? '');
     setCWeeks('8');
     setCTuition('1450.00');
+    setCIsPublished(true);
+    setCShowTuitionPublicly(true);
     setCModules([
       { code: 'MOD-1', title: 'Core Foundations', weight: 50, labHours: 16 },
       { code: 'MOD-2', title: 'Applied Capstone Lab', weight: 50, labHours: 18 },
@@ -154,6 +167,7 @@ export function CoursesCohortsView({
   function openEditCourseModal(course: Course) {
     setEditingCourse(course);
     setCCode(course.code);
+    setCSlug(course.slug ?? '');
     setCTitle(course.title);
     setCTrack(course.track);
     setCCategory(course.category ?? 'Technical Bootcamp');
@@ -168,6 +182,8 @@ export function CoursesCohortsView({
     setCInstructorId(course.instructorId);
     setCWeeks(String(course.durationWeeks));
     setCTuition(course.tuitionFee);
+    setCIsPublished(course.isPublished !== false);
+    setCShowTuitionPublicly(course.showTuitionPublicly !== false);
     setCModules(
       course.modules.map((m) => ({
         id: m.id,
@@ -209,6 +225,7 @@ export function CoursesCohortsView({
     try {
       if (editingCourse) {
         const res = await api.updateCourse(editingCourse.id, {
+          ...(cSlug.trim() ? { slug: cSlug.trim().toLowerCase() } : {}),
           title: cTitle.trim(),
           track: cTrack.trim(),
           category: cCategory.trim(),
@@ -225,6 +242,8 @@ export function CoursesCohortsView({
           instructorId: cInstructorId,
           durationWeeks: Number(cWeeks) || 8,
           tuitionFee: cTuition.trim(),
+          isPublished: cIsPublished,
+          showTuitionPublicly: cShowTuitionPublicly,
           modules: cModules.map((m) => ({
             ...(m.id ? { id: m.id } : {}),
             code: m.code.trim().toUpperCase(),
@@ -238,6 +257,7 @@ export function CoursesCohortsView({
       } else {
         await onCreateCourse({
           code: cCode.trim().toUpperCase(),
+          ...(cSlug.trim() ? { slug: cSlug.trim().toLowerCase() } : {}),
           title: cTitle.trim(),
           track: cTrack.trim(),
           category: cCategory.trim(),
@@ -254,6 +274,8 @@ export function CoursesCohortsView({
           instructorId: cInstructorId,
           durationWeeks: Number(cWeeks) || 8,
           tuitionFee: cTuition.trim(),
+          isPublished: cIsPublished,
+          showTuitionPublicly: cShowTuitionPublicly,
           modules: cModules.map((m) => ({
             code: m.code.trim().toUpperCase(),
             title: m.title.trim(),
@@ -268,6 +290,23 @@ export function CoursesCohortsView({
       setCError(err instanceof Error ? err.message : 'Unable to save course.');
     } finally {
       setCSaving(false);
+    }
+  }
+
+  async function handleQuickPublishToggle(course: Course) {
+    setPublishingId(course.id);
+    setError('');
+    try {
+      const nextPublished = !(course.isPublished !== false);
+      const res = await api.updateCourse(course.id, { isPublished: nextPublished });
+      onDashboardUpdate?.(res.dashboard);
+      setNotice(
+        `${course.code} is now ${nextPublished ? 'published on the public website' : 'internal only (hidden from public catalog)'}.`
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to update course visibility.');
+    } finally {
+      setPublishingId(null);
     }
   }
 
@@ -515,12 +554,15 @@ export function CoursesCohortsView({
                 <th className="py-2.5 px-4 text-right">Duration</th>
                 <th className="py-2.5 px-4 text-right">Pass / Att</th>
                 <th className="py-2.5 px-4 text-right">Tuition</th>
+                <th className="py-2.5 px-4">Public Website</th>
                 <th className="py-2.5 px-4">Status</th>
                 {isAdmin && <th className="py-2.5 px-5 text-right">Actions</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 text-xs">
-              {visibleCourses.map((c) => (
+              {visibleCourses.map((c) => {
+                const isPublished = c.isPublished !== false && !c.isArchived;
+                return (
                 <tr key={c.id} className="hover:bg-slate-50/70">
                   <td className="py-3 px-5">
                     <div className="font-medium text-slate-900 text-sm">{c.title}</div>
@@ -542,7 +584,24 @@ export function CoursesCohortsView({
                     {c.passingScore ?? 70}% / {c.minAttendanceRate ?? 75}%
                   </td>
                   <td className="py-3 px-4 text-right font-mono font-semibold text-slate-900 tabular-nums">
-                    {formatMoney(c.tuitionFee, currency)}
+                    <div>{formatMoney(c.tuitionFee, currency)}</div>
+                    <div className="text-[11px] font-sans font-normal text-slate-500">
+                      {c.showTuitionPublicly === false ? 'Fee hidden publicly' : 'Public fee'}
+                    </div>
+                  </td>
+                  <td className="py-3 px-4 whitespace-nowrap">
+                    <div className={`font-medium ${isPublished ? 'text-blue-800' : 'text-slate-500'}`}>
+                      {isPublished ? 'Published' : 'Internal Only'}
+                    </div>
+                    {isPublished && (
+                      <Link
+                        to={`/courses/${c.slug || c.id}`}
+                        className="inline-flex items-center gap-1 text-[11px] text-blue-700 hover:underline mt-0.5"
+                      >
+                        <span>Preview</span>
+                        <ExternalLink className="w-3 h-3" />
+                      </Link>
+                    )}
                   </td>
                   <td
                     className={`py-3 px-4 font-medium ${
@@ -554,6 +613,21 @@ export function CoursesCohortsView({
                   {isAdmin && (
                     <td className="py-3 px-5 text-right whitespace-nowrap">
                       <div className="inline-flex items-center gap-1.5">
+                        {!c.isArchived && (
+                          <button
+                            type="button"
+                            disabled={publishingId === c.id}
+                            onClick={() => handleQuickPublishToggle(c)}
+                            className={`inline-flex items-center gap-1 px-2.5 py-1 font-medium rounded border cursor-pointer disabled:opacity-60 ${
+                              c.isPublished !== false
+                                ? 'text-slate-700 bg-white border-slate-200 hover:bg-slate-50'
+                                : 'text-blue-800 bg-blue-50 border-blue-200 hover:bg-blue-100'
+                            }`}
+                          >
+                            <Globe className="w-3 h-3" />
+                            <span>{c.isPublished !== false ? 'Unpublish' : 'Publish'}</span>
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => openEditCourseModal(c)}
@@ -587,7 +661,8 @@ export function CoursesCohortsView({
                     </td>
                   )}
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -743,7 +818,7 @@ export function CoursesCohortsView({
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label htmlFor="course-title-input" className="block text-xs font-medium text-slate-700 mb-1">
                     Course Title
@@ -755,6 +830,19 @@ export function CoursesCohortsView({
                     value={cTitle}
                     onChange={(e) => setCTitle(e.target.value)}
                     className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="course-slug-input" className="block text-xs font-medium text-slate-700 mb-1">
+                    Public URL Slug (optional)
+                  </label>
+                  <input
+                    id="course-slug-input"
+                    type="text"
+                    value={cSlug}
+                    onChange={(e) => setCSlug(e.target.value)}
+                    placeholder="auto-generated-from-title"
+                    className="w-full px-3 py-2 text-sm font-mono bg-white border border-slate-300 rounded-lg"
                   />
                 </div>
                 <div>
@@ -770,6 +858,25 @@ export function CoursesCohortsView({
                     className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg"
                   />
                 </div>
+              </div>
+
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 flex flex-wrap items-center gap-5">
+                <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-800 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={cIsPublished}
+                    onChange={(e) => setCIsPublished(e.target.checked)}
+                  />
+                  <span>Publish on Public Website</span>
+                </label>
+                <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-800 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={cShowTuitionPublicly}
+                    onChange={(e) => setCShowTuitionPublicly(e.target.checked)}
+                  />
+                  <span>Display Tuition Fee Publicly</span>
+                </label>
               </div>
 
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">

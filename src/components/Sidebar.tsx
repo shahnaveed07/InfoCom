@@ -1,4 +1,5 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
 import {
   Award,
   Bell,
@@ -8,6 +9,7 @@ import {
   CreditCard,
   FileText,
   FolderOpen,
+  Globe,
   GraduationCap,
   KeyRound,
   Layers,
@@ -21,6 +23,7 @@ import {
   X,
 } from 'lucide-react';
 import type { AcademyProfile, UserPublic } from '../shared/types';
+import { BrandCrest } from './public/BrandCrest';
 
 export type NavSection =
   | 'overview'
@@ -137,15 +140,11 @@ export function Sidebar({
     <div className="h-full flex flex-col bg-white border-r border-slate-200 w-64">
       <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between gap-2 shrink-0">
         <div className="flex items-center gap-2.5 min-w-0">
-          {academy?.logoDataUrl ? (
-            <img
-              src={academy.logoDataUrl}
-              alt={`${academy.name} logo`}
-              className="w-6 h-6 rounded object-contain shrink-0"
-            />
-          ) : (
-            <GraduationCap className="w-5 h-5 text-blue-700 shrink-0" />
-          )}
+          <BrandCrest
+            logoDataUrl={academy?.logoDataUrl}
+            name={academy?.name ?? 'IGS — InfoCom Global Services'}
+            sizeClass="h-9 w-auto max-w-[82px]"
+          />
           <div className="min-w-0">
             <span className="font-display text-sm font-semibold text-slate-900 truncate block">
               {academy?.name ?? 'IGS — InfoCom Global Services'}
@@ -213,6 +212,14 @@ export function Sidebar({
           </p>
         </div>
         <div className="mt-3 flex flex-col gap-1.5">
+          <Link
+            to="/"
+            onClick={onCloseMobile}
+            className="w-full inline-flex items-center justify-center gap-2 px-3 py-1.5 text-xs font-medium text-blue-800 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 transition-colors cursor-pointer whitespace-nowrap"
+          >
+            <Globe className="w-3.5 h-3.5" />
+            <span>Public Website</span>
+          </Link>
           <button
             type="button"
             onClick={() => {

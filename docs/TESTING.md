@@ -6,6 +6,7 @@
 | --- | --- | --- |
 | TypeScript static check | `npm run lint` | Runs `tsc --noEmit` across `src/`, `server/`, `scripts/`, and tests |
 | Production frontend build | `npm run build` | Bundles React + Tailwind SPA via Vite (`dist/`) |
+| Production backend build | `npm run build:server` | Bundles `server.ts` into `dist-server/server.js` via `esbuild` |
 | Full automated test suite | `npm test` | Executes all unit + integration suites via Node's native test runner (`tsx --test`) |
 | Migration status check | `npm run db:migrate:status` | Verifies all PostgreSQL Prisma migrations are applied cleanly |
 
@@ -17,11 +18,15 @@
 | --- | --- |
 | `src/shared/academic.test.ts` | Weighted averages, letter grades, module completion, attendance rates, reminder deduplication, integer-cents money calculations, certificate eligibility, academy analytics |
 | `src/shared/validation.test.ts` | Zod request schemas, bounds checks, privilege-escalation payload stripping |
-| `server/auth.test.ts` | Argon2id hashing, legacy scrypt verification + rehash signal, opaque session token hashing, cookie parsing, CSRF origin guard, rate limiter, Bearer/Cookie extraction |
+| `server/auth.test.ts` | Argon2id hashing, legacy scrypt verification + rehash signal, opaque session token hashing, cookie parsing, CSRF origin guard, rate limiter |
 | `server/db/config.test.ts` | Cloud SQL socket URL construction & `NODE_ENV=test` database isolation checks |
-| `server/security.integration.test.ts` | Express API RBAC (`admin`/`instructor`/`student`), anti-IDOR isolation, session revocation on logout/suspension/password reset, escalation blocks |
+| `server/security.integration.test.ts` | Express API RBAC (`admin`/`instructor`/`student`), anti-IDOR isolation, session revocation on logout/suspension/password reset, `410 Gone` on `/api/auth/register` |
 | `server/phase4.integration.test.ts` | Admin analytics, student/instructor master data CRUD, course/batch edits, settings, academic years/terms |
 | `server/phase5.integration.test.ts` | Full admissions draft/submit/review/document-verify/approve/portal-activation workflow, batch & course transfers, enrollment history |
+| `server/phase6.integration.test.ts` | Course weight validation, invoice payment receipts, enrollment & completion integrity |
+| `server/phase7.integration.test.ts` | Role capabilities, password reset tokens, onboarding links, audit trail |
+| `server/public-and-phase7.integration.test.ts` | Public website routes (`/api/public/*`, unpublished & tuition masking), `410` registration disable, local object storage upload/download + `.html` rejection, PDF+QR certificate rendering, and CSV/PDF RBAC report exports |
+
 
 ---
 

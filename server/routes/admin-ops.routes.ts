@@ -1,15 +1,21 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { Router, type Request, type Response } from 'express';
+import PDFDocument from 'pdfkit';
+import QRCode from 'qrcode';
 import { toCents } from '../../src/shared/academic.ts';
 import {
   createInvoiceSchema,
   createUserSchema,
   issueCertificateSchema,
+  notificationPreferencesUpdateSchema,
   recordPaymentSchema,
   revokeCertificateSchema,
   updateUserSchema,
   uploadDocumentSchema,
 } from '../../src/shared/validation.ts';
+import { storePrivateDocument } from '../storage/index.ts';
 import {
   findUserByEmail,
   generateNextInvoiceNumber,
@@ -759,6 +765,7 @@ adminOpsRouter.get(
         include: {
           student: { select: { name: true, studentCode: true } },
           course: { select: { code: true, title: true } },
+          template: true,
         },
       });
       if (!cert) {
@@ -778,25 +785,193 @@ adminOpsRouter.get(
         }
       }
 
-      const payload = {
-        certificateCode: cert.certificateCode,
-        verificationHash: cert.verificationHash,
-        studentName: cert.student?.name ?? 'Student',
-        studentCode: cert.student?.studentCode ?? '',
-        courseCode: cert.course?.code ?? '',
-        courseTitle: cert.courseTitleSnapshot ?? cert.course?.title ?? '',
-        finalScore: cert.finalScore.toFixed(2),
-        letterGrade: cert.letterGrade,
-        attendanceRate: cert.attendanceRate,
-        issuedByName: cert.issuedByName,
-        status: cert.status,
-        issuedAt: cert.issuedAt.toISOString(),
-      };
+      const academy = await prisma.academy.findFirst({ orderBy: { createdAt: 'asc' } });
+      const academyName = academy?.name || 'IGS — InfoCom Global Services';
+      const academySubtitle = academy?.legalName || 'Computer Institute · Downtown Sopore';
+      const academyAddress =
+        academy?.address ||
+        'Downtown Sopore, Opposite Hassan Motors Petrol Pump, Sopore, Jammu and Kashmir, India.';
+
+      const hostOrigin =
+        process.env.APP_URL ||
+        (req.get('host') ? `${req.protocol}://${req.get('host')}` : 'http://localhost:3000');
+      const verifyUrl = `${hostOrigin.replace(/\/+$/, '')}/verify-certificate?verifyCert=${encodeURIComponent(
+        cert.certificateCode
+      )}`;
+      const qrPng = await QRCode.toBuffer(verifyUrl, {
+        width: 160,
+        margin: 1,
+        color: { dark: '#0F172A', light: '#FFFFFF' },
+      });
+
+      const pdfBuffer = await new Promise<Buffer>((resolve, reject) => {
+        const doc = new PDFDocument({
+          size: 'A4',
+          layout: 'landscape',
+          margin: 36,
+          info: {
+            Title: `${cert.certificateCode} — ${academyName}`,
+            Author: academyName,
+          },
+        });
+        const chunks: Buffer[] = [];
+        doc.on('data', (chunk: Buffer) => chunks.push(chunk));
+        doc.on('end', () => resolve(Buffer.concat(chunks)));
+        doc.on('error', (e) => reject(e));
+
+        const w = doc.page.width;
+        const h = doc.page.height;
+
+        // Crisp double border
+        doc.rect(24, 24, w - 48, h - 48).lineWidth(2).stroke('#1E3A8A');
+        doc.rect(32, 32, w - 64, h - 64).lineWidth(0.75).stroke('#94A3B8');
+
+        const officialLogoPath = path.resolve(
+          process.cwd(),
+          'public/assets/aistudio/IMG-20261110-WA0004_ac23d401.jpg'
+        );
+        if (fs.existsSync(officialLogoPath)) {
+          doc.image(officialLogoPath, 54, 46, { fit: [120, 62] });
+        }
+
+        // Header
+        doc
+          .font('Helvetica-Bold')
+          .fontSize(18)
+          .fillColor('#0F172A')
+          .text(academyName.toUpperCase(), 56, 54, { align: 'center', width: w - 112 });
+        doc
+          .font('Helvetica')
+          .fontSize(10)
+          .fillColor('#475569')
+          .text(`${academySubtitle} · Learn Today, Build Tomorrow.`, 56, 78, {
+            align: 'center',
+            width: w - 112,
+          });
+        doc
+          .font('Helvetica')
+          .fontSize(8.5)
+          .fillColor('#64748B')
+          .text(academyAddress, 56, 94, { align: 'center', width: w - 112 });
+
+        // Title
+        const certTitle = cert.template?.titleFormat || 'VERIFIED CERTIFICATE OF COMPLETION';
+        doc
+          .font('Helvetica-Bold')
+          .fontSize(24)
+          .fillColor('#1E3A8A')
+          .text(certTitle.toUpperCase(), 56, 134, { align: 'center', width: w - 112 });
+
+        doc
+          .font('Helvetica')
+          .fontSize(11)
+          .fillColor('#475569')
+          .text('This is to formally certify that', 56, 178, { align: 'center', width: w - 112 });
+
+        // Recipient
+        doc
+          .font('Helvetica-Bold')
+          .fontSize(26)
+          .fillColor('#0F172A')
+          .text(cert.student?.name ?? 'Student', 56, 204, { align: 'center', width: w - 112 });
+
+        if (cert.student?.studentCode) {
+          doc
+            .font('Helvetica')
+            .fontSize(10)
+            .fillColor('#64748B')
+            .text(`Student ID: ${cert.student.studentCode}`, 56, 238, {
+              align: 'center',
+              width: w - 112,
+            });
+        }
+
+        doc
+          .font('Helvetica')
+          .fontSize(11)
+          .fillColor('#475569')
+          .text('has successfully satisfied all curriculum, assessment, and attendance requirements for', 56, 266, {
+            align: 'center',
+            width: w - 112,
+          });
+
+        const courseTitle = cert.courseTitleSnapshot ?? cert.course?.title ?? '';
+        const courseCode = cert.course?.code ? `${cert.course.code} — ` : '';
+        doc
+          .font('Helvetica-Bold')
+          .fontSize(18)
+          .fillColor('#0F172A')
+          .text(`${courseCode}${courseTitle}`, 56, 292, { align: 'center', width: w - 112 });
+
+        // Metrics row
+        const metricsText = `Final Score: ${cert.finalScore.toFixed(2)}%   ·   Grade: ${cert.letterGrade}   ·   Attendance: ${cert.attendanceRate}%   ·   Status: ${cert.status}`;
+        doc
+          .font('Helvetica-Bold')
+          .fontSize(10.5)
+          .fillColor(cert.status === 'Revoked' ? '#B91C1C' : '#0F766E')
+          .text(metricsText, 56, 330, { align: 'center', width: w - 112 });
+
+        if (cert.status === 'Revoked') {
+          doc
+            .font('Helvetica-Bold')
+            .fontSize(14)
+            .fillColor('#B91C1C')
+            .text(
+              `REVOKED CERTIFICATE${cert.revokedReason ? ` — ${cert.revokedReason}` : ''}`,
+              56,
+              352,
+              { align: 'center', width: w - 112 }
+            );
+        }
+
+        // Bottom signature + QR block
+        const footerY = h - 155;
+        doc
+          .moveTo(64, footerY + 46)
+          .lineTo(280, footerY + 46)
+          .lineWidth(0.75)
+          .stroke('#94A3B8');
+        doc
+          .font('Helvetica-Bold')
+          .fontSize(10.5)
+          .fillColor('#0F172A')
+          .text(cert.template?.signatoryName || cert.issuedByName, 64, footerY + 52, { width: 220 });
+        doc
+          .font('Helvetica')
+          .fontSize(9)
+          .fillColor('#475569')
+          .text(cert.template?.signatoryTitle || academyName, 64, footerY + 68, { width: 220 });
+
+        doc
+          .font('Helvetica')
+          .fontSize(9)
+          .fillColor('#334155')
+          .text(`Certificate Code: ${cert.certificateCode}`, 310, footerY + 34, { width: 280 })
+          .text(`Issued Date: ${cert.issuedAt.toISOString().slice(0, 10)}`, 310, footerY + 50, {
+            width: 280,
+          })
+          .text(`SHA-256 Digest: ${cert.verificationHash.slice(0, 24)}...`, 310, footerY + 66, {
+            width: 280,
+          });
+
+        // QR Code
+        doc.image(qrPng, w - 156, footerY - 6, { width: 92, height: 92 });
+        doc
+          .font('Helvetica')
+          .fontSize(7.5)
+          .fillColor('#64748B')
+          .text('Scan to verify', w - 156, footerY + 90, { width: 92, align: 'center' });
+
+        doc.end();
+      });
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
       res.setHeader(
         'Content-Disposition',
-        `attachment; filename="${cert.certificateCode}.json"`
+        `attachment; filename="${cert.certificateCode}.pdf"`
       );
-      res.json(payload);
+      res.send(pdfBuffer);
     } catch (err) {
       console.error('GET /api/certificates/:id/download error:', err);
       res.status(500).json({ error: 'Failed to download certificate.' });
@@ -870,7 +1045,76 @@ adminOpsRouter.post(
   }
 );
 
-// Document Vault (PostgreSQL persisted files)
+adminOpsRouter.get(
+  '/notifications/preferences',
+  requireAuth,
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const saved = await prisma.notificationPreference.findMany({
+        where: { userId: req.authUser!.id },
+      });
+      const defaultKinds = ['all', 'attendance', 'reminder', 'grade', 'enrollment', 'finance', 'certificate'];
+      const channels: Array<'in_app' | 'email'> = ['in_app', 'email'];
+      const savedMap = new Map(saved.map((s) => [`${s.channel}:${s.kind}`, s.enabled]));
+
+      const preferences = channels.flatMap((channel) =>
+        defaultKinds.map((kind) => ({
+          channel,
+          kind,
+          enabled: savedMap.get(`${channel}:${kind}`) ?? true,
+        }))
+      );
+
+      res.json({ preferences });
+    } catch (err) {
+      console.error('GET /api/notifications/preferences error:', err);
+      res.status(500).json({ error: 'Failed to load notification preferences.' });
+    }
+  }
+);
+
+adminOpsRouter.put(
+  '/notifications/preferences',
+  requireAuth,
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const parsed = notificationPreferencesUpdateSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid preference settings.' });
+        return;
+      }
+
+      await prisma.$transaction(async (tx) => {
+        for (const pref of parsed.data.preferences) {
+          await tx.notificationPreference.upsert({
+            where: {
+              userId_channel_kind: {
+                userId: req.authUser!.id,
+                channel: pref.channel,
+                kind: pref.kind,
+              },
+            },
+            update: { enabled: pref.enabled },
+            create: {
+              id: `np-${crypto.randomUUID().slice(0, 8)}`,
+              userId: req.authUser!.id,
+              channel: pref.channel,
+              kind: pref.kind,
+              enabled: pref.enabled,
+            },
+          });
+        }
+      });
+
+      res.json({ ok: true, preferences: parsed.data.preferences });
+    } catch (err) {
+      console.error('PUT /api/notifications/preferences error:', err);
+      res.status(500).json({ error: 'Failed to save notification preferences.' });
+    }
+  }
+);
+
+// Document Vault (Object storage with PostgreSQL metadata)
 adminOpsRouter.post(
   '/documents',
   requireAuth,
@@ -883,12 +1127,6 @@ adminOpsRouter.post(
       }
 
       const input = parsed.data;
-      const decoded = Buffer.from(input.contentBase64, 'base64');
-      if (decoded.byteLength === 0 || decoded.byteLength > 2 * 1024 * 1024) {
-        res.status(400).json({ error: 'Document must be non-empty and at most 2 MB.' });
-        return;
-      }
-
       const isStudent = req.authUser!.role === 'student';
       const studentAllowedCategories = new Set(['ID Verification', 'Assignment', 'Other']);
       if (isStudent && !studentAllowedCategories.has(input.category)) {
@@ -930,8 +1168,21 @@ adminOpsRouter.post(
         return;
       }
 
+      let stored;
+      try {
+        stored = await storePrivateDocument({
+          fileName: input.fileName,
+          mimeType: input.mimeType,
+          contentBase64: input.contentBase64,
+        });
+      } catch (storageErr) {
+        res.status(400).json({
+          error: storageErr instanceof Error ? storageErr.message : 'Invalid file attachment.',
+        });
+        return;
+      }
+
       const docId = `doc-${crypto.randomUUID().slice(0, 8)}`;
-      const checksumSha256 = crypto.createHash('sha256').update(decoded).digest('hex');
 
       await prisma.fileAsset.create({
         data: {
@@ -940,12 +1191,13 @@ adminOpsRouter.post(
           courseId: input.courseId || null,
           title: input.title,
           category: input.category,
-          fileName: input.fileName,
-          mimeType: input.mimeType,
-          sizeBytes: decoded.byteLength,
-          contentBase64: input.contentBase64,
-          storageProvider: 'postgres',
-          checksumSha256,
+          fileName: stored.cleanFileName,
+          mimeType: stored.mimeType,
+          sizeBytes: stored.sizeBytes,
+          contentBase64: '',
+          storageProvider: stored.storageProvider,
+          storageKey: stored.storageKey,
+          checksumSha256: stored.checksumSha256,
           uploadedByUserId: req.authUser!.id,
           isArchived: false,
         },
@@ -956,7 +1208,7 @@ adminOpsRouter.post(
         action: 'DOCUMENT_UPLOADED',
         entityType: 'document',
         entityId: docId,
-        summary: `Uploaded "${input.title}" (${input.category}, ${decoded.byteLength} bytes).`,
+        summary: `Uploaded "${input.title}" (${input.category}, ${stored.sizeBytes} bytes, ${stored.storageProvider}).`,
       });
 
       const dashboard = await getUserDashboardById(req.authUser!.id);
@@ -983,14 +1235,13 @@ adminOpsRouter.get(
         return;
       }
 
-      const buffer = Buffer.from(result.contentBase64, 'base64');
       res.setHeader('X-Content-Type-Options', 'nosniff');
       res.setHeader('Content-Type', result.mimeType || 'application/octet-stream');
       res.setHeader(
         'Content-Disposition',
         `attachment; filename="${result.fileName.replace(/["\r\n]/g, '')}"`
       );
-      res.send(buffer);
+      res.send(result.buffer);
     } catch (err) {
       console.error('GET /api/documents/:id/download error:', err);
       res.status(500).json({ error: 'Failed to download document.' });
