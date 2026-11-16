@@ -12,6 +12,8 @@
     "clean": "rm -rf dist dist-server",
     "lint": "tsc --noEmit",
     "test": "tsx --test --test-concurrency=1 src/shared/academic.test.ts src/shared/validation.test.ts server/auth.test.ts server/db/config.test.ts server/security.integration.test.ts server/phase4.integration.test.ts server/phase5.integration.test.ts server/phase6.integration.test.ts server/phase7.integration.test.ts server/public-and-phase7.integration.test.ts server/stabilization.integration.test.ts",
+    "test:e2e": "playwright test",
+    "worker": "tsx scripts/worker.ts",
     "admin:bootstrap": "tsx scripts/bootstrap-admin.ts",
     "db:generate": "tsx scripts/prisma-run.ts generate",
     "db:migrate:deploy": "tsx scripts/prisma-run.ts migrate deploy",
@@ -52,6 +54,8 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@playwright/test": "^1.65.1",
+    "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
@@ -59,7 +63,6 @@
     "esbuild": "^0.28.0",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.21.0",
-    "typescript": "^7.0.2",
-    "@types/express": "^4.17.21"
+    "typescript": "^7.0.2"
   }
 }

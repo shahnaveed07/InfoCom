@@ -33,8 +33,28 @@ export function SchedulesView({
   );
   const [modalOpen, setModalOpen] = useState(false);
 
+  const getCourseCohorts = (targetCourseId: string): string[] => {
+    const names = new Set<string>();
+    for (const b of data.cohorts) {
+      if (b.courseId === targetCourseId && b.status !== 'Archived') {
+        names.add(b.name);
+      }
+    }
+    for (const e of data.enrollments) {
+      if (e.courseId === targetCourseId && e.cohort) {
+        names.add(e.cohort);
+      }
+    }
+    if (names.size === 0) {
+      names.add('Cohort A · Autumn');
+      names.add('Cohort B · Autumn');
+    }
+    return Array.from(names);
+  };
+
   const [courseId, setCourseId] = useState(data.courses[0]?.id ?? '');
-  const [cohort, setCohort] = useState('Cohort A · Autumn');
+  const availableCohorts = getCourseCohorts(courseId);
+  const [cohort, setCohort] = useState(() => getCourseCohorts(data.courses[0]?.id ?? '')[0] ?? 'Cohort A · Autumn');
   const [title, setTitle] = useState('');
   const [topic, setTopic] = useState('');
   const [room, setRoom] = useState('Lab 204');
@@ -47,6 +67,18 @@ export function SchedulesView({
   const [durationHours, setDurationHours] = useState('2');
   const [formError, setFormError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+
+  const resolvedCohort = availableCohorts.includes(cohort)
+    ? cohort
+    : availableCohorts[0] ?? 'Cohort A · Autumn';
+
+  function handleCourseChange(nextCourseId: string) {
+    setCourseId(nextCourseId);
+    const nextCohorts = getCourseCohorts(nextCourseId);
+    if (!nextCohorts.includes(cohort)) {
+      setCohort(nextCohorts[0] ?? 'Cohort A · Autumn');
+    }
+  }
 
   const nowMs = Date.now();
   const filteredSessions = [...data.sessions]
@@ -70,7 +102,7 @@ export function SchedulesView({
     try {
       await onCreateSession({
         courseId,
-        cohort,
+        cohort: resolvedCohort,
         title: title.trim(),
         topic: topic.trim(),
         room: room.trim(),
@@ -263,7 +295,7 @@ export function SchedulesView({
                 <select
                   id="ses-course"
                   value={courseId}
-                  onChange={(e) => setCourseId(e.target.value)}
+                  onChange={(e) => handleCourseChange(e.target.value)}
                   className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg text-slate-900"
                 >
                   {data.courses.map((c) => (
@@ -319,12 +351,15 @@ export function SchedulesView({
                   </label>
                   <select
                     id="ses-cohort"
-                    value={cohort}
+                    value={resolvedCohort}
                     onChange={(e) => setCohort(e.target.value)}
                     className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg text-slate-900"
                   >
-                    <option value="Cohort A · Autumn">Cohort A · Autumn</option>
-                    <option value="Cohort B · Autumn">Cohort B · Autumn</option>
+                    {availableCohorts.map((opt) => (
+                      <option key={opt} value={opt}>
+                        {opt}
+                      </option>
+                    ))}
                   </select>
                 </div>
 

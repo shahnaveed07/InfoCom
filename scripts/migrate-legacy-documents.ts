@@ -7,6 +7,7 @@ import { migrateLegacyDocuments } from '../server/storage/migrate-legacy.ts';
 function parseArgs(argv: string[]) {
   const dryRun = argv.includes('--dry-run');
   const keepBase64 = argv.includes('--keep-base64');
+  const confirmClearBase64 = argv.includes('--confirm-clear-base64');
   const limitArg = argv.find((a) => a.startsWith('--limit='));
   const reportArg = argv.find((a) => a.startsWith('--report='));
   const limit = limitArg ? Number(limitArg.split('=')[1]) : undefined;
@@ -14,6 +15,7 @@ function parseArgs(argv: string[]) {
   return {
     dryRun,
     keepBase64,
+    confirmClearBase64,
     limit: limit && Number.isFinite(limit) && limit > 0 ? limit : undefined,
     reportPath,
   };
@@ -22,12 +24,13 @@ function parseArgs(argv: string[]) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   console.log(
-    `[storage-migration] Starting legacy document scan (dryRun=${args.dryRun}, keepBase64=${args.keepBase64})...`
+    `[storage-migration] Starting legacy document scan (dryRun=${args.dryRun}, keepBase64=${args.keepBase64}, confirmClearBase64=${args.confirmClearBase64})...`
   );
 
   const report = await migrateLegacyDocuments({
     dryRun: args.dryRun,
     keepBase64: args.keepBase64,
+    confirmClearBase64: args.confirmClearBase64,
     limit: args.limit,
   });
 
@@ -38,6 +41,7 @@ async function main() {
         finishedAt: report.finishedAt,
         dryRun: report.dryRun,
         keepBase64: report.keepBase64,
+        confirmClearBase64: report.confirmClearBase64,
         targetProvider: report.targetProvider,
         scanned: report.scanned,
         migrated: report.migrated,

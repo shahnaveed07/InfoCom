@@ -1045,19 +1045,25 @@ model AuditLog {
 // ============================================================================
 
 model BackgroundJob {
-  id          String    @id
-  jobType     String    @map("job_type")
-  payload     Json      @default("{}")
-  status      String    @default("Pending") // 'Pending' | 'Processing' | 'Completed' | 'Failed'
-  attempts    Int       @default(0)
-  maxAttempts Int       @default(3) @map("max_attempts")
-  runAfter    DateTime  @default(now()) @map("run_after") @db.Timestamptz(6)
-  lastError   String?   @map("last_error")
-  lockedAt    DateTime? @map("locked_at") @db.Timestamptz(6)
-  completedAt DateTime? @map("completed_at") @db.Timestamptz(6)
-  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt   DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id             String    @id
+  jobType        String    @map("job_type")
+  dedupeKey      String?   @unique @map("dedupe_key")
+  payload        Json      @default("{}")
+  status         String    @default("Pending") // 'Pending' | 'Processing' | 'Completed' | 'Failed'
+  attempts       Int       @default(0)
+  maxAttempts    Int       @default(3) @map("max_attempts")
+  runAfter       DateTime  @default(now()) @map("run_after") @db.Timestamptz(6)
+  lastError      String?   @map("last_error")
+  workerId       String?   @map("worker_id")
+  lockedAt       DateTime? @map("locked_at") @db.Timestamptz(6)
+  leaseExpiresAt DateTime? @map("lease_expires_at") @db.Timestamptz(6)
+  startedAt      DateTime? @map("started_at") @db.Timestamptz(6)
+  completedAt    DateTime? @map("completed_at") @db.Timestamptz(6)
+  durationMs     Int?      @map("duration_ms")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@index([status, runAfter])
+  @@index([status, leaseExpiresAt])
   @@map("background_jobs")
 }

@@ -77,9 +77,21 @@ export default function App() {
     try {
       const data = await api.getDashboard();
       setDashboard(data);
-      setActiveSection(
-        loggedInUser.role === 'student' ? 'student-home' : 'overview'
-      );
+      setActiveSection((prev) => {
+        if (loggedInUser.role === 'student') {
+          return prev === 'student-home' ||
+            prev === 'student-report' ||
+            prev === 'schedules' ||
+            prev === 'finance' ||
+            prev === 'certificates' ||
+            prev === 'documents'
+            ? prev
+            : 'student-home';
+        }
+        return prev === 'student-home' || prev === 'student-report'
+          ? 'overview'
+          : prev;
+      });
     } catch (err) {
       setLoadError(
         err instanceof Error ? err.message : 'Unable to load portal data.'
@@ -123,6 +135,7 @@ export default function App() {
   }, [loadWorkspace]);
 
   async function handleAuthenticated(loggedInUser: UserPublic) {
+    setActiveSection(loggedInUser.role === 'student' ? 'student-home' : 'overview');
     setUser(loggedInUser);
     if (!loggedInUser.mustChangePassword) {
       await loadWorkspace(loggedInUser);
@@ -134,6 +147,7 @@ export default function App() {
     await api.logout().catch(() => undefined);
     setUser(null);
     setDashboard(null);
+    setActiveSection('overview');
     navigate('/login');
   }
 

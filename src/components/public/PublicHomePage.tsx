@@ -38,6 +38,7 @@ export function PublicHomePage({ academy }: PublicHomePageProps) {
   const [courses, setCourses] = useState<PublicCourseSummary[]>([]);
   const [loadingCourses, setLoadingCourses] = useState(true);
   const [courseError, setCourseError] = useState('');
+  const [isDemoEnv, setIsDemoEnv] = useState(false);
   const [imageFailed, setImageFailed] = useState(false);
 
   useEffect(() => {
@@ -48,6 +49,7 @@ export function PublicHomePage({ academy }: PublicHomePageProps) {
       .then((res) => {
         if (!active) return;
         setCourses(res.courses);
+        setIsDemoEnv(Boolean(res.isDemoEnvironment));
       })
       .catch((err) => {
         if (!active) return;
@@ -70,6 +72,7 @@ export function PublicHomePage({ academy }: PublicHomePageProps) {
     'Downtown Sopore, Opposite Hassan Motors Petrol Pump, Sopore, Jammu and Kashmir, India.';
   const currency = academy?.currency || 'INR';
   const featuredCourses = courses.slice(0, 6);
+  const showDemoNotice = isDemoEnv || featuredCourses.some((c) => Boolean(c.isDemo));
 
   return (
     <div>
@@ -165,6 +168,15 @@ export function PublicHomePage({ academy }: PublicHomePageProps) {
           </Link>
         </div>
 
+        {showDemoNotice && (
+          <div
+            role="status"
+            className="mt-6 px-4 py-2.5 bg-amber-50 border border-amber-300 rounded-lg text-xs text-amber-950"
+          >
+            <strong>Development Sample Catalog:</strong> Marked sample programs come from the local development seed (<code>NODE_ENV=development</code>) and are excluded automatically in production.
+          </div>
+        )}
+
         {loadingCourses ? (
           <div className="mt-8 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {[0, 1, 2].map((idx) => (
@@ -195,12 +207,17 @@ export function PublicHomePage({ academy }: PublicHomePageProps) {
                 className="bg-white border border-slate-200 rounded-xl p-6 flex flex-col justify-between hover:border-blue-300 transition-colors"
               >
                 <div>
-                  <div className="flex items-center gap-2 text-xs text-slate-500 font-mono tabular-nums">
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 font-mono tabular-nums">
                     <span className="font-semibold text-blue-800">{course.code}</span>
                     <span aria-hidden="true">·</span>
                     <span>{course.category}</span>
                     <span aria-hidden="true">·</span>
                     <span>{course.durationWeeks} wks</span>
+                    {course.isDemo && (
+                      <span className="ml-auto px-1.5 py-0.5 text-[10px] font-medium bg-amber-50 text-amber-900 border border-amber-300 rounded">
+                        Sample Program
+                      </span>
+                    )}
                   </div>
                   <h3 className="mt-2 font-display text-lg font-semibold text-slate-900 leading-snug">
                     <Link

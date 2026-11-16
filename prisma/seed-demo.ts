@@ -10,38 +10,50 @@ if (process.env.NODE_ENV !== 'development' || process.env.ALLOW_DEMO_SEED !== 't
   );
 }
 
-function resolveDemoPassword(envVarName: string): { password: string; generated: boolean } {
-  const configured = process.env[envVarName]?.trim();
-  if (configured && configured.length >= 8) {
-    return { password: configured, generated: false };
+const WEAK_PASSWORDS = new Set([
+  'password',
+  'password123',
+  '1234567890',
+  'admin12345',
+  'changeme12',
+  'infocom123',
+  'qwerty1234',
+]);
+
+function requireStrongDemoPassword(envVarName: string): string {
+  const value = process.env[envVarName]?.trim() || '';
+  if (!value) {
+    throw new Error(
+      `Missing required local development password: ${envVarName}. ` +
+        'Configure SEED_ADMIN_PASSWORD, SEED_INSTRUCTOR_PASSWORD, and SEED_STUDENT_PASSWORD in your local .env file before running "npm run db:seed:demo".'
+    );
   }
-  return {
-    password: `${crypto.randomBytes(10).toString('base64url')}!A9`,
-    generated: true,
-  };
+  const hasLower = /[a-z]/.test(value);
+  const hasUpper = /[A-Z]/.test(value);
+  const hasDigit = /\d/.test(value);
+  if (value.length < 10 || !hasLower || !hasUpper || !hasDigit || WEAK_PASSWORDS.has(value.toLowerCase())) {
+    throw new Error(
+      `Invalid ${envVarName}: local development seed passwords must be at least 10 characters long and contain uppercase, lowercase, and numeric characters.`
+    );
+  }
+  return value;
 }
 
 async function main() {
-  await seedProductionFoundation();
+  const adminPassword = requireStrongDemoPassword('SEED_ADMIN_PASSWORD');
+  const instructorPassword = requireStrongDemoPassword('SEED_INSTRUCTOR_PASSWORD');
+  const studentPassword = requireStrongDemoPassword('SEED_STUDENT_PASSWORD');
 
-  const adminCred = resolveDemoPassword('SEED_ADMIN_PASSWORD');
-  const instructorCred = resolveDemoPassword('SEED_INSTRUCTOR_PASSWORD');
-  const studentCred = resolveDemoPassword('SEED_STUDENT_PASSWORD');
+  await seedProductionFoundation();
 
   console.log('Seeding IGS — InfoCom Global Services development demo dataset...');
   console.log(
-    `[demo-seed] Admin credential source: ${adminCred.generated ? 'generated ephemeral password (set SEED_ADMIN_PASSWORD in .env to customize)' : 'SEED_ADMIN_PASSWORD env'}`
-  );
-  console.log(
-    `[demo-seed] Faculty credential source: ${instructorCred.generated ? 'generated ephemeral password (set SEED_INSTRUCTOR_PASSWORD in .env to customize)' : 'SEED_INSTRUCTOR_PASSWORD env'}`
-  );
-  console.log(
-    `[demo-seed] Student credential source: ${studentCred.generated ? 'generated ephemeral password (set SEED_STUDENT_PASSWORD in .env to customize)' : 'SEED_STUDENT_PASSWORD env'}`
+    '[demo-seed] Validated SEED_ADMIN_PASSWORD, SEED_INSTRUCTOR_PASSWORD, and SEED_STUDENT_PASSWORD from environment (existing user credentials will not be overwritten).'
   );
 
-  const adminPwHash = await hashPassword(adminCred.password);
-  const instructorPwHash = await hashPassword(instructorCred.password);
-  const studentPwHash = await hashPassword(studentCred.password);
+  const adminPwHash = await hashPassword(adminPassword);
+  const instructorPwHash = await hashPassword(instructorPassword);
+  const studentPwHash = await hashPassword(studentPassword);
 
   await prisma.$transaction(async (tx) => {
     // 1. Academic Departments

@@ -23,6 +23,7 @@ export interface LegacyMigrationReport {
   finishedAt: string;
   dryRun: boolean;
   keepBase64: boolean;
+  confirmClearBase64: boolean;
   targetProvider: 'local' | 's3';
   scanned: number;
   migrated: number;
@@ -47,12 +48,23 @@ function normalizeAndValidateBase64(raw: string): Buffer {
 export async function migrateLegacyDocuments(options?: {
   dryRun?: boolean;
   keepBase64?: boolean;
+  confirmClearBase64?: boolean;
   limit?: number;
   recordIds?: string[];
 }): Promise<LegacyMigrationReport> {
   const startedAt = new Date().toISOString();
   const dryRun = Boolean(options?.dryRun);
   const keepBase64 = Boolean(options?.keepBase64);
+  const confirmClearBase64 = Boolean(options?.confirmClearBase64);
+
+  if (!dryRun && !keepBase64 && !confirmClearBase64) {
+    throw new Error(
+      'Refusing destructive Base64 payload clearing without explicit confirmation. ' +
+        'Run with --dry-run to inspect, --keep-base64 to migrate safely while retaining database Base64, ' +
+        'or pass --confirm-clear-base64 (confirmClearBase64: true) only after verifying a database backup.'
+    );
+  }
+
   const targetProvider = getActiveStorageProvider();
 
   const candidates = await prisma.fileAsset.findMany({
@@ -258,6 +270,7 @@ export async function migrateLegacyDocuments(options?: {
     finishedAt: new Date().toISOString(),
     dryRun,
     keepBase64,
+    confirmClearBase64,
     targetProvider,
     scanned: candidates.length,
     migrated,

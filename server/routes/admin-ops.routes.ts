@@ -50,7 +50,7 @@ import {
   hasInstructorPermission,
 } from '../security/permissions.ts';
 import { isSmtpConfigured, verifySmtpConnection } from '../email/mailer.ts';
-import { queueTransactionalEmail, runFeeReminderSweep } from '../jobs/worker.ts';
+import { getWorkerTelemetry, queueTransactionalEmail, runFeeReminderSweep } from '../jobs/worker.ts';
 
 export const adminOpsRouter = Router();
 
@@ -727,45 +727,48 @@ adminOpsRouter.get(
   async (req: Request, res: Response) => {
     try {
       const verify = req.query.verify === 'true';
-      const [smtpStatus, groupedCounts, recentDeliveries, recentJobs] = await Promise.all([
-        verify ? verifySmtpConnection() : Promise.resolve(null),
-        prisma.deliveryLog.groupBy({
-          by: ['status'],
-          where: { channel: 'email' },
-          _count: { _all: true },
-        }),
-        prisma.deliveryLog.findMany({
-          where: { channel: 'email' },
-          orderBy: { sentAt: 'desc' },
-          take: 25,
-          select: {
-            id: true,
-            notificationId: true,
-            userId: true,
-            applicationId: true,
-            recipient: true,
-            status: true,
-            providerMessageId: true,
-            errorMessage: true,
-            sentAt: true,
-          },
-        }),
-        prisma.backgroundJob.findMany({
-          where: { jobType: 'notification_email' },
-          orderBy: { createdAt: 'desc' },
-          take: 20,
-          select: {
-            id: true,
-            status: true,
-            attempts: true,
-            maxAttempts: true,
-            lastError: true,
-            runAfter: true,
-            completedAt: true,
-            createdAt: true,
-          },
-        }),
-      ]);
+      const [smtpStatus, groupedCounts, recentDeliveries, recentJobs, workerTelemetry] =
+        await Promise.all([
+          verify ? verifySmtpConnection() : Promise.resolve(null),
+          prisma.deliveryLog.groupBy({
+            by: ['status'],
+            where: { channel: 'email' },
+            _count: { _all: true },
+          }),
+          prisma.deliveryLog.findMany({
+            where: { channel: 'email' },
+            orderBy: { sentAt: 'desc' },
+            take: 25,
+            select: {
+              id: true,
+              notificationId: true,
+              userId: true,
+              applicationId: true,
+              recipient: true,
+              status: true,
+              providerMessageId: true,
+              errorMessage: true,
+              sentAt: true,
+            },
+          }),
+          prisma.backgroundJob.findMany({
+            where: { jobType: 'notification_email' },
+            orderBy: { createdAt: 'desc' },
+            take: 20,
+            select: {
+              id: true,
+              status: true,
+              attempts: true,
+              maxAttempts: true,
+              lastError: true,
+              durationMs: true,
+              runAfter: true,
+              completedAt: true,
+              createdAt: true,
+            },
+          }),
+          getWorkerTelemetry(),
+        ]);
 
       const countsByStatus: Record<string, number> = {
         Queued: 0,
@@ -781,6 +784,7 @@ adminOpsRouter.get(
         smtpConfigured: isSmtpConfigured(),
         verification: smtpStatus,
         countsByStatus,
+        workerTelemetry,
         recentDeliveries: recentDeliveries.map((d) => ({
           ...d,
           sentAt: d.sentAt.toISOString(),
@@ -795,6 +799,21 @@ adminOpsRouter.get(
     } catch (err) {
       console.error('GET /api/admin/email-delivery error:', err);
       res.status(500).json({ error: 'Failed to load email delivery telemetry.' });
+    }
+  }
+);
+
+adminOpsRouter.get(
+  '/admin/worker-status',
+  requireAuth,
+  requireRoles('admin'),
+  async (_req: Request, res: Response) => {
+    try {
+      const telemetry = await getWorkerTelemetry();
+      res.json(telemetry);
+    } catch (err) {
+      console.error('GET /api/admin/worker-status error:', err);
+      res.status(500).json({ error: 'Failed to load background worker status.' });
     }
   }
 );

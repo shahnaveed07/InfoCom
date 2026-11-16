@@ -344,17 +344,29 @@ test('Public Website API, Disabled Self-Registration, Certificate PDF/QR, Local 
       assert.ok(stuProg.buffer && stuProg.buffer.subarray(0, 5).toString('ascii') === '%PDF-');
     });
   } finally {
-    for (const obj of createdStorageFiles) {
-      await deletePrivateDocument(obj).catch(() => undefined);
+    try {
+      for (const obj of createdStorageFiles) {
+        await deletePrivateDocument(obj).catch(() => undefined);
+      }
+      await prisma.certificate.deleteMany({ where: { id: { in: createdCertIds } } }).catch(() => undefined);
+      await prisma.enrollmentHistory
+        .deleteMany({ where: { enrollmentId: { in: createdEnrollmentIds } } })
+        .catch(() => undefined);
+      await prisma.enrollment.deleteMany({ where: { id: { in: createdEnrollmentIds } } }).catch(() => undefined);
+      await prisma.fileAsset.deleteMany({ where: { id: { in: createdDocIds } } }).catch(() => undefined);
+      await prisma.feeStructure
+        .deleteMany({ where: { courseId: { in: createdCourseIds } } })
+        .catch(() => undefined);
+      await prisma.courseModule.deleteMany({ where: { courseId: { in: createdCourseIds } } }).catch(() => undefined);
+      await prisma.course.deleteMany({ where: { id: { in: createdCourseIds } } }).catch(() => undefined);
+      await prisma.deliveryLog.deleteMany({ where: { userId: { in: createdUserIds } } }).catch(() => undefined);
+      await prisma.notification.deleteMany({ where: { userId: { in: createdUserIds } } }).catch(() => undefined);
+      await prisma.auditLog.deleteMany({ where: { actorUserId: { in: createdUserIds } } }).catch(() => undefined);
+      await prisma.authSession.deleteMany({ where: { userId: { in: createdUserIds } } }).catch(() => undefined);
+      await prisma.userRole.deleteMany({ where: { userId: { in: createdUserIds } } }).catch(() => undefined);
+      await prisma.user.deleteMany({ where: { id: { in: createdUserIds } } }).catch(() => undefined);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     }
-    await prisma.certificate.deleteMany({ where: { id: { in: createdCertIds } } });
-    await prisma.enrollment.deleteMany({ where: { id: { in: createdEnrollmentIds } } });
-    await prisma.fileAsset.deleteMany({ where: { id: { in: createdDocIds } } });
-    await prisma.courseModule.deleteMany({ where: { courseId: { in: createdCourseIds } } });
-    await prisma.course.deleteMany({ where: { id: { in: createdCourseIds } } });
-    await prisma.auditLog.deleteMany({ where: { actorUserId: { in: createdUserIds } } });
-    await prisma.authSession.deleteMany({ where: { userId: { in: createdUserIds } } });
-    await prisma.user.deleteMany({ where: { id: { in: createdUserIds } } });
-    await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });

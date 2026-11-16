@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
-import type { Server } from 'node:http';
+import http, { type Server } from 'node:http';
 import test from 'node:test';
 import { promisify } from 'node:util';
 import 'dotenv/config';
@@ -9,9 +9,18 @@ import { createApiApp } from './app.ts';
 import { SESSION_COOKIE_NAME, hashPassword } from './auth.ts';
 import { prisma } from './db/prisma.ts';
 import { setEmailSenderOverride } from './email/mailer.ts';
-import { processPendingJobs, queueTransactionalEmail } from './jobs/worker.ts';
+import {
+  claimPendingJobs,
+  processPendingJobs,
+  queueTransactionalEmail,
+  recoverStaleProcessingJobs,
+} from './jobs/worker.ts';
 import { resetAuthRateLimiters } from './routes/auth.routes.ts';
-import { deletePrivateDocument, readPrivateDocument } from './storage/index.ts';
+import {
+  deletePrivateDocument,
+  readPrivateDocument,
+  storePrivateDocument,
+} from './storage/index.ts';
 import { migrateLegacyDocuments } from './storage/migrate-legacy.ts';
 
 const execFileAsync = promisify(execFile);
@@ -330,7 +339,49 @@ test('Stabilization Suite: RBAC Boundaries, Demo Seed Guards, Legacy Doc Migrati
       }
       assert.equal(failedWhenDisabled, true, 'seed-demo.ts must abort when ALLOW_DEMO_SEED=false');
 
-      // /api/public/courses hides isDemo=true courses in production
+      let failedWhenMissingPasswords = false;
+      try {
+        await execFileAsync('npx', ['tsx', 'prisma/seed-demo.ts'], {
+          env: {
+            ...process.env,
+            NODE_ENV: 'development',
+            ALLOW_DEMO_SEED: 'true',
+            SEED_ADMIN_PASSWORD: '',
+            SEED_INSTRUCTOR_PASSWORD: '',
+            SEED_STUDENT_PASSWORD: '',
+          },
+        });
+      } catch {
+        failedWhenMissingPasswords = true;
+      }
+      assert.equal(
+        failedWhenMissingPasswords,
+        true,
+        'seed-demo.ts must fail early when SEED_*_PASSWORD variables are missing'
+      );
+
+      let failedWhenWeakPassword = false;
+      try {
+        await execFileAsync('npx', ['tsx', 'prisma/seed-demo.ts'], {
+          env: {
+            ...process.env,
+            NODE_ENV: 'development',
+            ALLOW_DEMO_SEED: 'true',
+            SEED_ADMIN_PASSWORD: 'weak',
+            SEED_INSTRUCTOR_PASSWORD: 'StrongDemoPassword1!',
+            SEED_STUDENT_PASSWORD: 'StrongDemoPassword2!',
+          },
+        });
+      } catch {
+        failedWhenWeakPassword = true;
+      }
+      assert.equal(
+        failedWhenWeakPassword,
+        true,
+        'seed-demo.ts must reject weak local development passwords'
+      );
+
+      // /api/public/courses and detail endpoint hide isDemo=true courses in production
       process.env.NODE_ENV = 'production';
       const prodCatalog = await apiFetch('/api/public/courses');
       assert.equal(prodCatalog.res.status, 200);
@@ -342,6 +393,11 @@ test('Stabilization Suite: RBAC Boundaries, Demo Seed Guards, Legacy Doc Migrati
         false,
         'Demo courses must be excluded from public catalog in production'
       );
+      const prodDemoDetail = await apiFetch(`/api/public/courses/${demoCourseId}`);
+      assert.equal(prodDemoDetail.res.status, 404);
+      const prodRealDetail = await apiFetch(`/api/public/courses/${prodCourseId}`);
+      assert.equal(prodRealDetail.res.status, 200);
+      assert.equal(prodRealDetail.json?.isDemoEnvironment, false);
 
       // /api/public/courses exposes isDemo=true courses with indicator in development
       process.env.NODE_ENV = 'development';
@@ -352,12 +408,16 @@ test('Stabilization Suite: RBAC Boundaries, Demo Seed Guards, Legacy Doc Migrati
       const foundDemo = devList.find((c) => c.id === demoCourseId);
       assert.ok(foundDemo);
       assert.equal(foundDemo.isDemo, true);
+      const devDemoDetail = await apiFetch(`/api/public/courses/${demoCourseId}`);
+      assert.equal(devDemoDetail.res.status, 200);
+      assert.equal(devDemoDetail.json?.isDemoEnvironment, true);
     });
 
-    await t.test('3. Phase 5: Legacy Base64 document migration (dry-run, checksum-verified move & safe failure recovery)', async () => {
+    await t.test('3. Phase 5: Legacy Base64 document migration (confirmation guard, local & S3 round-trip, failure isolation)', async () => {
       const legacyValidId = `doc-leg-ok-${runSuffix}`;
       const legacyBadId = `doc-leg-bad-${runSuffix}`;
-      createdDocIds.push(legacyValidId, legacyBadId);
+      const legacyS3Id = `doc-leg-s3-${runSuffix}`;
+      createdDocIds.push(legacyValidId, legacyBadId, legacyS3Id);
 
       const payloadBytes = Buffer.from(`Legacy DB certificate scan ${runSuffix}`, 'utf8');
       const expectedSha = crypto.createHash('sha256').update(payloadBytes).digest('hex');
@@ -390,8 +450,32 @@ test('Stabilization Suite: RBAC Boundaries, Demo Seed Guards, Legacy Doc Migrati
             storageKey: null,
             checksumSha256: null,
           },
+          {
+            id: legacyS3Id,
+            ownerUserId: stuId,
+            title: 'Legacy S3 Transcript',
+            category: 'Transcript',
+            fileName: 'legacy-s3.txt',
+            mimeType: 'text/plain',
+            sizeBytes: payloadBytes.length,
+            contentBase64: payloadBytes.toString('base64'),
+            storageProvider: 'postgres',
+            storageKey: null,
+            checksumSha256: null,
+          },
         ],
       });
+
+      // Must refuse destructive clearing without confirmClearBase64: true
+      await assert.rejects(
+        () =>
+          migrateLegacyDocuments({
+            dryRun: false,
+            keepBase64: false,
+            recordIds: [legacyValidId],
+          }),
+        /Refusing destructive Base64 payload clearing/
+      );
 
       const dryReport = await migrateLegacyDocuments({
         dryRun: true,
@@ -407,9 +491,11 @@ test('Stabilization Suite: RBAC Boundaries, Demo Seed Guards, Legacy Doc Migrati
 
       const realReport = await migrateLegacyDocuments({
         dryRun: false,
+        confirmClearBase64: true,
         recordIds: [legacyValidId, legacyBadId],
       });
       assert.equal(realReport.dryRun, false);
+      assert.equal(realReport.confirmClearBase64, true);
       assert.equal(realReport.migrated, 1);
       assert.equal(realReport.failed, 1);
 
@@ -430,6 +516,105 @@ test('Stabilization Suite: RBAC Boundaries, Demo Seed Guards, Legacy Doc Migrati
         contentBase64: migratedRow.contentBase64,
       });
       assert.equal(diskBytes.toString('utf8'), payloadBytes.toString('utf8'));
+
+      // Verify S3-compatible provider upload, read-back, and legacy migration using local mock S3 endpoint
+      const s3Objects = new Map<string, Buffer>();
+      const s3MockServer = http.createServer((req, res) => {
+        const key = (req.url || '/').split('?')[0];
+        if (req.method === 'PUT') {
+          const chunks: Buffer[] = [];
+          req.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+          req.on('end', () => {
+            s3Objects.set(key, Buffer.concat(chunks));
+            res.statusCode = 200;
+            res.end();
+          });
+          return;
+        }
+        if (req.method === 'GET') {
+          const data = s3Objects.get(key);
+          if (!data) {
+            res.statusCode = 404;
+            res.end('Not found');
+            return;
+          }
+          res.statusCode = 200;
+          res.end(data);
+          return;
+        }
+        if (req.method === 'DELETE') {
+          s3Objects.delete(key);
+          res.statusCode = 204;
+          res.end();
+          return;
+        }
+        res.statusCode = 405;
+        res.end();
+      });
+
+      await new Promise<void>((resolve) => s3MockServer.listen(0, '127.0.0.1', () => resolve()));
+      const s3Addr = s3MockServer.address();
+      assert.ok(s3Addr && typeof s3Addr !== 'string');
+
+      const origProvider = process.env.STORAGE_PROVIDER;
+      const origEndpoint = process.env.STORAGE_S3_ENDPOINT;
+      const origBucket = process.env.STORAGE_S3_BUCKET;
+      const origKeyId = process.env.STORAGE_S3_ACCESS_KEY_ID;
+      const origSecret = process.env.STORAGE_S3_SECRET_ACCESS_KEY;
+
+      try {
+        process.env.STORAGE_PROVIDER = 's3';
+        process.env.STORAGE_S3_ENDPOINT = `http://127.0.0.1:${s3Addr.port}`;
+        process.env.STORAGE_S3_BUCKET = 'igs-test-bucket';
+        process.env.STORAGE_S3_ACCESS_KEY_ID = 'test-access-key';
+        process.env.STORAGE_S3_SECRET_ACCESS_KEY = 'test-secret-key';
+
+        const directS3 = await storePrivateDocument({
+          fileName: 's3-direct.txt',
+          mimeType: 'text/plain',
+          contentBase64: payloadBytes.toString('base64'),
+        });
+        assert.equal(directS3.storageProvider, 's3');
+        const readBackS3 = await readPrivateDocument({
+          storageProvider: directS3.storageProvider,
+          storageKey: directS3.storageKey,
+        });
+        assert.equal(readBackS3.toString('utf8'), payloadBytes.toString('utf8'));
+
+        const s3Report = await migrateLegacyDocuments({
+          dryRun: false,
+          keepBase64: true,
+          recordIds: [legacyS3Id],
+        });
+        assert.equal(s3Report.targetProvider, 's3');
+        assert.equal(s3Report.migrated, 1);
+        const s3Row = await prisma.fileAsset.findUnique({ where: { id: legacyS3Id } });
+        assert.equal(s3Row?.storageProvider, 's3');
+        assert.ok(s3Row?.storageKey);
+        assert.ok((s3Row?.contentBase64 || '').length > 0, '--keep-base64 must retain Base64');
+
+        // Clearing pass with explicit confirmation verifies existing S3 SHA-256 and clears Base64
+        const s3ClearReport = await migrateLegacyDocuments({
+          dryRun: false,
+          confirmClearBase64: true,
+          recordIds: [legacyS3Id],
+        });
+        assert.equal(s3ClearReport.migrated, 1);
+        const s3ClearedRow = await prisma.fileAsset.findUnique({ where: { id: legacyS3Id } });
+        assert.equal(s3ClearedRow?.contentBase64, '');
+      } finally {
+        if (origProvider !== undefined) process.env.STORAGE_PROVIDER = origProvider;
+        else delete process.env.STORAGE_PROVIDER;
+        if (origEndpoint !== undefined) process.env.STORAGE_S3_ENDPOINT = origEndpoint;
+        else delete process.env.STORAGE_S3_ENDPOINT;
+        if (origBucket !== undefined) process.env.STORAGE_S3_BUCKET = origBucket;
+        else delete process.env.STORAGE_S3_BUCKET;
+        if (origKeyId !== undefined) process.env.STORAGE_S3_ACCESS_KEY_ID = origKeyId;
+        else delete process.env.STORAGE_S3_ACCESS_KEY_ID;
+        if (origSecret !== undefined) process.env.STORAGE_S3_SECRET_ACCESS_KEY = origSecret;
+        else delete process.env.STORAGE_S3_SECRET_ACCESS_KEY;
+        await new Promise<void>((resolve) => s3MockServer.close(() => resolve()));
+      }
     });
 
     await t.test('4. Phase 6: All 7 transactional email triggers, payload redaction, Skipped fallback & retry exhaustion', async () => {
@@ -505,13 +690,18 @@ test('Stabilization Suite: RBAC Boundaries, Demo Seed Guards, Legacy Doc Migrati
       assert.equal(sesRes.res.status, 201);
       sessionId = String(sesRes.json?.sessionId);
       createdSessionIds.push(sessionId);
+      assert.ok(
+        Number(sesRes.json?.remindersCreatedCount) >= 1,
+        'Scheduling an imminent session must immediately generate a class reminder'
+      );
 
+      // Re-running sweep must remain idempotent via advisory lock + dedupeKey
       const remSweepRes = await apiFetch('/api/notifications/run-reminders', {
         method: 'POST',
         cookie: adminCookie,
       });
       assert.equal(remSweepRes.res.status, 200);
-      assert.ok(Number(remSweepRes.json?.createdCount) >= 1);
+      assert.equal(Number(remSweepRes.json?.createdCount), 0);
 
       const attRes = await apiFetch('/api/attendance', {
         method: 'POST',
@@ -595,6 +785,28 @@ test('Stabilization Suite: RBAC Boundaries, Demo Seed Guards, Legacy Doc Migrati
         '[REDACTED AFTER DELIVERY]'
       );
 
+      // Test successful email delivery logging via email sender override
+      setEmailSenderOverride(async () => ({
+        status: 'Delivered',
+        messageId: `<msg-${runSuffix}@igs.test>`,
+        reason: null,
+      }));
+      const queuedSuccess = await queueTransactionalEmail(prisma, {
+        userId: stuId,
+        kind: 'finance',
+        recipientEmail: stuEmail,
+        subject: 'Success Delivery Test',
+        bodyText: 'Testing successful SMTP delivery',
+      });
+      assert.ok(queuedSuccess);
+      createdJobIds.push(queuedSuccess.jobId);
+      await processPendingJobs(25);
+      const deliveredLog = await prisma.deliveryLog.findUnique({
+        where: { id: queuedSuccess.deliveryLogId },
+      });
+      assert.equal(deliveredLog?.status, 'Delivered');
+      assert.equal(deliveredLog?.providerMessageId, `<msg-${runSuffix}@igs.test>`);
+
       // Test retry backoff and final failure logging via email sender override
       setEmailSenderOverride(async () => ({
         status: 'Failed',
@@ -636,14 +848,69 @@ test('Stabilization Suite: RBAC Boundaries, Demo Seed Guards, Legacy Doc Migrati
       const logAfterAttempt2 = await prisma.deliveryLog.findUnique({ where: { id: queuedFail.deliveryLogId } });
       assert.equal(logAfterAttempt2?.status, 'Failed');
 
-      // Admin email telemetry endpoint
+      // Test worker atomic claim (concurrent claims never duplicate) + stale lease recovery
+      setEmailSenderOverride(async () => ({
+        status: 'Delivered',
+        messageId: `<lease-${runSuffix}@igs.test>`,
+        reason: null,
+      }));
+      const staleJob = await queueTransactionalEmail(prisma, {
+        userId: stuId,
+        kind: 'reminder',
+        recipientEmail: stuEmail,
+        subject: 'Lease Recovery Test',
+        bodyText: 'Testing stale lease recovery',
+        dedupeKey: `lease-test-${runSuffix}`,
+      });
+      assert.ok(staleJob);
+      createdJobIds.push(staleJob.jobId);
+
+      // Duplicate dedupeKey enqueue returns existing job without creating a duplicate row
+      const dedupedJob = await queueTransactionalEmail(prisma, {
+        userId: stuId,
+        kind: 'reminder',
+        recipientEmail: stuEmail,
+        subject: 'Lease Recovery Test',
+        bodyText: 'Duplicate attempt',
+        dedupeKey: `lease-test-${runSuffix}`,
+      });
+      assert.equal(dedupedJob?.jobId, staleJob.jobId);
+
+      // Simulate crashed worker leaving job in Processing with expired lease
+      await prisma.backgroundJob.update({
+        where: { id: staleJob.jobId },
+        data: {
+          status: 'Processing',
+          workerId: 'crashed-pod-1',
+          lockedAt: new Date(Date.now() - 600_000),
+          leaseExpiresAt: new Date(Date.now() - 60_000),
+          attempts: 1,
+        },
+      });
+      const recovery = await recoverStaleProcessingJobs();
+      assert.ok(recovery.recoveredPending >= 1);
+      const recoveredRow = await prisma.backgroundJob.findUnique({ where: { id: staleJob.jobId } });
+      assert.equal(recoveredRow?.status, 'Pending');
+
+      // Concurrent claims must claim each job at most once
+      const [claimA, claimB] = await Promise.all([
+        claimPendingJobs(10, { workerId: 'worker-A' }),
+        claimPendingJobs(10, { workerId: 'worker-B' }),
+      ]);
+      const claimedIds = [...claimA.map((j) => j.id), ...claimB.map((j) => j.id)];
+      assert.equal(new Set(claimedIds).size, claimedIds.length, 'Concurrent worker claims must never double-claim a job');
+
+      // Admin email & worker telemetry endpoints
       const stuTel = await apiFetch('/api/admin/email-delivery', { cookie: stuCookie });
       assert.equal(stuTel.res.status, 403);
       const admTel = await apiFetch('/api/admin/email-delivery', { cookie: adminCookie });
       assert.equal(admTel.res.status, 200);
       assert.equal(admTel.json?.smtpConfigured, false);
       const counts = admTel.json?.countsByStatus as Record<string, number>;
-      assert.ok(counts.Skipped >= 1 && counts.Failed >= 1);
+      assert.ok(counts.Skipped >= 1 && counts.Failed >= 1 && counts.Delivered >= 1);
+      const workerTel = await apiFetch('/api/admin/worker-status', { cookie: adminCookie });
+      assert.equal(workerTel.res.status, 200);
+      assert.ok((workerTel.json as Record<string, unknown>).countsByStatus);
     });
   } finally {
     setEmailSenderOverride(null);
@@ -686,6 +953,9 @@ test('Stabilization Suite: RBAC Boundaries, Demo Seed Guards, Legacy Doc Migrati
       .catch(() => undefined);
     await prisma.admissionApplication
       .deleteMany({ where: { id: { in: createdAdmissionIds } } })
+      .catch(() => undefined);
+    await prisma.feeStructure
+      .deleteMany({ where: { courseId: { in: createdCourseIds } } })
       .catch(() => undefined);
     await prisma.instructorAssignment
       .deleteMany({ where: { batchId: { in: createdBatchIds } } })

@@ -2311,13 +2311,16 @@ export async function issueVerifiedCertificate(params: {
 }
 
 export async function verifyCertificateByCode(codeOrHash: string) {
-  const clean = codeOrHash.trim().toUpperCase();
-  if (!clean) return null;
+  const raw = codeOrHash.trim();
+  if (!raw) return null;
   try {
     const cert = await prisma.certificate.findFirst({
-      where: clean.startsWith('INF-CERT')
-        ? { certificateCode: clean }
-        : { verificationHash: clean },
+      where: {
+        OR: [
+          { certificateCode: { equals: raw, mode: 'insensitive' } },
+          { verificationHash: { equals: raw, mode: 'insensitive' } },
+        ],
+      },
       include: {
         student: { select: { name: true, studentCode: true } },
         course: { select: { code: true, title: true } },

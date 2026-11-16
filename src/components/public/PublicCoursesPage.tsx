@@ -62,6 +62,7 @@ export function PublicCoursesPage({ academy }: PublicCoursesPageProps) {
   }, [courses, categoryFilter, search]);
 
   const currency = academy?.currency || 'INR';
+  const showDemoNotice = isDemoEnv || courses.some((c) => Boolean(c.isDemo));
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 space-y-8">
@@ -87,13 +88,13 @@ export function PublicCoursesPage({ academy }: PublicCoursesPageProps) {
         </Link>
       </div>
 
-      {isDemoEnv && (
+      {showDemoNotice && (
         <div
           role="status"
           className="px-4 py-2.5 bg-amber-50 border border-amber-300 rounded-lg text-xs text-amber-950 flex flex-wrap items-center justify-between gap-2"
         >
           <span>
-            <strong>Development Sample Catalog:</strong> Marked sample programs come from the local development seed (`NODE_ENV=development`) and are excluded automatically in production.
+            <strong>Development Sample Catalog:</strong> Marked sample programs come from the local development seed (<code>NODE_ENV=development</code>) and are excluded automatically in production.
           </span>
         </div>
       )}

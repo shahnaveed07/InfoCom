@@ -112,7 +112,7 @@ publicRouter.get('/courses/:slugOrId', async (req, res) => {
       return;
     }
 
-    const [academy, course] = await Promise.all([
+    const [academy, course, demoCount] = await Promise.all([
       prisma.academy.findFirst({ orderBy: { createdAt: 'asc' }, select: { currency: true } }),
       prisma.course.findFirst({
         where: {
@@ -130,6 +130,9 @@ publicRouter.get('/courses/:slugOrId', async (req, res) => {
           },
         },
       }),
+      isProduction
+        ? Promise.resolve(0)
+        : prisma.course.count({ where: { isPublished: true, isArchived: false, isDemo: true } }),
     ]);
 
     if (!course) {
@@ -180,7 +183,9 @@ publicRouter.get('/courses/:slugOrId', async (req, res) => {
     };
 
     const isDemoEnvironment =
-      !isProduction && process.env.NODE_ENV === 'development' && Boolean(course.isDemo);
+      !isProduction &&
+      process.env.NODE_ENV === 'development' &&
+      (Boolean(course.isDemo) || demoCount > 0);
 
     res.json({ course: detail, isDemoEnvironment });
   } catch (err) {

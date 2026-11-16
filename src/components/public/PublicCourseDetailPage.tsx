@@ -90,7 +90,15 @@ export function PublicCourseDetailPage({ academy }: PublicCourseDetailPageProps)
           role="status"
           className="px-4 py-2.5 bg-amber-50 border border-amber-300 rounded-lg text-xs text-amber-950"
         >
-          <strong>Development Sample Program:</strong> This syllabus is a seeded development fixture and is hidden automatically in production environments.
+          {course.isDemo ? (
+            <>
+              <strong>Development Sample Program:</strong> This syllabus is a seeded development fixture (<code>NODE_ENV=development</code>) and is excluded automatically in production environments.
+            </>
+          ) : (
+            <>
+              <strong>Development Environment Notice:</strong> Local development sample catalog data is active alongside Admin-published programs and is excluded automatically in production.
+            </>
+          )}
         </div>
       )}
 

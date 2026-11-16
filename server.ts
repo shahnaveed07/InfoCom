@@ -9,8 +9,13 @@ const PORT = Number(process.env.PORT) || 3000;
 async function startServer() {
   const app = createApiApp();
 
-  // Persistent PostgreSQL background worker (email notifications + session reminders)
-  startBackgroundWorker(30_000);
+  // Persistent PostgreSQL background worker (disable on horizontally scaled API replicas
+  // when running a dedicated `npm run worker` process)
+  if (process.env.ENABLE_BACKGROUND_WORKER !== 'false') {
+    startBackgroundWorker(30_000);
+  } else {
+    console.log('[worker] In-process worker disabled (ENABLE_BACKGROUND_WORKER=false).');
+  }
 
   // Frontend serving (Vite dev middleware in development, static dist in production)
   if (process.env.NODE_ENV !== 'production') {
