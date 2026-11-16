@@ -49,8 +49,8 @@ Single-repository full-stack Academy Management System built for **IGS — InfoC
 ## Quick Start (Development & Production)
 
 ```bash
-# 1. Install dependencies
-npm install
+# 1. Install dependencies reproducibly from package-lock.json
+npm ci
 
 # 2. Generate Prisma Client and apply PostgreSQL migrations
 npm run db:generate
@@ -59,19 +59,24 @@ npm run db:migrate:deploy
 # 3. Seed mandatory roles & base academy settings (production-safe)
 npm run db:seed
 
-# Optional: load explicit development demo data (guarded by NODE_ENV=development & ALLOW_DEMO_SEED=true)
-npm run db:seed:demo
+# Optional (dev-only): load demo catalog/users (requires NODE_ENV=development & ALLOW_DEMO_SEED=true)
+# Uses SEED_ADMIN_PASSWORD / SEED_INSTRUCTOR_PASSWORD / SEED_STUDENT_PASSWORD or generates ephemeral secrets
+ALLOW_DEMO_SEED=true npm run db:seed:demo
 
 # 4. Run full-stack dev server (port 3000)
 npm run dev
 
-# 5. TypeScript check, production builds (dist/ + dist-server/server.js), and tests
+# 5. Operational utilities (legacy storage migration & SMTP check)
+npm run db:migrate-documents -- --dry-run
+npm run email:verify
+
+# 6. TypeScript check, production builds (dist/ + dist-server/server.js), and tests
 npm run lint
 npm run build
 npm run build:server
 npm test
 
-# 6. Run compiled production server
+# 7. Run compiled production server
 NODE_ENV=production npm start
 ```
 

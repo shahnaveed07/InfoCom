@@ -53,6 +53,7 @@ import {
   listStudentsPaginated,
   revokeAllUserSessionsInDb,
 } from '../repositories/ams.repository.ts';
+import { queueTransactionalEmail } from '../jobs/worker.ts';
 
 export const adminMasterRouter = Router();
 
@@ -197,6 +198,19 @@ adminMasterRouter.post('/students', ...adminGuard, async (req: AuthenticatedRequ
             ttlHours: 72,
           })
         : null;
+
+      if (issuedOnboarding) {
+        const origin = (process.env.APP_URL || 'http://localhost:3000').replace(/\/+$/, '');
+        await queueTransactionalEmail(tx, {
+          userId: user.id,
+          kind: 'account_setup',
+          recipientEmail: user.email,
+          subject: 'Complete Your Student Portal Setup — IGS — InfoCom Global Services',
+          bodyText: `Hello ${user.name},\n\nYour IGS — InfoCom Global Services student account (${user.studentCode}) has been created. Set your password using the single-use link below (valid for 72 hours):\n${origin}${issuedOnboarding.onboardingPath}\n\n— IGS — InfoCom Global Services`,
+          bypassPreferences: true,
+          redactSensitive: true,
+        });
+      }
 
       return { createdUser: user, onboarding: issuedOnboarding };
     });
@@ -395,6 +409,16 @@ adminMasterRouter.post('/students/:studentId/reset-password', ...adminGuard, asy
           status: 'Delivered',
         },
       });
+      const origin = (process.env.APP_URL || 'http://localhost:3000').replace(/\/+$/, '');
+      await queueTransactionalEmail(tx, {
+        userId: target.id,
+        kind: 'password_reset',
+        recipientEmail: target.email,
+        subject: 'Student Portal Password Reset — IGS — InfoCom Global Services',
+        bodyText: `Hello ${target.name},\n\nAn administrator issued a single-use password setup/reset link for your student portal (${target.studentCode ?? target.email}), valid for 72 hours:\n${origin}${token.onboardingPath}\n\n— IGS — InfoCom Global Services`,
+        bypassPreferences: true,
+        redactSensitive: true,
+      });
       return token;
     });
 
@@ -542,6 +566,19 @@ adminMasterRouter.post('/instructors', ...adminGuard, async (req: AuthenticatedR
             ttlHours: 72,
           })
         : null;
+
+      if (issuedOnboarding) {
+        const origin = (process.env.APP_URL || 'http://localhost:3000').replace(/\/+$/, '');
+        await queueTransactionalEmail(tx, {
+          userId: user.id,
+          kind: 'account_setup',
+          recipientEmail: user.email,
+          subject: 'Complete Your Instructor Portal Setup — IGS — InfoCom Global Services',
+          bodyText: `Hello ${user.name},\n\nYour IGS — InfoCom Global Services instructor account (${user.staffCode}) has been provisioned. Set your password using the single-use link below (valid for 72 hours):\n${origin}${issuedOnboarding.onboardingPath}\n\n— IGS — InfoCom Global Services`,
+          bypassPreferences: true,
+          redactSensitive: true,
+        });
+      }
 
       return { created: user, onboarding: issuedOnboarding };
     });

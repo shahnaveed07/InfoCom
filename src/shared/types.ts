@@ -888,6 +888,7 @@ export interface PublicCourseSummary {
   durationWeeks: number;
   tuitionFee: string | null;
   showTuitionPublicly: boolean;
+  isDemo?: boolean;
   currency: string;
   moduleCount: number;
   totalLabHours: number;

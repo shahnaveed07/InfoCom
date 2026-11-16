@@ -40,6 +40,7 @@ import {
   revokeAuthSessionByTokenHash,
   revokeOtherUserSessionsInDb,
 } from '../repositories/ams.repository.ts';
+import { queueTransactionalEmail } from '../jobs/worker.ts';
 
 export const authRouter = Router();
 
@@ -309,9 +310,14 @@ authRouter.post(
       const user = await findUserByEmail(normalizedEmail);
 
       if (user && user.status === 'active') {
-        const { tokenHash } = generatePasswordResetToken();
+        const { rawToken, tokenHash } = generatePasswordResetToken();
         const now = new Date();
         const expiresAt = new Date(now.getTime() + PASSWORD_RESET_TTL_MS);
+        const appOrigin = (
+          process.env.APP_URL ||
+          (req.get('host') ? `${req.protocol}://${req.get('host')}` : 'http://localhost:3000')
+        ).replace(/\/+$/, '');
+        const resetUrl = `${appOrigin}/login?resetToken=${encodeURIComponent(rawToken)}`;
 
         await prisma.$transaction(async (tx) => {
           await tx.passwordResetToken.updateMany({
@@ -327,6 +333,16 @@ authRouter.post(
               expiresAt,
               createdByUserId: user.id,
             },
+          });
+
+          await queueTransactionalEmail(tx, {
+            userId: user.id,
+            kind: 'password_reset',
+            recipientEmail: user.email,
+            subject: 'Password Reset Instructions — IGS — InfoCom Global Services',
+            bodyText: `Hello ${user.name},\n\nUse the single-use link below to reset your InfoCom Academy password (expires in 30 minutes):\n${resetUrl}\n\nIf you did not request this, you can safely ignore this email.`,
+            bypassPreferences: true,
+            redactSensitive: true,
           });
         });
 

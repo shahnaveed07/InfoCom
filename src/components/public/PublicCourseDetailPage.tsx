@@ -14,6 +14,7 @@ export function PublicCourseDetailPage({ academy }: PublicCourseDetailPageProps)
   const [course, setCourse] = useState<PublicCourseDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [isDemoEnv, setIsDemoEnv] = useState(false);
 
   useEffect(() => {
     if (!slug) return;
@@ -25,6 +26,7 @@ export function PublicCourseDetailPage({ academy }: PublicCourseDetailPageProps)
       .then((res) => {
         if (!active) return;
         setCourse(res.course);
+        setIsDemoEnv(Boolean(res.isDemoEnvironment));
       })
       .catch((err) => {
         if (!active) return;
@@ -43,8 +45,8 @@ export function PublicCourseDetailPage({ academy }: PublicCourseDetailPageProps)
   if (loading) {
     return (
       <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-12 space-y-4">
-        <div className="h-8 w-48 bg-slate-200 rounded animate-pulse" />
-        <div className="h-64 bg-white border border-slate-200 rounded-xl animate-pulse" />
+        <div className="h-8 w-48 bg-slate-200 rounded" />
+        <div className="h-64 bg-slate-100 border border-slate-200 rounded-xl" />
       </div>
     );
   }
@@ -83,6 +85,15 @@ export function PublicCourseDetailPage({ academy }: PublicCourseDetailPageProps)
         </Link>
       </div>
 
+      {(isDemoEnv || course.isDemo) && (
+        <div
+          role="status"
+          className="px-4 py-2.5 bg-amber-50 border border-amber-300 rounded-lg text-xs text-amber-950"
+        >
+          <strong>Development Sample Program:</strong> This syllabus is a seeded development fixture and is hidden automatically in production environments.
+        </div>
+      )}
+
       {/* Header */}
       <div className="bg-white border border-slate-200 rounded-xl p-6 sm:p-8 flex flex-col lg:flex-row lg:items-start justify-between gap-6">
         <div className="space-y-3 max-w-3xl">
@@ -95,6 +106,11 @@ export function PublicCourseDetailPage({ academy }: PublicCourseDetailPageProps)
                 <span aria-hidden="true">·</span>
                 <span>{course.departmentName}</span>
               </>
+            )}
+            {course.isDemo && (
+              <span className="px-1.5 py-0.5 text-[10px] font-medium bg-amber-50 text-amber-900 border border-amber-300 rounded">
+                Sample Program
+              </span>
             )}
           </div>
           <h1 className="font-display text-2xl sm:text-3xl font-bold tracking-tight text-slate-900">

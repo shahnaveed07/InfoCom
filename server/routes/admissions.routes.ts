@@ -38,6 +38,7 @@ import {
   type AuthenticatedRequest,
 } from '../middleware/auth.ts';
 import { createRateLimiter } from '../middleware/security.ts';
+import { queueTransactionalEmail } from '../jobs/worker.ts';
 import { readPrivateDocument, storePrivateDocument } from '../storage/index.ts';
 
 export const admissionsRouter = Router();
@@ -111,6 +112,18 @@ async function notifyApplicant(
       status: 'Delivered',
     },
   });
+
+  if (email && email.includes('@')) {
+    await queueTransactionalEmail(tx, {
+      notificationId,
+      userId: resolvedUserId,
+      applicationId: params.applicationId,
+      kind: 'admission',
+      recipientEmail: email,
+      subject: `${params.title} — IGS — InfoCom Global Services`,
+      bodyText: params.message,
+    });
+  }
 }
 
 async function buildAdmissionDetailPayload(applicationId: string): Promise<AdmissionDetailPayload | null> {
@@ -703,6 +716,20 @@ async function approveAdmissionWorkflow(params: {
       title: `Enrollment Confirmed · ${batch.name}`,
       message: `Enrollment created in ${course.code} (${batch.name}).${portalIsActive ? ' Your student portal access is active.' : ` Portal activation is pending (${activationPolicy.replace(/_/g, ' ')} policy).`}`,
     });
+
+    if (issuedOnboarding && portalIsActive) {
+      const origin = (process.env.APP_URL || 'http://localhost:3000').replace(/\/+$/, '');
+      await queueTransactionalEmail(tx, {
+        userId: studentRow.id,
+        applicationId: admission.id,
+        kind: 'account_setup',
+        recipientEmail: studentEmail,
+        subject: 'Set Up Your Student Portal Password — IGS — InfoCom Global Services',
+        bodyText: `Hello ${studentRow.name},\n\nYour student account (${studentCode}) has been activated. Complete your password setup using the link below (valid for 72 hours):\n${origin}${issuedOnboarding.onboardingPath}\n\n— IGS — InfoCom Global Services`,
+        bypassPreferences: true,
+        redactSensitive: true,
+      });
+    }
 
     return {
       admissionId: admission.id,
@@ -1706,6 +1733,7 @@ admissionsRouter.post(
       }
 
       const now = new Date();
+      let onboardingIssued: { rawToken: string; onboardingPath: string; expiresAt: string } | null = null;
       await prisma.$transaction(async (tx) => {
         await tx.user.update({
           where: { id: student.id },
@@ -1726,6 +1754,24 @@ admissionsRouter.post(
           title: 'Student Portal Activated',
           message: `Welcome ${student.name}! Your InfoCom Academy student portal login (${student.studentCode ?? student.email}) has been activated.`,
         });
+        if (!student.passwordHash) {
+          onboardingIssued = await issueAccountSetupToken(tx, {
+            userId: student.id,
+            createdByUserId: req.authUser!.id,
+            ttlHours: 72,
+          });
+          const origin = (process.env.APP_URL || 'http://localhost:3000').replace(/\/+$/, '');
+          await queueTransactionalEmail(tx, {
+            userId: student.id,
+            applicationId: admission.id,
+            kind: 'account_setup',
+            recipientEmail: student.email,
+            subject: 'Complete Your Student Portal Setup — IGS — InfoCom Global Services',
+            bodyText: `Hello ${student.name},\n\nYour student portal access is now active. Set your password using the link below (valid for 72 hours):\n${origin}${onboardingIssued.onboardingPath}\n\n— IGS — InfoCom Global Services`,
+            bypassPreferences: true,
+            redactSensitive: true,
+          });
+        }
       });
 
       await recordAuditLog({

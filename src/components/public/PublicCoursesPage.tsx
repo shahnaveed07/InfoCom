@@ -15,6 +15,7 @@ export function PublicCoursesPage({ academy }: PublicCoursesPageProps) {
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('All');
+  const [isDemoEnv, setIsDemoEnv] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -24,6 +25,7 @@ export function PublicCoursesPage({ academy }: PublicCoursesPageProps) {
       .then((res) => {
         if (!active) return;
         setCourses(res.courses);
+        setIsDemoEnv(Boolean(res.isDemoEnvironment));
       })
       .catch((err) => {
         if (!active) return;
@@ -85,6 +87,17 @@ export function PublicCoursesPage({ academy }: PublicCoursesPageProps) {
         </Link>
       </div>
 
+      {isDemoEnv && (
+        <div
+          role="status"
+          className="px-4 py-2.5 bg-amber-50 border border-amber-300 rounded-lg text-xs text-amber-950 flex flex-wrap items-center justify-between gap-2"
+        >
+          <span>
+            <strong>Development Sample Catalog:</strong> Marked sample programs come from the local development seed (`NODE_ENV=development`) and are excluded automatically in production.
+          </span>
+        </div>
+      )}
+
       {/* Filters */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-100 rounded-lg">
@@ -123,7 +136,7 @@ export function PublicCoursesPage({ academy }: PublicCoursesPageProps) {
       {loading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {[0, 1, 2, 3, 4, 5].map((i) => (
-            <div key={i} className="h-64 bg-white border border-slate-200 rounded-xl animate-pulse" />
+            <div key={i} className="h-64 bg-slate-100 border border-slate-200 rounded-xl" />
           ))}
         </div>
       ) : error ? (
@@ -163,6 +176,11 @@ export function PublicCoursesPage({ academy }: PublicCoursesPageProps) {
                   <span>{course.category}</span>
                   <span aria-hidden="true">·</span>
                   <span>{course.durationWeeks} weeks</span>
+                  {course.isDemo && (
+                    <span className="ml-auto px-1.5 py-0.5 text-[10px] font-medium bg-amber-50 text-amber-900 border border-amber-300 rounded">
+                      Sample Program
+                    </span>
+                  )}
                 </div>
                 <h2 className="mt-2 font-display text-lg font-semibold text-slate-900">
                   <Link

@@ -1,28 +1,23 @@
-# InfoCom AMS — Repository Audit (Authoritative Current State)
+# InfoCom AMS — Repository Audit (Authoritative Live State)
 
 **Repository:** `https://github.com/shahnaveed07/InfoCom.git`  
-**Audit Scope:** Full-stack inspection of actual source code prior to Phase B–J execution.
+**Audit Scope:** Authoritative full-stack inventory of live `server/`, `src/`, `prisma/`, and `scripts/` modules.
 
 ---
 
-## 1. Reality vs. Legacy Documentation Findings
+## 1. Architecture Summary
 
-Inspection of actual runtime source files established that earlier Phase 1 documentation had become outdated:
-
-1. **Active ORM is Prisma, Not Drizzle:**
-   - All live API routes (`server/routes/*.ts`), `server/ams-service.ts`, `server/repositories/ams.repository.ts`, `server/middleware/auth.ts`, `prisma/seed.ts`, and `scripts/bootstrap-admin.ts` execute exclusively against **Prisma ORM** (`@prisma/client` + `@prisma/adapter-pg` + `pg.Pool`) across **35+ PostgreSQL models** in `prisma/schema.prisma` (4 applied migrations in `prisma/migrations/`).
-   - Drizzle ORM (`src/db/index.ts`, `src/db/schema.ts`, `src/db/drizzle.config.ts`) and `server/migrate.ts` are unreferenced dead legacy code left over from Phase 1 and slated for complete removal in **Phase B**.
-2. **Firebase Remains Wired and Must Be Removed in Phase B:**
-   - Client SSO (`src/lib/firebase.ts`, `src/components/AuthView.tsx` Google button, `src/utils/api.ts` `loginWithFirebase`) and server token exchange (`src/lib/firebase-admin.ts`, `POST /api/auth/firebase`, Bearer header resolution in `server/middleware/auth.ts`, `syncFirebaseUser` in `server/ams-service.ts`, `User.firebaseUid` in `prisma/schema.prisma`, `firebase-applet-config.json`) remain present and are scheduled for clean removal in **Phase B**.
-3. **Brand Identity & Localization Transition Pending (Phase B):**
-   - Several files (`metadata.json`, `index.html`, `src/components/AuthView.tsx`, `ProgressReportView.tsx`, `CertificatesView.tsx`, `server/auth.ts`, `prisma/seed.ts`, and shared formatters) still contain `Northbridge Tech Academy`, `nta_session`, `USD` / `en-US` formatting, and quick-fill demo credential buttons.
-   - **Missing Official Logo Asset:** No official `IGS — InfoCom Global Services` logo image is currently present in `src/assets/` (`src/assets/images/academy_lab_studio_1794576422024.jpg` is the only image asset). No unofficial logo will be generated or substituted.
-4. **Known Contract Bug Detected in Live Code:**
-   - `GET /api/enrollments/:enrollmentId/history` (`server/routes/admin-master.routes.ts:1578`) returns flat enrollment fields alongside `history[]`, whereas `src/utils/api.ts:513` and `src/components/EnrollmentsView.tsx` read `res.enrollment.studentName`, throwing a runtime `TypeError` when viewing enrollment history.
-5. **Runtime & Production Packaging Gaps:**
-   - `server.ts` hardcodes `const PORT = 3000;` instead of reading `process.env.PORT`.
-   - `package.json` `"start": "node server.ts"` executes raw TypeScript without a compiled JavaScript server build (`Phase J`).
-   - Background reminder sweeps run via in-process `setInterval` in `server.ts` + dashboard load hook rather than a database-backed job queue (`Phase I`).
+1. **Single Database Stack (PostgreSQL + Prisma ORM):**
+   - All live API routes (`server/routes/*.ts`), `server/ams-service.ts`, `server/repositories/ams.repository.ts`, `server/middleware/auth.ts`, `prisma/seed.ts`, `prisma/seed-demo.ts`, `scripts/bootstrap-admin.ts`, and `scripts/migrate-legacy-documents.ts` execute exclusively against **Prisma ORM** (`@prisma/client` + `@prisma/adapter-pg` + `pg.Pool`) across **36 PostgreSQL models** in `prisma/schema.prisma` (7 applied migrations in `prisma/migrations/`).
+2. **First-Party Authentication & Admin-Controlled Onboarding:**
+   - Cookie-based opaque sessions (`igs_session`, SHA-256 stored in `auth_sessions`) and `Argon2id` password hashing (+ transparent `scrypt` upgrade) are the sole auth layer.
+   - Public self-registration (`POST /api/auth/register`) returns `410 Gone`; students and instructors are provisioned by Academy Administration with single-use setup tokens.
+3. **Official IGS Branding & Currency:**
+   - Official brand logo at `public/assets/aistudio/IMG-20261110-WA0004_ac23d401.jpg`, Sopore campus identity, slogan `"Learn Today, Build Tomorrow."`, `INR` (`₹` / `en-IN`), and `Asia/Kolkata` timezone are applied consistently across public pages, portals, receipts, and generated PDF certificates.
+4. **Private Object Storage, Persistent Job Queue & npm CI:**
+   - `server/storage/` manages private file uploads (`local` / `s3`) and `server/storage/migrate-legacy.ts` handles legacy Base64 migration.
+   - `server/jobs/worker.ts` + `server/email/mailer.ts` queue and deliver transactional emails with retry backoff and token payload redaction.
+   - Dependencies are standardized on `npm` via `package-lock.json`.
 
 ---
 
@@ -31,47 +26,36 @@ Inspection of actual runtime source files established that earlier Phase 1 docum
 ### Root & Configuration
 | Path | Status | Purpose |
 | --- | --- | --- |
-| `package.json` | Active | Scripts (`dev`, `build`, `lint`, `test`, `admin:bootstrap`, `db:*`) & dependencies |
-| `server.ts` | Active | Express app mount, Vite dev middleware / `dist/` static serving, 5m reminder interval |
-| `tsconfig.json` | Active | TypeScript compiler config (`noEmit: true`) |
-| `vite.config.ts` | Active | Vite + React + Tailwind CSS v4 build config |
-| `index.html` | Active (Needs Phase B rebrand) | SPA HTML shell & meta tags |
-| `metadata.json` | Active (Needs Phase B rebrand) | AI Studio app metadata |
-| `firebase-applet-config.json` | Legacy (Remove Phase B) | Unused/legacy Firebase project config |
+| `package.json`, `package-lock.json` | Active | Locked npm scripts (`dev`, `start`, `build`, `build:server`, `lint`, `test`, `admin:bootstrap`, `db:*`, `email:verify`) |
+| `.github/workflows/ci.yml` | Active | CI pipeline (`npm ci`, Prisma generate/deploy/seed, `lint`, `test`, `build`, `build:server`) |
+| `server.ts` | Active | Unified HTTP/Express mount (`PORT` env), Vite dev middleware / `dist/` static serving, background worker startup |
+| `tsconfig.json`, `vite.config.ts` | Active | TypeScript checking & Vite 8 + React 19 + Tailwind CSS v4 build configuration |
+| `index.html`, `metadata.json` | Active | SPA HTML shell, favicon, and metadata synced to `IGS — InfoCom Global Services` |
 
 ### Backend (`/server/`, `/prisma/`, `/scripts/`)
 | Path | Status | Responsibility |
 | --- | --- | --- |
-| `prisma/schema.prisma` | Active | 35-model normalized PostgreSQL schema (Identity, Academy, People, Academics, Admissions, Finance, Certificates, Communication, Documents, Governance) |
-| `prisma/migrations/` | Active | 4 applied forward migrations (`init_ams_schema`, `phase3_session_token_hash`, `phase4_admin_master_data`, `phase5_admissions_enrollments`) |
-| `prisma/seed.ts` | Active | Idempotent database seeder (`NODE_ENV=production` safe metadata-only mode) |
-| `server/app.ts` | Active | Express router wiring + `helmet`, CORS allowlist, CSRF origin guard, safe API error handler |
-| `server/auth.ts` | Active | Argon2id + scrypt password hashing, 256-bit opaque session token + SHA-256 token hashing, reset token helpers |
-| `server/ams-service.ts` | Active | Domain transactions, dashboard payload builder, analytics, admissions conversion, finance, certificates, notifications |
-| `server/db/config.ts` | Active | PostgreSQL connection URL/Unix socket builder for Cloud SQL & `NODE_ENV=test` isolation |
-| `server/db/prisma.ts` | Active | Singleton `PrismaClient` with `@prisma/adapter-pg` and graceful disconnect |
-| `server/middleware/auth.ts` | Active | Session cookie resolution against `auth_sessions` (+ legacy Firebase Bearer removal target) |
-| `server/middleware/security.ts` | Active | Rate limiter, CORS middleware, CSRF origin guard, Helmet CSP/headers, error sanitizer |
-| `server/security/permissions.ts` | Active | Instructor course/batch assignment scope calculation and permission checks |
-| `server/repositories/ams.repository.ts` | Active | DB-backed session revocation/rotation, paginated audit/payments/notifications/enrollments queries |
-| `server/routes/auth.routes.ts` | Active | Auth lifecycle, password change/forgot/reset, `/api/dashboard` |
-| `server/routes/admissions.routes.ts` | Active | Public & admin admissions applications, draft/status history, document verification, approval & portal activation |
-| `server/routes/academics.routes.ts` | Active | Courses, cohorts, enrollments, module completion, grades, remarks, sessions, attendance |
-| `server/routes/admin-ops.routes.ts` | Active | Certificates, public cert verify, users, invoices, payments, documents, notifications, audit logs |
-| `server/routes/admin-master.routes.ts` | Active | Analytics, students/instructors master data, departments, classrooms, settings, academic years/terms, transfers, history |
-| `scripts/bootstrap-admin.ts` | Active | Protected CLI to bootstrap initial or authorized additional admin account |
-| `scripts/migrate-json.ts` | Active | Transactional idempotent migrator from `data/centre-db.json` into PostgreSQL via Prisma |
-| `scripts/prisma-run.ts` | Active | Prisma CLI wrapper injecting resolved `SQL_ADMIN_USER` / `TEST_DATABASE_URL` |
-| `server/migrate.ts` | Legacy Dead Code (Remove Phase B) | Superseded Phase 1 Drizzle migrator |
+| `prisma/schema.prisma` | Active | 36-model normalized PostgreSQL schema including `BackgroundJob`, `AdmissionStatusHistory`, `FeePlan`, `Refund`, `CertificateTemplate` |
+| `prisma/migrations/` | Active | 7 applied forward migrations |
+| `prisma/seed.ts` | Active | Production-safe structural seed (roles, IGS academy record, settings, `ADMIN` department, certificate template) |
+| `prisma/seed-demo.ts` | Dev-Only | Guarded demo catalog & sample accounts (`NODE_ENV=development` + `ALLOW_DEMO_SEED=true`, zero hardcoded passwords) |
+| `server/app.ts` | Active | Express router wiring + Helmet, CORS allowlist, CSRF origin guard, safe API error handler |
+| `server/auth.ts` | Active | Argon2id + scrypt hashing, 256-bit opaque session token + SHA-256 hashing, reset token helpers |
+| `server/ams-service.ts` | Active | Transactional business workflows, dashboard aggregation, analytics, finance adjustments, certificates, notifications |
+| `server/db/config.ts`, `server/db/prisma.ts` | Active | PostgreSQL connection URL/Unix socket builder & singleton Prisma Client |
+| `server/middleware/auth.ts`, `security.ts` | Active | Session cookie resolution, rate limiters, CORS, CSRF origin guard, Helmet headers, error sanitizer |
+| `server/security/permissions.ts` | Active | Instructor assignment scope calculation and RBAC permission checks |
+| `server/repositories/ams.repository.ts` | Active | DB-backed session revocation/rotation and paginated queries |
+| `server/storage/` (`index.ts`, `local.ts`, `s3.ts`, `migrate-legacy.ts`) | Active | Pluggable private object storage + checksum-verified legacy Base64 migration |
+| `server/email/mailer.ts`, `server/jobs/worker.ts` | Active | Optional SMTP adapter (`verifySmtpConnection`, `sendTransactionalEmail`) and persistent `BackgroundJob` queue |
+| `server/routes/*.routes.ts` | Active | `public`, `auth`, `admissions`, `academics`, `admin-ops`, `admin-master`, `reports` routers |
+| `scripts/` | Active | `bootstrap-admin.ts`, `migrate-json.ts`, `migrate-legacy-documents.ts`, `verify-email.ts`, `prisma-run.ts` |
 
-### Frontend & Shared (`/src/`)
+### Frontend & Shared (`/src/`, `/public/`)
 | Path | Status | Responsibility |
 | --- | --- | --- |
-| `src/shared/types.ts` | Active | Full-stack TypeScript domain contracts |
-| `src/shared/validation.ts` | Active | Zod v4 schemas for all API endpoints |
-| `src/shared/academic.ts` | Active | Deterministic weighted GPA, letter grade, completion, attendance, integer-cents money, eligibility, and analytics calculations |
+| `public/assets/aistudio/IMG-20261110-WA0004_ac23d401.jpg` | Active | Official `IGS — InfoCom Global Services` brand logo |
+| `src/shared/types.ts`, `validation.ts`, `academic.ts` | Active | Shared TypeScript DTOs, Zod v4 schemas, and deterministic calculations |
 | `src/utils/api.ts` | Active | Typed `fetch` client (`credentials: 'include'`) |
-| `src/lib/firebase.ts`, `src/lib/firebase-admin.ts` | Legacy (Remove Phase B) | Firebase Web & Admin SDK wrappers |
-| `src/db/index.ts`, `src/db/schema.ts`, `src/db/drizzle.config.ts` | Legacy (Remove Phase B) | Superseded Drizzle ORM files |
-| `src/components/*.tsx` (23 components) | Active | Role-based AMS portals and management modules |
-| `data/centre-db.json`, `data/centre-db.backup.json` | Preserved Legacy Data | Historical JSON records (untouched at runtime) |
+| `src/components/public/*` | Active | Public institute website pages & `BrandCrest` |
+| `src/components/*.tsx` | Active | Role-based AMS portals and management modules |

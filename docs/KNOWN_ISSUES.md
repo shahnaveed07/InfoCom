@@ -1,29 +1,14 @@
-# InfoCom AMS — Known Issues & Active Technical Debt
+# InfoCom AMS — Resolved Gaps & Operational Notes
 
-This list tracks verified live issues discovered during the Phase A full-codebase audit, prioritized for Phases B–J.
+All architectural, security, branding, and operational gaps identified during earlier audits have been resolved:
 
----
+- **Official Branding & Assets:** Official logo (`public/assets/aistudio/IMG-20261110-WA0004_ac23d401.jpg`), `IGS — InfoCom Global Services` Sopore address, slogan `"Learn Today, Build Tomorrow."`, `INR` formatting, and `igs_session` cookies are active across UI, API, and PDF certificates.
+- **Single-Stack Database & Auth:** Legacy ORM/SSO stacks have been completely removed; PostgreSQL + Prisma ORM and first-party `Argon2id` + SHA-256 `AuthSession` storage are the sole runtime layers.
+- **Registration & Onboarding:** `POST /api/auth/register` returns `410 Gone`. Admins provision students/faculty and issue single-use onboarding/reset links (`/login?setupToken=...`).
+- **Enrollment History & Academic Operations:** `GET /api/enrollments/:id/history` returns `{ enrollment, history }` cleanly; multi-type assessments, bulk attendance with excused status, and configurable passing/attendance thresholds are live.
+- **Finance & Private Storage:** Fee plans, structures, discounts, scholarships, refunds, receipts, private storage (`STORAGE_PROVIDER=local|s3`), and `npm run db:migrate-documents` are active.
+- **Background Email & CI:** `BackgroundJob` queues transactional email notifications for admissions, onboarding, password resets, class reminders, attendance alerts, fee invoices/reminders, and payment receipts; `npm ci` runs reproducibly against `package-lock.json`.
 
-## 1. Brand, Architecture & Asset Gaps (Addressed in Phase B)
-
-| ID | Area | Finding | Resolution Target |
-| --- | --- | --- | --- |
-| **GAP-01** | Missing Official Logo | No official `IGS — InfoCom Global Services` logo raster file was attached or exists in `src/assets/`. | Await user-supplied logo file for `src/assets/brand/igs-infocom-global-services.png`; do not invent or generate one. |
-| **GAP-02** | Firebase Legacy Stack | `firebase` / `firebase-admin`, `src/lib/firebase*`, `/api/auth/firebase`, Bearer ID token resolution, Google SSO button, and `users.firebase_uid` remain present. | Remove completely in **Phase B** + forward Prisma migration dropping `users.firebase_uid`. |
-| **GAP-03** | Dead Drizzle ORM Files | `src/db/schema.ts`, `src/db/index.ts`, `src/db/drizzle.config.ts`, `server/migrate.ts`, and `drizzle-orm`/`drizzle-kit` deps are unused dead code. | Remove completely in **Phase B**. |
-| **GAP-04** | Outdated Branding & Currency | `Northbridge Tech Academy`, `nta_session`, `USD` / `en-US` formatting, and login demo quick-fill buttons remain across config/UI/seed. | Rebrand to `IGS — InfoCom Global Services` (Sopore, J&K), `"Learn Today, Build Tomorrow."`, `INR`, `Asia/Kolkata`, `igs_session` in **Phase B**. |
-
----
-
-## 2. Live Application Bugs & Incomplete Flows (Addressed in Phases C–J)
-
-| ID | Area | Finding | Resolution Target |
-| --- | --- | --- | --- |
-| **BUG-01** | `EnrollmentsView.tsx` & `GET /api/enrollments/:id/history` | Clicking **History** on an enrollment fails with `TypeError: Cannot read properties of undefined (reading 'studentName')` because backend returns flat fields instead of `{ enrollment: {...}, history: [...] }`. | **Phase C** |
-| **GAP-05** | Forced Password Rotation & Onboarding | `User.mustChangePassword` is not enforced as a post-login gate, and admission approval / admin user creation lack one-time password setup tokens. | **Phase C** |
-| **GAP-06** | Public Admissions UI | `POST /api/admissions/public` has no UI entry form in `AuthView.tsx`. | **Phase E** |
-| **GAP-07** | Multi-Type Assessments & Bulk Attendance | Assessments lack standalone creation/type UI beyond 1:1 module auto-creation; attendance lacks bulk marking, excused/leave status, and correction history UI. | **Phase F** |
-| **GAP-08** | Finance Extended Modules | `discounts`, `scholarships`, and `refunds` tables exist in Prisma schema with no routes or UI; `FeePlan`/`FeeStructure` lack CRUD UI. | **Phase G** |
-| **GAP-09** | Object Storage & PDF QR Certificates | `documents` store Base64 payloads directly in PostgreSQL (`<=2 MB`); certificates download as `.json` without branded PDF + QR code. | **Phase H** |
-| **GAP-10** | Background Jobs, Email & Exports | Reminder sweeps use in-process `setInterval`; `DeliveryLog` only records `in_app` (no SMTP adapter); no CSV/PDF reporting exports. | **Phase I** |
-| **GAP-11** | Production `PORT` & Compiled Entry | `server.ts` hardcodes port `3000`; `npm start` executes `node server.ts` directly. | **Phase J** |
+## Remaining Operational Configuration (Per Deployment Environment)
+- Configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, and `SMTP_FROM` in production and verify with `npm run email:verify -- --strict` to deliver live emails instead of `Skipped` fallback mode.
+- Supply `SEED_ADMIN_PASSWORD`, `SEED_INSTRUCTOR_PASSWORD`, and `SEED_STUDENT_PASSWORD` in `.env` when running `ALLOW_DEMO_SEED=true npm run db:seed:demo` in development if deterministic demo passwords are desired instead of ephemeral generated credentials.

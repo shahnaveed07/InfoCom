@@ -68,6 +68,7 @@ import {
   canInstructorAccessStudent,
   getInstructorScope,
 } from './security/permissions.ts';
+import { queueTransactionalEmail } from './jobs/worker.ts';
 
 type PrismaDbClient = Prisma.TransactionClient | typeof prisma;
 
@@ -454,6 +455,16 @@ export async function runSessionReminderSweep(nowMs = Date.now()): Promise<Notif
               status: 'Delivered',
             },
           });
+          if (recipientEmail.includes('@')) {
+            await queueTransactionalEmail(tx, {
+              notificationId: notif.id,
+              userId: item.userId,
+              kind: 'reminder',
+              recipientEmail,
+              subject: `${item.title} — IGS — InfoCom Global Services`,
+              bodyText: item.message,
+            });
+          }
           return notif;
         });
 
@@ -1327,6 +1338,14 @@ export async function createEnrollmentWithOptionalInvoice(params: {
           status: 'Delivered',
         },
       });
+      await queueTransactionalEmail(tx, {
+        notificationId: notif.id,
+        userId: student.id,
+        kind: 'enrollment',
+        recipientEmail: student.email,
+        subject: `${notif.title} — IGS — InfoCom Global Services`,
+        bodyText: notif.message,
+      });
 
       if (params.issueTuitionInvoice && toCents(course.tuitionFee.toString()) > 0) {
         const feeStruct = await tx.feeStructure.findFirst({
@@ -1337,6 +1356,8 @@ export async function createEnrollmentWithOptionalInvoice(params: {
         const desc = `${course.code} ${course.title} Tuition (${params.cohort})`;
 
         const acadRow = await tx.academy.findFirst({ select: { currency: true } });
+        const invoiceCurrency = acadRow?.currency || 'INR';
+        const dueDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
         await tx.invoice.create({
           data: {
             id: invId,
@@ -1349,9 +1370,9 @@ export async function createEnrollmentWithOptionalInvoice(params: {
             subtotal: course.tuitionFee,
             amountDue: course.tuitionFee,
             amountPaid: '0.00',
-            currency: acadRow?.currency || 'INR',
+            currency: invoiceCurrency,
             status: 'Unpaid',
-            dueDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+            dueDate,
             issuedByUserId: params.actor.id,
           },
         });
@@ -1366,6 +1387,14 @@ export async function createEnrollmentWithOptionalInvoice(params: {
             unitPrice: course.tuitionFee,
             lineTotal: course.tuitionFee,
           },
+        });
+
+        await queueTransactionalEmail(tx, {
+          userId: student.id,
+          kind: 'finance',
+          recipientEmail: student.email,
+          subject: `Tuition Invoice Issued · ${invNum} — IGS — InfoCom Global Services`,
+          bodyText: `Invoice ${invNum} for ${formatCents(toCents(course.tuitionFee.toString()), invoiceCurrency)} (${desc}) has been issued with due date ${dueDate.toISOString().slice(0, 10)}.`,
         });
       }
     });
@@ -1485,6 +1514,17 @@ export async function recordInvoicePayment(params: {
           status: 'Delivered',
         },
       });
+
+      if (invoice.student?.email) {
+        await queueTransactionalEmail(tx, {
+          notificationId: notif.id,
+          userId: invoice.studentId,
+          kind: 'finance',
+          recipientEmail: invoice.student.email,
+          subject: `${notif.title} — IGS — InfoCom Global Services`,
+          bodyText: notif.message,
+        });
+      }
 
       let portalAutoActivated = false;
       const activationPolicy = await getPortalActivationPolicy(tx);
@@ -2444,6 +2484,15 @@ export async function markAttendanceAndNotify(params: {
           status: 'Delivered',
         },
       });
+
+      await queueTransactionalEmail(tx, {
+        notificationId: notif.id,
+        userId: student.id,
+        kind: 'attendance',
+        recipientEmail: student.email,
+        subject: `${notif.title} — IGS — InfoCom Global Services`,
+        bodyText: notif.message,
+      });
     });
 
     await recordAuditLog({
@@ -2634,6 +2683,15 @@ export async function bulkMarkAttendanceAndNotify(params: {
             recipient: student.email,
             status: 'Delivered',
           },
+        });
+
+        await queueTransactionalEmail(tx, {
+          notificationId: notif.id,
+          userId: student.id,
+          kind: 'attendance',
+          recipientEmail: student.email,
+          subject: `${notif.title} — IGS — InfoCom Global Services`,
+          bodyText: notif.message,
         });
       }
     });

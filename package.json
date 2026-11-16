@@ -11,14 +11,16 @@
     "preview": "vite preview",
     "clean": "rm -rf dist dist-server",
     "lint": "tsc --noEmit",
-    "test": "tsx --test --test-concurrency=1 src/shared/academic.test.ts src/shared/validation.test.ts server/auth.test.ts server/db/config.test.ts server/security.integration.test.ts server/phase4.integration.test.ts server/phase5.integration.test.ts server/phase6.integration.test.ts server/phase7.integration.test.ts server/public-and-phase7.integration.test.ts",
+    "test": "tsx --test --test-concurrency=1 src/shared/academic.test.ts src/shared/validation.test.ts server/auth.test.ts server/db/config.test.ts server/security.integration.test.ts server/phase4.integration.test.ts server/phase5.integration.test.ts server/phase6.integration.test.ts server/phase7.integration.test.ts server/public-and-phase7.integration.test.ts server/stabilization.integration.test.ts",
     "admin:bootstrap": "tsx scripts/bootstrap-admin.ts",
     "db:generate": "tsx scripts/prisma-run.ts generate",
     "db:migrate:deploy": "tsx scripts/prisma-run.ts migrate deploy",
     "db:migrate:status": "tsx scripts/prisma-run.ts migrate status",
     "db:seed": "tsx prisma/seed.ts",
     "db:seed:demo": "tsx prisma/seed-demo.ts",
-    "db:migrate-json": "tsx scripts/migrate-json.ts"
+    "db:migrate-json": "tsx scripts/migrate-json.ts",
+    "db:migrate-documents": "tsx scripts/migrate-legacy-documents.ts",
+    "email:verify": "tsx scripts/verify-email.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
@@ -54,7 +56,7 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "autoprefixer": "^10.4.21",
-    "esbuild": "^0.25.0",
+    "esbuild": "^0.28.0",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.21.0",
     "typescript": "^7.0.2",

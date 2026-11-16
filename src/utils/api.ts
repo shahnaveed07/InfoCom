@@ -124,14 +124,17 @@ export const api = {
   getPublicAcademy: () => requestJson<PublicAcademyInfo>('/api/public/academy'),
 
   getPublicCourses: () =>
-    requestJson<{ academy: PublicAcademyInfo; courses: PublicCourseSummary[] }>(
-      '/api/public/courses'
-    ),
+    requestJson<{
+      courses: PublicCourseSummary[];
+      currency: string;
+      isDemoEnvironment?: boolean;
+    }>('/api/public/courses'),
 
   getPublicCourseDetail: (slugOrId: string) =>
-    requestJson<{ academy: PublicAcademyInfo; course: PublicCourseDetail }>(
-      `/api/public/courses/${encodeURIComponent(slugOrId)}`
-    ),
+    requestJson<{
+      course: PublicCourseDetail;
+      isDemoEnvironment?: boolean;
+    }>(`/api/public/courses/${encodeURIComponent(slugOrId)}`),
 
   getMe: () => requestJson<{ user: UserPublic | null }>('/api/auth/me'),
 

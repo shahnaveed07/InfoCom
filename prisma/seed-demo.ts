@@ -10,18 +10,38 @@ if (process.env.NODE_ENV !== 'development' || process.env.ALLOW_DEMO_SEED !== 't
   );
 }
 
+function resolveDemoPassword(envVarName: string): { password: string; generated: boolean } {
+  const configured = process.env[envVarName]?.trim();
+  if (configured && configured.length >= 8) {
+    return { password: configured, generated: false };
+  }
+  return {
+    password: `${crypto.randomBytes(10).toString('base64url')}!A9`,
+    generated: true,
+  };
+}
+
 async function main() {
   await seedProductionFoundation();
 
-  const adminPassword = process.env.SEED_ADMIN_PASSWORD || 'Admin!2026';
-  const instructorPassword = process.env.SEED_INSTRUCTOR_PASSWORD || 'Instructor!2026';
-  const studentPassword = process.env.SEED_STUDENT_PASSWORD || 'Student!2026';
+  const adminCred = resolveDemoPassword('SEED_ADMIN_PASSWORD');
+  const instructorCred = resolveDemoPassword('SEED_INSTRUCTOR_PASSWORD');
+  const studentCred = resolveDemoPassword('SEED_STUDENT_PASSWORD');
 
   console.log('Seeding IGS — InfoCom Global Services development demo dataset...');
+  console.log(
+    `[demo-seed] Admin credential source: ${adminCred.generated ? 'generated ephemeral password (set SEED_ADMIN_PASSWORD in .env to customize)' : 'SEED_ADMIN_PASSWORD env'}`
+  );
+  console.log(
+    `[demo-seed] Faculty credential source: ${instructorCred.generated ? 'generated ephemeral password (set SEED_INSTRUCTOR_PASSWORD in .env to customize)' : 'SEED_INSTRUCTOR_PASSWORD env'}`
+  );
+  console.log(
+    `[demo-seed] Student credential source: ${studentCred.generated ? 'generated ephemeral password (set SEED_STUDENT_PASSWORD in .env to customize)' : 'SEED_STUDENT_PASSWORD env'}`
+  );
 
-  const adminPwHash = await hashPassword(adminPassword);
-  const instructorPwHash = await hashPassword(instructorPassword);
-  const studentPwHash = await hashPassword(studentPassword);
+  const adminPwHash = await hashPassword(adminCred.password);
+  const instructorPwHash = await hashPassword(instructorCred.password);
+  const studentPwHash = await hashPassword(studentCred.password);
 
   await prisma.$transaction(async (tx) => {
     // 1. Academic Departments

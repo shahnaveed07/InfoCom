@@ -49,6 +49,8 @@ import {
   canInstructorAccessStudent,
   hasInstructorPermission,
 } from '../security/permissions.ts';
+import { isSmtpConfigured, verifySmtpConnection } from '../email/mailer.ts';
+import { queueTransactionalEmail, runFeeReminderSweep } from '../jobs/worker.ts';
 
 export const adminOpsRouter = Router();
 
@@ -254,6 +256,16 @@ adminOpsRouter.post(
               status: 'Delivered',
             },
           });
+          const origin = (process.env.APP_URL || 'http://localhost:3000').replace(/\/+$/, '');
+          await queueTransactionalEmail(tx, {
+            userId: user.id,
+            kind: 'account_setup',
+            recipientEmail: user.email,
+            subject: 'Complete Your Account Setup — IGS — InfoCom Global Services',
+            bodyText: `Hello ${user.name},\n\nYour IGS — InfoCom Global Services ${user.role} account has been created. Complete your password setup using the link below (valid for 72 hours):\n${origin}${issuedOnboarding.onboardingPath}\n\n— IGS — InfoCom Global Services`,
+            bypassPreferences: true,
+            redactSensitive: true,
+          });
         }
 
         return { created: user, onboarding: issuedOnboarding };
@@ -320,6 +332,16 @@ adminOpsRouter.post(
             recipient: target.email,
             status: 'Delivered',
           },
+        });
+        const origin = (process.env.APP_URL || 'http://localhost:3000').replace(/\/+$/, '');
+        await queueTransactionalEmail(tx, {
+          userId: target.id,
+          kind: 'password_reset',
+          recipientEmail: target.email,
+          subject: 'Portal Password Reset — IGS — InfoCom Global Services',
+          bodyText: `Hello ${target.name},\n\nAn administrator issued a single-use password setup/reset link for your account (${target.email}), valid for 72 hours:\n${origin}${token.onboardingPath}\n\n— IGS — InfoCom Global Services`,
+          bypassPreferences: true,
+          redactSensitive: true,
         });
         return token;
       });
@@ -571,6 +593,15 @@ adminOpsRouter.post(
             status: 'Delivered',
           },
         });
+
+        await queueTransactionalEmail(tx, {
+          notificationId: notif.id,
+          userId: student.id,
+          kind: 'finance',
+          recipientEmail: student.email,
+          subject: `${notif.title} — IGS — InfoCom Global Services`,
+          bodyText: notif.message,
+        });
       });
 
       await recordAuditLog({
@@ -659,6 +690,111 @@ adminOpsRouter.post(
     } catch (err) {
       console.error('POST /api/invoices/:id/payments error:', err);
       res.status(500).json({ error: 'Failed to record payment.' });
+    }
+  }
+);
+
+adminOpsRouter.post(
+  '/invoices/send-reminders',
+  requireAuth,
+  requireRoles('admin'),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const includeUpcomingDays =
+        typeof req.body?.includeUpcomingDays === 'number' && Number.isFinite(req.body.includeUpcomingDays)
+          ? Math.min(30, Math.max(0, req.body.includeUpcomingDays))
+          : 3;
+      const result = await runFeeReminderSweep({ includeUpcomingDays });
+      await recordAuditLog({
+        actor: req.authUser!,
+        action: 'FEE_REMINDERS_QUEUED',
+        entityType: 'fee_invoice',
+        entityId: 'sweep',
+        summary: `Scanned ${result.scannedInvoices} unpaid/partial invoices and queued ${result.queuedCount} fee reminder notifications.`,
+      });
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      console.error('POST /api/invoices/send-reminders error:', err);
+      res.status(500).json({ error: 'Failed to queue fee reminders.' });
+    }
+  }
+);
+
+adminOpsRouter.get(
+  '/admin/email-delivery',
+  requireAuth,
+  requireRoles('admin'),
+  async (req: Request, res: Response) => {
+    try {
+      const verify = req.query.verify === 'true';
+      const [smtpStatus, groupedCounts, recentDeliveries, recentJobs] = await Promise.all([
+        verify ? verifySmtpConnection() : Promise.resolve(null),
+        prisma.deliveryLog.groupBy({
+          by: ['status'],
+          where: { channel: 'email' },
+          _count: { _all: true },
+        }),
+        prisma.deliveryLog.findMany({
+          where: { channel: 'email' },
+          orderBy: { sentAt: 'desc' },
+          take: 25,
+          select: {
+            id: true,
+            notificationId: true,
+            userId: true,
+            applicationId: true,
+            recipient: true,
+            status: true,
+            providerMessageId: true,
+            errorMessage: true,
+            sentAt: true,
+          },
+        }),
+        prisma.backgroundJob.findMany({
+          where: { jobType: 'notification_email' },
+          orderBy: { createdAt: 'desc' },
+          take: 20,
+          select: {
+            id: true,
+            status: true,
+            attempts: true,
+            maxAttempts: true,
+            lastError: true,
+            runAfter: true,
+            completedAt: true,
+            createdAt: true,
+          },
+        }),
+      ]);
+
+      const countsByStatus: Record<string, number> = {
+        Queued: 0,
+        Delivered: 0,
+        Skipped: 0,
+        Failed: 0,
+      };
+      for (const row of groupedCounts) {
+        countsByStatus[row.status] = row._count._all;
+      }
+
+      res.json({
+        smtpConfigured: isSmtpConfigured(),
+        verification: smtpStatus,
+        countsByStatus,
+        recentDeliveries: recentDeliveries.map((d) => ({
+          ...d,
+          sentAt: d.sentAt.toISOString(),
+        })),
+        recentJobs: recentJobs.map((j) => ({
+          ...j,
+          runAfter: j.runAfter.toISOString(),
+          completedAt: j.completedAt ? j.completedAt.toISOString() : null,
+          createdAt: j.createdAt.toISOString(),
+        })),
+      });
+    } catch (err) {
+      console.error('GET /api/admin/email-delivery error:', err);
+      res.status(500).json({ error: 'Failed to load email delivery telemetry.' });
     }
   }
 );

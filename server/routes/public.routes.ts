@@ -41,10 +41,15 @@ publicRouter.get('/academy', async (_req, res) => {
 
 publicRouter.get('/courses', async (_req, res) => {
   try {
+    const isProduction = process.env.NODE_ENV === 'production';
     const [academy, courses] = await Promise.all([
       prisma.academy.findFirst({ orderBy: { createdAt: 'asc' }, select: { currency: true } }),
       prisma.course.findMany({
-        where: { isPublished: true, isArchived: false },
+        where: {
+          isPublished: true,
+          isArchived: false,
+          ...(isProduction ? { isDemo: false } : {}),
+        },
         orderBy: [{ createdAt: 'asc' }],
         include: {
           department: { select: { name: true } },
@@ -71,6 +76,7 @@ publicRouter.get('/courses', async (_req, res) => {
       durationWeeks: course.durationWeeks,
       tuitionFee: course.showTuitionPublicly ? course.tuitionFee.toFixed(2) : null,
       showTuitionPublicly: course.showTuitionPublicly,
+      isDemo: !isProduction ? course.isDemo : false,
       currency,
       moduleCount: course.modules.length,
       totalLabHours: course.modules.reduce((acc, m) => acc + m.labHours, 0),
@@ -85,7 +91,12 @@ publicRouter.get('/courses', async (_req, res) => {
       })),
     }));
 
-    res.json({ courses: items, currency });
+    const isDemoEnvironment =
+      !isProduction &&
+      process.env.NODE_ENV === 'development' &&
+      items.some((c) => Boolean(c.isDemo));
+
+    res.json({ courses: items, currency, isDemoEnvironment });
   } catch (err) {
     console.error('Public courses listing failed:', err);
     res.status(500).json({ error: 'Unable to load published course catalog.' });
@@ -94,6 +105,7 @@ publicRouter.get('/courses', async (_req, res) => {
 
 publicRouter.get('/courses/:slugOrId', async (req, res) => {
   try {
+    const isProduction = process.env.NODE_ENV === 'production';
     const param = String(req.params.slugOrId || '').trim();
     if (!param) {
       res.status(400).json({ error: 'Course identifier is required.' });
@@ -106,6 +118,7 @@ publicRouter.get('/courses/:slugOrId', async (req, res) => {
         where: {
           isPublished: true,
           isArchived: false,
+          ...(isProduction ? { isDemo: false } : {}),
           OR: [{ slug: param }, { id: param }],
         },
         include: {
@@ -143,6 +156,7 @@ publicRouter.get('/courses/:slugOrId', async (req, res) => {
       durationWeeks: course.durationWeeks,
       tuitionFee: course.showTuitionPublicly ? course.tuitionFee.toFixed(2) : null,
       showTuitionPublicly: course.showTuitionPublicly,
+      isDemo: !isProduction ? course.isDemo : false,
       currency,
       moduleCount: course.modules.length,
       totalLabHours: course.modules.reduce((acc, m) => acc + m.labHours, 0),
@@ -165,7 +179,10 @@ publicRouter.get('/courses/:slugOrId', async (req, res) => {
       })),
     };
 
-    res.json({ course: detail });
+    const isDemoEnvironment =
+      !isProduction && process.env.NODE_ENV === 'development' && Boolean(course.isDemo);
+
+    res.json({ course: detail, isDemoEnvironment });
   } catch (err) {
     console.error('Public course detail failed:', err);
     res.status(500).json({ error: 'Unable to load program details.' });

@@ -76,9 +76,11 @@ All endpoints are mounted under `/api` via `server/app.ts` and protected by `sec
 | `GET /api/payments` | `admin`, `student` (self) | Paginated payment receipts |
 | `GET /api/notifications`, `GET/PUT /api/notifications/preferences` | `requireAuth` | Paginated notifications & channel preference toggles |
 | `POST /api/users` / `PATCH /api/users/:id` | `admin` | User provisioning & status/role management (revokes sessions on disable/role change) |
-| `POST /api/invoices` | `admin` | Issue tuition invoice (`toCents` exact math) |
+| `POST /api/invoices` | `admin` | Issue tuition invoice (`toCents` exact math) & queue email notice |
 | `PATCH /api/invoices/:id/void` | `admin` | Void unpaid invoice |
-| `POST /api/invoices/:id/payments` | `admin` | Record full/partial payment & generate receipt (`RCPT-*`) |
+| `POST /api/invoices/:id/payments` | `admin` | Record full/partial payment, generate receipt (`RCPT-*`), and queue confirmation email |
+| `POST /api/invoices/send-reminders` | `admin` | Scan unpaid/partial due & overdue invoices and queue deduplicated fee reminder emails |
+| `GET /api/admin/email-delivery` | `admin` | Email `DeliveryLog` status counts, recent deliveries, `BackgroundJob` queue state, and optional `?verify=true` SMTP check |
 | `POST /api/certificates` | `admin`, `instructor` | Issue verified certificate if eligible |
 | `POST /api/certificates/:id/revoke` | `admin` | Revoke issued certificate with reason |
 | `GET /api/certificates/:id/download` | `requireAuth` | Renders official signed PDF certificate (`application/pdf`) with embedded QR verification code |
