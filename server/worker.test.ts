@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import { promisify } from 'node:util';
 import wranglerPkg from 'wrangler';
@@ -8,7 +11,19 @@ import workerEntry from './worker.ts';
 const execFileAsync = promisify(execFile);
 const { unstable_dev } = wranglerPkg;
 
-test('wrangler deploy --dry-run builds server/worker.ts cleanly under Cloudflare 64 MiB bundle limit', async () => {
+test('wrangler deploy --dry-run builds server/worker.ts cleanly without Hyperdrive, Prisma, PDFKit, or Nodemailer', async () => {
+  const distIndexPath = path.join(process.cwd(), 'dist', 'index.html');
+  const distExists = await fs
+    .access(distIndexPath)
+    .then(() => true)
+    .catch(() => false);
+  if (!distExists) {
+    await execFileAsync('npm', ['run', 'build'], {
+      cwd: process.cwd(),
+      timeout: 60_000,
+    });
+  }
+
   const { stdout } = await execFileAsync(
     'npx',
     ['wrangler', 'deploy', '--dry-run', '--outdir', 'dist-worker'],
@@ -17,7 +32,8 @@ test('wrangler deploy --dry-run builds server/worker.ts cleanly under Cloudflare
       timeout: 30_000,
     }
   );
-  assert.ok(stdout.includes('env.HYPERDRIVE'), 'Expected HYPERDRIVE binding in dry-run output');
+  assert.ok(stdout.includes('env.DB'), 'Expected D1 binding env.DB in dry-run output');
+  assert.ok(stdout.includes('env.ASSETS'), 'Expected Assets binding env.ASSETS in dry-run output');
   assert.ok(
     stdout.includes('env.DOCUMENTS_BUCKET'),
     'Expected DOCUMENTS_BUCKET R2 binding in dry-run output'
@@ -27,15 +43,26 @@ test('wrangler deploy --dry-run builds server/worker.ts cleanly under Cloudflare
     stdout.includes('env.AUTH_RATE_LIMITER') && stdout.includes('env.PUBLIC_RATE_LIMITER'),
     'Expected Rate Limit bindings in dry-run output'
   );
+  assert.equal(stdout.includes('env.HYPERDRIVE'), false, 'Hyperdrive must not be bound');
+
+  const outFiles = await fs.readdir(path.join(process.cwd(), 'dist-worker'));
+  assert.equal(
+    outFiles.some((f) => f.endsWith('.wasm')),
+    false,
+    `Worker bundle must not include Prisma WASM query engines: ${outFiles.join(', ')}`
+  );
+  const workerBundle = await fs.readFile(path.join(process.cwd(), 'dist-worker', 'worker.js'), 'utf8');
+  assert.equal(workerBundle.includes('@prisma/client'), false);
+  assert.equal(workerBundle.includes('pdfkit'), false);
+  assert.equal(workerBundle.includes('nodemailer'), false);
 });
 
-test('server/worker.ts boots in real workerd runtime and serves health, sanitized readiness, CORS, and 501 Node boundary', async () => {
-  const prevLocalConn = process.env.CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE;
-  process.env.CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE =
-    'postgresql://postgres:SecretPassOnlyForLocalProbe@127.0.0.1:59999/igs_test';
-
+test('server/worker.ts boots in real workerd runtime, serves SPA assets, D1 readiness, CORS, and zero 501/404 stubs', async () => {
+  const persistDir = await fs.mkdtemp(path.join(os.tmpdir(), 'igs-worker-boot-'));
   const worker = await unstable_dev('server/worker.ts', {
     config: 'wrangler.jsonc',
+    persist: true,
+    persistTo: persistDir,
     experimental: { disableExperimentalWarning: true },
     logLevel: 'error',
   });
@@ -50,33 +77,38 @@ test('server/worker.ts boots in real workerd runtime and serves health, sanitize
     assert.equal(healthJson.status, 'ok');
     assert.equal(healthJson.runtime, 'cloudflare-workers');
 
-    // 2. /api/health/ready -> 503 degraded without exposing connection URI or password
+    // 2. /api/health/ready before migrations -> 503 D1_SCHEMA_NOT_APPLIED
     const readyRes = await worker.fetch('/api/health/ready');
     assert.equal(readyRes.status, 503);
-    const readyText = await readyRes.text();
-    const readyJson = JSON.parse(readyText) as Record<string, unknown>;
+    const readyJson = (await readyRes.json()) as Record<string, unknown>;
     assert.equal(readyJson.status, 'degraded');
     assert.equal(readyJson.database, 'unavailable');
-    assert.equal(readyJson.mode, 'hyperdrive');
-    assert.equal(readyText.includes('SecretPassOnlyForLocalProbe'), false);
-    assert.equal(readyText.includes('postgresql://'), false);
+    assert.equal(readyJson.mode, 'd1');
+    assert.equal(readyJson.code, 'D1_SCHEMA_NOT_APPLIED');
 
-    // 3. Unsupported Node-bound endpoint (/api/auth/login, /api/certificates/:id/download) -> explicit 501
-    const loginRes = await worker.fetch('/api/auth/login', { method: 'POST' });
-    assert.equal(loginRes.status, 501);
-    const loginJson = (await loginRes.json()) as Record<string, unknown>;
-    assert.equal(loginJson.code, 'WORKER_RUNTIME_UNSUPPORTED');
-    assert.equal(loginJson.requiredBackend, 'node-express-api');
+    // 3. Direct SPA navigation paths serve 200 text/html via ASSETS (no 404 STATIC_HOSTING_REQUIRED)
+    const spaCoursesRes = await worker.fetch('/courses');
+    assert.equal(spaCoursesRes.status, 200);
+    assert.ok((spaCoursesRes.headers.get('content-type') || '').includes('text/html'));
+    assert.equal(spaCoursesRes.headers.get('x-frame-options'), null);
 
-    // 4. CORS allowlist enforcement
+    const spaDetailRes = await worker.fetch('/courses/web-development');
+    assert.equal(spaDetailRes.status, 200);
+    assert.ok((spaDetailRes.headers.get('content-type') || '').includes('text/html'));
+
+    // 4. Protected portal routes return proper 401 when unauthenticated (never 501 WORKER_RUNTIME_UNSUPPORTED)
+    const studentsRes = await worker.fetch('/api/students');
+    assert.equal(studentsRes.status, 401);
+
+    // 5. CORS allowlist enforcement
     const allowedPreflight = await worker.fetch('/api/public/academy', {
       method: 'OPTIONS',
-      headers: { Origin: 'https://igs-infocom.pages.dev' },
+      headers: { Origin: 'http://localhost:3000' },
     });
     assert.equal(allowedPreflight.status, 204);
     assert.equal(
       allowedPreflight.headers.get('access-control-allow-origin'),
-      'https://igs-infocom.pages.dev'
+      'http://localhost:3000'
     );
 
     const blockedPreflight = await worker.fetch('/api/public/academy', {
@@ -86,27 +118,18 @@ test('server/worker.ts boots in real workerd runtime and serves health, sanitize
     assert.equal(blockedPreflight.status, 204);
     assert.equal(blockedPreflight.headers.get('access-control-allow-origin'), null);
 
-    // 5. Unknown API route -> 404 API_ROUTE_NOT_FOUND, non-API path -> 404 STATIC_HOSTING_REQUIRED
+    // 6. Unknown API route -> 404 API_ROUTE_NOT_FOUND
     const unknownApiRes = await worker.fetch('/api/non-existent-endpoint');
     assert.equal(unknownApiRes.status, 404);
     const unknownApiJson = (await unknownApiRes.json()) as Record<string, unknown>;
     assert.equal(unknownApiJson.code, 'API_ROUTE_NOT_FOUND');
-
-    const staticPathRes = await worker.fetch('/courses');
-    assert.equal(staticPathRes.status, 404);
-    const staticPathJson = (await staticPathRes.json()) as Record<string, unknown>;
-    assert.equal(staticPathJson.code, 'STATIC_HOSTING_REQUIRED');
   } finally {
     await worker.stop();
-    if (prevLocalConn === undefined) {
-      delete process.env.CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE;
-    } else {
-      process.env.CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE = prevLocalConn;
-    }
+    await fs.rm(persistDir, { recursive: true, force: true }).catch(() => undefined);
   }
 });
 
-test('server/worker.ts directly enforces distributed Cloudflare Rate Limiting on /api/auth/* and /api/public/*', async () => {
+test('server/worker.ts enforces distributed Cloudflare Rate Limiting on /api/auth/login and /api/public/*', async () => {
   const waitUntil = (p: Promise<unknown>) => {
     void p;
   };
@@ -114,7 +137,11 @@ test('server/worker.ts directly enforces distributed Cloudflare Rate Limiting on
   const resAllowed = await workerEntry.fetch(
     new Request('https://worker.example/api/auth/login', {
       method: 'POST',
-      headers: { 'cf-connecting-ip': '198.51.100.12' },
+      headers: {
+        'cf-connecting-ip': '198.51.100.12',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ email: 'not-valid', password: 'short' }),
     }),
     {
       AUTH_RATE_LIMITER: {
@@ -126,7 +153,8 @@ test('server/worker.ts directly enforces distributed Cloudflare Rate Limiting on
     },
     { waitUntil }
   );
-  assert.equal(resAllowed.status, 501);
+  // Request reached D1 guard (503 D1_BINDING_MISSING when DB omitted), never 501 stub
+  assert.equal(resAllowed.status, 503);
   assert.equal(resAllowed.headers.get('x-ratelimit-backend'), 'cloudflare-binding');
 
   const resBlocked = await workerEntry.fetch(

@@ -1,7 +1,9 @@
-# IGS — InfoCom Global Services: Cloudflare Free Tier Compatibility Audit
+# IGS — InfoCom Global Services: Cloudflare Free Tier Compatibility Audit (Legacy Express/Hyperdrive Pre-Migration Audit)
 
-**Status Classification:** `READY WITH EXTERNAL NODE BACKEND`  
-**Audit Scope:** React + Vite SPA, Express + TypeScript API, Prisma 6 (`6.16.2`) + PostgreSQL (`pg`), Argon2id auth, PDFKit certificates, R2 private storage, HTTP/SMTP email, Queues, Cron Triggers, and distributed Rate Limiting.
+> **Superseded:** This Phase 1 audit evaluated keeping an external Node.js/PostgreSQL + Hyperdrive backend. It has been superseded by the complete Cloudflare-native **D1 + R2 + Queues + Single-Origin Worker** migration documented in [`docs/CLOUDFLARE_MIGRATION_AUDIT.md`](./CLOUDFLARE_MIGRATION_AUDIT.md) and [`docs/CLOUDFLARE_LIMITATIONS.md`](./CLOUDFLARE_LIMITATIONS.md).
+
+**Historical Status Classification:** `SUPERSEDED — MIGRATED TO D1 / WORKERS`  
+**Audit Scope:** Historical baseline of React + Vite SPA, Express + TypeScript API, Prisma 6 (`6.16.2`) + PostgreSQL (`pg`), Argon2id auth, PDFKit certificates, R2 private storage, HTTP/SMTP email, Queues, Cron Triggers, and distributed Rate Limiting.
 
 ---
 

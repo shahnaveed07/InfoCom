@@ -59,13 +59,16 @@ jobs:
       - name: Run unit & integration test suite
         run: npm test
 
-      - name: Generate Cloudflare Worker types & dry-run bundle
-        run: npm run cf:types && npm run cf:build
-
       - name: Build production client and server bundles
         run: npm run build && npm run build:server
 
-      - name: Verify Cloudflare Pages build output
+      - name: Generate Cloudflare Worker types & dry-run bundle
+        run: npm run cf:types && npm run cf:build
+
+      - name: Apply local D1 migrations & run Cloudflare Worker D1 suite
+        run: npm run cf:d1:migrate:local && npm run test:cloudflare
+
+      - name: Verify built SPA assets
         run: |
           test -f dist/index.html
           test -f dist/_redirects

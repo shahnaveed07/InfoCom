@@ -3,23 +3,31 @@
   "name": "igs-infocom-ams-worker",
   "main": "server/worker.ts",
   "compatibility_date": "2026-11-15",
-  "compatibility_flags": ["nodejs_compat", "enable_nodejs_http_server_modules"],
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
   "vars": {
     "NODE_ENV": "production",
-    "APP_URL": "https://igs-infocom.pages.dev",
+    "APP_URL": "https://igs-infocom-ams-worker.<your-subdomain>.workers.dev",
     "STORAGE_PROVIDER": "r2",
-    "EMAIL_PROVIDER": "http",
-    "CORS_ALLOWED_ORIGINS": "https://igs-infocom.pages.dev",
+    "EMAIL_PROVIDER": "disabled",
+    "CORS_ALLOWED_ORIGINS": "https://igs-infocom-ams-worker.<your-subdomain>.workers.dev",
     "CORS_CROSS_SITE_COOKIES": "false",
     "LOG_OPERATIONAL_METRICS": "false"
   },
   "triggers": {
     "crons": ["*/15 * * * *"]
   },
-  "hyperdrive": [
+  "d1_databases": [
     {
-      "binding": "HYPERDRIVE",
-      "id": "REPLACE_WITH_HYPERDRIVE_CONFIG_ID"
+      "binding": "DB",
+      "database_name": "igs-infocom-db",
+      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      "migrations_dir": "migrations"
     }
   ],
   "r2_buckets": [

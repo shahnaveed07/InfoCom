@@ -1,42 +1,44 @@
 # IGS — Cloudflare Environment & Bindings Matrix
 
-All secrets must be stored in Cloudflare Dashboard / `wrangler secret put` or your Node host secret manager — never committed to `.env.example`, `wrangler.jsonc`, or Git.
+Never store secrets, database credentials, API keys, or demo passwords in `.env.example`, `wrangler.jsonc`, or Git. Production secrets belong exclusively in `wrangler secret put` or Cloudflare Dashboard Secrets.
 
 ---
 
-## 1. Frontend Build-Time Variables (Cloudflare Pages)
+## 1. Cloudflare Worker Bindings (`wrangler.jsonc`)
 
-| Variable | Example Value | Purpose |
-| --- | --- | --- |
-| `VITE_API_BASE_URL` | `https://api.yourdomain.example` | Target API origin when SPA is hosted separately on Cloudflare Pages |
-| `VITE_PUBLIC_DATA_MODE` | `auto` | `auto` (API-first + fallback), `api`, or `demo` |
-| `VITE_ENABLE_PUBLIC_DEMO_FALLBACK` | `true` | Keeps public pages browsable offline while backend is starting or unreachable |
-
----
-
-## 2. External Node.js API Runtime Variables
-
-| Variable | Default / Required | Purpose |
-| --- | --- | --- |
-| `DATABASE_URL` | Required | Direct PostgreSQL URI (Node backend) |
-| `SESSION_SECRET` | Required (32+ chars) | Cookie & token cryptographic secret |
-| `APP_URL` | Required in Prod | Canonical frontend URL used for onboarding links & certificate QR URLs |
-| `CORS_ALLOWED_ORIGINS` | Optional | Comma-separated allowlisted Pages/custom frontend origins |
-| `CORS_CROSS_SITE_COOKIES` | `false` | Set `true` only when SPA & API run on distinct HTTPS origins (`SameSite=None; Secure`) |
-| `STORAGE_PROVIDER` | `local` \| `s3` \| `r2` | Private upload storage backend (`s3` works with R2 S3-compatible API on Node) |
-| `EMAIL_PROVIDER` | `auto` \| `http` \| `smtp` | Selects HTTP (`RESEND_API_KEY`/`EMAIL_HTTP_URL`) or Node `nodemailer` SMTP |
-| `EMAIL_FROM` | Optional | Verified sender identity for HTTP email delivery |
-| `RESEND_API_KEY` | Optional secret | Bearer token for Resend HTTP email transport (`POST https://api.resend.com/emails`) |
+| Binding / Config | Type | Resource / Target | Purpose |
+| --- | --- | --- | --- |
+| `ASSETS` | Static Assets Fetcher | `./dist` (`not_found_handling: "single-page-application"`, `run_worker_first: ["/api/*"]`) | Serves React SPA directly and delegates deep links to `index.html` while routing `/api/*` first to Worker |
+| `DB` | Cloudflare D1 Database | `igs-infocom-db` (`migrations/`) | Primary relational database for identity, admissions, academics, finance, certificates, jobs, audit |
+| `DOCUMENTS_BUCKET` | Cloudflare R2 Bucket | `igs-private-documents` | Private non-public document storage (2 MB max, MIME-checked, SHA-256 verified) |
+| `JOBS_QUEUE` | Cloudflare Queue | `igs-ams-jobs` + `igs-ams-jobs-dlq` | Asynchronous email/notification job dispatch & retry handling |
+| `AUTH_RATE_LIMITER` | Cloudflare Rate Limit | Namespace `1001` (`10 req / 60s`) | Edge brute-force protection for `/api/auth/login`, `forgot-password`, `reset-password`, `change-password`, `register` |
+| `PUBLIC_RATE_LIMITER` | Cloudflare Rate Limit | Namespace `1002` (`30 req / 60s`) | Rate limiting for `/api/public/*`, `/api/admissions/public*`, `/api/certificates/verify/*` |
+| `triggers.crons` | Cron Trigger | `*/15 * * * *` | Stale job lease recovery, 24h session reminders, fee due reminders, expired token/session purge |
 
 ---
 
-## 3. Cloudflare Worker Bindings (`wrangler.jsonc`)
+## 2. Worker Environment Variables & Secrets
 
-| Binding Name | Type | Purpose |
+| Variable | Default (`wrangler.jsonc`) | Classification | Purpose |
+| --- | --- | --- | --- |
+| `NODE_ENV` | `production` | Var | Enforces `is_demo = 0` filtering on public catalog routes |
+| `APP_URL` | `https://igs-infocom-ams-worker.<your-subdomain>.workers.dev` | Var | Canonical origin for CORS, CSRF host check, onboarding URLs, and certificate QR verification |
+| `CORS_ALLOWED_ORIGINS` | Matches `APP_URL` | Var | Comma-separated allowlisted origins permitted credentialed API requests |
+| `CORS_CROSS_SITE_COOKIES` | `false` | Var | Keep `false` (`SameSite=Lax; HttpOnly`) in single-origin Worker deployment |
+| `STORAGE_PROVIDER` | `r2` | Var | Selects Cloudflare R2 private document storage |
+| `EMAIL_PROVIDER` | `disabled` | Var | `"disabled"` logs `Skipped` in `delivery_logs` cleanly; `"http"` uses optional fetch webhook or Resend |
+| `LOG_OPERATIONAL_METRICS` | `false` | Var | Emits structured telemetry warnings whenever requests approach `>= 8 ms` CPU |
+| `EMAIL_FROM` | Unset | Secret (optional) | Sender address if HTTP email is later enabled |
+| `EMAIL_HTTP_URL` / `RESEND_API_KEY` | Unset | Secret (optional) | Endpoint / bearer key for HTTP email API transport |
+
+---
+
+## 3. Local Development & Demo Seeding Variables (`.env.example`)
+
+| Variable | Default | Purpose |
 | --- | --- | --- |
-| `HYPERDRIVE` | Hyperdrive | Connection pooler + smart routing to PostgreSQL for `server/worker.ts` |
-| `DOCUMENTS_BUCKET` | R2 Bucket | Private object storage (`igs-private-documents`, non-public, SHA-256 verified) |
-| `JOBS_QUEUE` | Queue (Producer & Consumer) | Background email dispatch (`{ jobId, jobType }` reference only; no tokens queued) |
-| `AUTH_RATE_LIMITER` | Rate Limit | Distributed rate limiting for `/api/auth/*` (10 req / 60s) |
-| `PUBLIC_RATE_LIMITER` | Rate Limit | Distributed rate limiting for `/api/public/*` (30 req / 60s) |
-| `triggers.crons` | Cron (`*/15 * * * *`) | Stale job recovery, session/fee reminders, and expired session/reset token cleanup |
+| `VITE_PUBLIC_DATA_MODE` | `auto` | `auto` (API-first with fallback), `api`, or `demo` |
+| `VITE_ENABLE_PUBLIC_DEMO_FALLBACK` | `true` | Keeps public catalog pages browsable when offline |
+| `ALLOW_DEMO_SEED` | `false` | Must remain `false` in production |
+| `SEED_ADMIN_PASSWORD`, `SEED_INSTRUCTOR_PASSWORD`, `SEED_STUDENT_PASSWORD` | Unset | Required (`>= 10` chars) only when explicitly invoking `npm run cf:seed:demo:local` |
