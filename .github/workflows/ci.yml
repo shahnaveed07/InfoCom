@@ -59,12 +59,21 @@ jobs:
       - name: Run unit & integration test suite
         run: npm test
 
+      - name: Generate Cloudflare Worker types & dry-run bundle
+        run: npm run cf:types && npm run cf:build
+
       - name: Build production client and server bundles
         run: npm run build && npm run build:server
+
+      - name: Verify Cloudflare Pages build output
+        run: |
+          test -f dist/index.html
+          test -f dist/_redirects
+          test -f dist/_headers
+          ! grep -rnE '"/src/|/src/assets/' dist/index.html dist/assets/*.js
 
       - name: Install Playwright Chromium browser
         run: npx playwright install --with-deps chromium
 
       - name: Run Playwright browser E2E suite
         run: npm run test:e2e
-

@@ -73,6 +73,7 @@ const loginLimiter = createRateLimiter({
   windowMs: 15 * 60 * 1000,
   maxRequests: 10,
   keyPrefix: 'auth-login',
+  bindingName: 'auth',
   keySelector: (req) =>
     typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '',
   message: 'Too many sign-in attempts. Please wait 15 minutes before trying again.',
@@ -82,6 +83,7 @@ const registerLimiter = createRateLimiter({
   windowMs: 15 * 60 * 1000,
   maxRequests: 10,
   keyPrefix: 'auth-register',
+  bindingName: 'auth',
   message: 'Too many registration attempts from this network. Please wait before retrying.',
 });
 
@@ -89,6 +91,7 @@ const forgotPasswordLimiter = createRateLimiter({
   windowMs: 15 * 60 * 1000,
   maxRequests: 5,
   keyPrefix: 'auth-forgot-password',
+  bindingName: 'auth',
   keySelector: (req) =>
     typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '',
   message: 'Too many password reset requests. Please wait before trying again.',
@@ -98,6 +101,7 @@ const resetPasswordLimiter = createRateLimiter({
   windowMs: 15 * 60 * 1000,
   maxRequests: 10,
   keyPrefix: 'auth-reset-password',
+  bindingName: 'auth',
   message: 'Too many password reset attempts. Please wait before trying again.',
 });
 
@@ -105,6 +109,7 @@ const changePasswordLimiter = createRateLimiter({
   windowMs: 15 * 60 * 1000,
   maxRequests: 10,
   keyPrefix: 'auth-change-password',
+  bindingName: 'auth',
   message: 'Too many password change attempts. Please wait before trying again.',
 });
 

@@ -24,7 +24,7 @@ export interface LegacyMigrationReport {
   dryRun: boolean;
   keepBase64: boolean;
   confirmClearBase64: boolean;
-  targetProvider: 'local' | 's3';
+  targetProvider: 'local' | 's3' | 'r2';
   scanned: number;
   migrated: number;
   skipped: number;
@@ -94,9 +94,11 @@ export async function migrateLegacyDocuments(options?: {
     try {
       const rawBase64 = (doc.contentBase64 || '').trim();
 
-      // Case A: Already moved to local/s3 previously with --keep-base64; verify round-trip then clear Base64
+      // Case A: Already moved to local/s3/r2 previously with --keep-base64; verify round-trip then clear Base64
       if (
-        (doc.storageProvider === 'local' || doc.storageProvider === 's3') &&
+        (doc.storageProvider === 'local' ||
+          doc.storageProvider === 's3' ||
+          doc.storageProvider === 'r2') &&
         doc.storageKey
       ) {
         const storedBytes = await readPrivateDocument({

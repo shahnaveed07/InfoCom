@@ -1,9 +1,15 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { deleteLocalObject, readLocalObject, writeLocalObject } from './local.ts';
+import {
+  deleteR2Object,
+  hasActiveR2Bucket,
+  readR2Object,
+  writeR2Object,
+} from './r2.ts';
 import { deleteS3Object, readS3Object, writeS3Object } from './s3.ts';
 
-export type StorageProviderKind = 'local' | 's3' | 'postgres';
+export type StorageProviderKind = 'local' | 's3' | 'r2' | 'postgres';
 
 const ALLOWED_MIME_TYPES = new Map<string, string[]>([
   ['application/pdf', ['.pdf']],
@@ -21,9 +27,12 @@ const ALLOWED_MIME_TYPES = new Map<string, string[]>([
 
 const MAX_UPLOAD_BYTES = 2 * 1024 * 1024; // 2 MB
 
-export function getActiveStorageProvider(): 'local' | 's3' {
-  const raw = (process.env.STORAGE_PROVIDER || 'local').trim().toLowerCase();
+export function getActiveStorageProvider(): 'local' | 's3' | 'r2' {
+  const raw = (process.env.STORAGE_PROVIDER || '').trim().toLowerCase();
+  if (raw === 'r2') return 'r2';
   if (raw === 's3') return 's3';
+  if (raw === 'local') return 'local';
+  if (hasActiveR2Bucket()) return 'r2';
   return 'local';
 }
 
@@ -76,7 +85,7 @@ export async function storePrivateDocument(params: {
   mimeType: string;
   contentBase64: string;
 }): Promise<{
-  storageProvider: 'local' | 's3';
+  storageProvider: 'local' | 's3' | 'r2';
   storageKey: string;
   cleanFileName: string;
   mimeType: string;
@@ -89,7 +98,12 @@ export async function storePrivateDocument(params: {
   const storageKey = `${prefix}/${crypto.randomUUID()}${validated.extension}`;
   const provider = getActiveStorageProvider();
 
-  if (provider === 's3') {
+  if (provider === 'r2') {
+    await writeR2Object(storageKey, validated.buffer, validated.normalizedMimeType, {
+      checksumSha256: validated.checksumSha256,
+      originalName: validated.cleanFileName,
+    });
+  } else if (provider === 's3') {
     await writeS3Object(storageKey, validated.buffer, validated.normalizedMimeType);
   } else {
     await writeLocalObject(storageKey, validated.buffer);
@@ -110,6 +124,9 @@ export async function readPrivateDocument(params: {
   storageKey?: string | null;
   contentBase64?: string | null;
 }): Promise<Buffer> {
+  if (params.storageProvider === 'r2' && params.storageKey) {
+    return readR2Object(params.storageKey);
+  }
   if (params.storageProvider === 'local' && params.storageKey) {
     return readLocalObject(params.storageKey);
   }
@@ -127,7 +144,9 @@ export async function deletePrivateDocument(params: {
   storageKey?: string | null;
 }): Promise<void> {
   if (!params.storageKey) return;
-  if (params.storageProvider === 'local') {
+  if (params.storageProvider === 'r2') {
+    await deleteR2Object(params.storageKey);
+  } else if (params.storageProvider === 'local') {
     await deleteLocalObject(params.storageKey);
   } else if (params.storageProvider === 's3') {
     await deleteS3Object(params.storageKey);

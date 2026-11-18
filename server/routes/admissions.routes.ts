@@ -55,6 +55,7 @@ const publicAdmissionLimiter = createRateLimiter({
   windowMs: 15 * 60 * 1000,
   maxRequests: 15,
   keyPrefix: 'public-admission',
+  bindingName: 'public',
   message: 'Too many admission submissions from this network. Please wait before submitting again.',
 });
 

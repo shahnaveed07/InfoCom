@@ -18,9 +18,11 @@ Configure runtime environment variables cleanly without committing secrets:
 | `VITE_ENABLE_PUBLIC_DEMO_FALLBACK` | Optional (Build-time) | `true` (default) or `false` to toggle automatic fallback in `auto` mode |
 | `PORT` | Optional | HTTP listening port (`Number(process.env.PORT) || 3000`) |
 | `NODE_ENV` | `production` / `development` | Switches Vite dev middleware vs. static `dist/` serving, `Secure` cookie flag, and hides `isDemo` courses in public endpoints |
-| `STORAGE_PROVIDER` | Optional | Private document storage driver: `local` (default, uses `STORAGE_LOCAL_DIR`) or `s3` (`STORAGE_S3_BUCKET`, `STORAGE_S3_REGION`, `STORAGE_S3_ENDPOINT`, credentials) |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | Optional | Enables transactional email notifications and onboarding/reset delivery via `nodemailer` (`npm run email:verify` verifies reachability) |
+| `STORAGE_PROVIDER` | Optional | Private document storage driver: `local` (default, uses `LOCAL_STORAGE_DIR`), `s3` (S3/R2 compatible), or `r2` (Cloudflare Worker `DOCUMENTS_BUCKET` binding) |
+| `EMAIL_PROVIDER`, `EMAIL_FROM`, `RESEND_API_KEY`, `SMTP_*` | Optional | Enables transactional email notifications via HTTP (`RESEND_API_KEY`/`EMAIL_HTTP_URL`) or Node `nodemailer` SMTP (`npm run email:verify` verifies readiness) |
 | `ALLOW_DEMO_SEED`, `SEED_*_PASSWORD` | Dev only | Demo seed requires `NODE_ENV=development` and `ALLOW_DEMO_SEED=true`; uses configured env passwords or generates ephemeral secrets |
+
+> For Cloudflare Pages + external Node API + optional Edge Worker (`HYPERDRIVE`, `R2`, `Queues`, `Cron`) deployment, see [`docs/CLOUDFLARE_COMPATIBILITY_AUDIT.md`](./CLOUDFLARE_COMPATIBILITY_AUDIT.md), [`docs/CLOUDFLARE_DEPLOYMENT.md`](./CLOUDFLARE_DEPLOYMENT.md), [`docs/CLOUDFLARE_ENVIRONMENT.md`](./CLOUDFLARE_ENVIRONMENT.md), and [`docs/CLOUDFLARE_ROLLBACK.md`](./CLOUDFLARE_ROLLBACK.md).
 
 ---
 

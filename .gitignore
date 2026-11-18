@@ -2,6 +2,7 @@ node_modules/
 build/
 dist/
 dist-server/
+dist-worker/
 data/
 coverage/
 .playwright-cli/

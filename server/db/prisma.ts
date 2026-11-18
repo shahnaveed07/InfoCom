@@ -44,6 +44,42 @@ export function getActiveRequestDatabaseContext(): RequestDatabaseContext | unde
   return dbRequestStore.getStore();
 }
 
+export function sanitizePoolErrorSummary(err: unknown): {
+  code: string;
+  message: string;
+  transient: boolean;
+} {
+  const rawCode =
+    typeof (err as { code?: unknown })?.code === 'string'
+      ? (err as { code: string }).code
+      : '';
+  const rawMessage =
+    err instanceof Error ? err.message : typeof err === 'string' ? err : 'unknown pool error';
+  const transient =
+    rawCode === '57P01' ||
+    rawCode === '57P02' ||
+    rawCode === '57P03' ||
+    rawCode === 'ECONNRESET' ||
+    rawCode === 'EPIPE' ||
+    /connection terminated unexpectedly/i.test(rawMessage) ||
+    /terminating connection due to administrator command/i.test(rawMessage);
+  return {
+    code: rawCode || (transient ? 'IDLE_CONNECTION_RESET' : 'PG_POOL_ERROR'),
+    message: rawMessage.replace(/postgres(?:ql)?:\/\/[^\s@]+@/gi, 'postgresql://***@').slice(0, 180),
+    transient,
+  };
+}
+
+function handlePoolError(scope: string, err: unknown): void {
+  const summary = sanitizePoolErrorSummary(err);
+  if (summary.transient) {
+    // pg.Pool automatically evicts closed idle clients and reconnects on next query.
+    console.warn(`[pg:${scope}] Transient idle socket reset (${summary.code}); pool will reconnect.`);
+    return;
+  }
+  console.warn(`[pg:${scope}] Idle pool client error (${summary.code}): ${summary.message}`);
+}
+
 export function createRequestScopedDatabase(connectionString: string): {
   pool: Pool;
   prisma: PrismaClient;
@@ -57,10 +93,13 @@ export function createRequestScopedDatabase(connectionString: string): {
   const pool = new Pool({
     connectionString,
     max: 5,
+    idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 15_000,
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 10_000,
   });
   pool.on('error', (err) => {
-    console.error('Request-scoped PostgreSQL pool error:', err instanceof Error ? err.message : 'unknown');
+    handlePoolError('request', err);
   });
   const adapter = new PrismaPg(pool);
   const client = new PrismaClient({
@@ -127,7 +166,7 @@ export function getPrismaPool(): Pool {
   if (!global._prismaPool) {
     const pool = new Pool(buildPgPoolConfig({ admin: false }));
     pool.on('error', (err) => {
-      console.error('Unexpected idle PostgreSQL pool client error:', err);
+      handlePoolError('shared', err);
     });
     global._prismaPool = pool;
   }

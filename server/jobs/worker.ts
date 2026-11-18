@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import crypto from 'node:crypto';
 import os from 'node:os';
 import type { Prisma } from '@prisma/client';
@@ -9,12 +10,50 @@ export type BackgroundJobType = 'notification_email' | 'session_reminders' | 'fe
 
 type PrismaDbClient = Prisma.TransactionClient | typeof prisma;
 
-export const DEFAULT_WORKER_LEASE_MS = Math.max(
-  15_000,
-  Number(process.env.WORKER_LEASE_MS) || 120_000
-);
+export interface JobQueueMessage {
+  jobId: string;
+  jobType: BackgroundJobType;
+  enqueuedAt: string;
+}
 
-const DEFAULT_WORKER_ID = `${os.hostname()}-${process.pid}-${crypto.randomUUID().slice(0, 6)}`;
+export interface JobQueueBindingLike {
+  send: (message: JobQueueMessage) => Promise<void>;
+}
+
+const jobQueueStore = new AsyncLocalStorage<JobQueueBindingLike>();
+let cachedWorkerId: string | null = null;
+
+export function resolveDefaultWorkerId(): string {
+  if (!cachedWorkerId) {
+    let host = 'worker';
+    try {
+      host = os.hostname() || 'worker';
+    } catch {
+      host = 'worker';
+    }
+    const pid = typeof process !== 'undefined' && process.pid ? process.pid : 0;
+    cachedWorkerId = `${host}-${pid}-${crypto.randomUUID().slice(0, 6)}`;
+  }
+  return cachedWorkerId;
+}
+
+export async function runWithJobQueue<T>(
+  queue: JobQueueBindingLike | undefined | null,
+  fn: () => Promise<T>
+): Promise<T> {
+  if (!queue) return fn();
+  return jobQueueStore.run(queue, fn);
+}
+
+export function getActiveJobQueue(): JobQueueBindingLike | undefined {
+  return jobQueueStore.getStore();
+}
+
+export function resolveWorkerLeaseMs(): number {
+  return Math.max(15_000, Number(process.env.WORKER_LEASE_MS) || 120_000);
+}
+
+export const DEFAULT_WORKER_LEASE_MS = 120_000;
 
 const SESSION_REMINDER_LOCK_KEY = 420101;
 const FEE_REMINDER_LOCK_KEY = 420102;
@@ -63,6 +102,24 @@ export interface WorkerTelemetry {
   }>;
 }
 
+async function dispatchJobNoticeToQueue(jobId: string, jobType: BackgroundJobType): Promise<void> {
+  const queue = getActiveJobQueue();
+  if (!queue) return;
+  try {
+    // Only dispatch the non-sensitive job reference; raw tokens/bodyText stay in PostgreSQL.
+    await queue.send({
+      jobId,
+      jobType,
+      enqueuedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.warn(
+      '[worker] Cloudflare Queue publish warning (PostgreSQL fallback intact):',
+      err instanceof Error ? err.message : 'unknown'
+    );
+  }
+}
+
 export async function enqueueJob(
   jobType: BackgroundJobType,
   payload: Record<string, unknown>,
@@ -78,7 +135,7 @@ export async function enqueueJob(
 
   if (dedupeKey) {
     try {
-      return await db.backgroundJob.upsert({
+      const created = await db.backgroundJob.upsert({
         where: { dedupeKey },
         update: {},
         create: {
@@ -92,6 +149,10 @@ export async function enqueueJob(
           runAfter: options?.runAfter ?? new Date(),
         },
       });
+      if (!options?.runAfter || options.runAfter.getTime() <= Date.now()) {
+        await dispatchJobNoticeToQueue(created.id, jobType);
+      }
+      return created;
     } catch (err) {
       const existing = await db.backgroundJob.findUnique({ where: { dedupeKey } });
       if (existing) return existing;
@@ -99,7 +160,7 @@ export async function enqueueJob(
     }
   }
 
-  return db.backgroundJob.create({
+  const created = await db.backgroundJob.create({
     data: {
       id: `job-${crypto.randomUUID()}`,
       jobType,
@@ -111,6 +172,10 @@ export async function enqueueJob(
       runAfter: options?.runAfter ?? new Date(),
     },
   });
+  if (!options?.runAfter || options.runAfter.getTime() <= Date.now()) {
+    await dispatchJobNoticeToQueue(created.id, jobType);
+  }
+  return created;
 }
 
 export async function queueTransactionalEmail(
@@ -602,8 +667,8 @@ export async function claimPendingJobs(
   options?: { workerId?: string; leaseMs?: number; now?: Date }
 ): Promise<ClaimedJobRow[]> {
   const now = options?.now ?? new Date();
-  const leaseMs = options?.leaseMs ?? DEFAULT_WORKER_LEASE_MS;
-  const workerId = options?.workerId || DEFAULT_WORKER_ID;
+  const leaseMs = options?.leaseMs ?? resolveWorkerLeaseMs();
+  const workerId = options?.workerId || resolveDefaultWorkerId();
   const leaseExpiresAt = new Date(now.getTime() + leaseMs);
   const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
 
@@ -659,6 +724,154 @@ export async function claimPendingJobs(
   }));
 }
 
+async function executeClaimedJob(
+  job: ClaimedJobRow
+): Promise<'Completed' | 'Pending' | 'Failed'> {
+  const startedMs = Date.now();
+  const currentAttempt = job.attempts;
+  const payload = job.payload ?? {};
+
+  try {
+    if (job.jobType === 'notification_email') {
+      await handleNotificationEmailJob(payload as unknown as NotificationEmailPayload);
+    } else if (job.jobType === 'session_reminders') {
+      await runSessionRemindersSweep();
+    } else if (job.jobType === 'fee_reminders') {
+      await runFeeReminderSweep();
+    } else {
+      throw new Error(`Unknown background job type: ${job.jobType}`);
+    }
+
+    const sanitizedPayload =
+      job.jobType === 'notification_email' && payload.redactSensitive === true
+        ? ({
+            ...payload,
+            bodyText: '[REDACTED AFTER DELIVERY]',
+          } as Prisma.InputJsonValue)
+        : undefined;
+
+    const durationMs = Math.max(0, Date.now() - startedMs);
+    await prisma.backgroundJob.update({
+      where: { id: job.id },
+      data: {
+        status: 'Completed',
+        completedAt: new Date(),
+        workerId: null,
+        lockedAt: null,
+        leaseExpiresAt: null,
+        durationMs,
+        lastError: null,
+        ...(sanitizedPayload ? { payload: sanitizedPayload } : {}),
+      },
+    });
+    return 'Completed';
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Background job execution failed.';
+    const exhausted = currentAttempt >= job.maxAttempts;
+    const delayMs = Math.pow(2, currentAttempt) * 15_000;
+    const durationMs = Math.max(0, Date.now() - startedMs);
+
+    if (job.jobType === 'notification_email' && typeof payload.deliveryLogId === 'string') {
+      await prisma.deliveryLog
+        .updateMany({
+          where: { id: payload.deliveryLogId },
+          data: {
+            status: exhausted ? 'Failed' : 'Queued',
+            errorMessage: `${message.slice(0, 500)} (attempt ${currentAttempt}/${job.maxAttempts})`,
+            sentAt: new Date(),
+          },
+        })
+        .catch(() => undefined);
+    }
+
+    const sanitizedPayload =
+      exhausted && job.jobType === 'notification_email' && payload.redactSensitive === true
+        ? ({
+            ...payload,
+            bodyText: '[REDACTED AFTER FAILURE]',
+          } as Prisma.InputJsonValue)
+        : undefined;
+
+    await prisma.backgroundJob.update({
+      where: { id: job.id },
+      data: {
+        status: exhausted ? 'Failed' : 'Pending',
+        workerId: null,
+        lockedAt: null,
+        leaseExpiresAt: null,
+        durationMs,
+        lastError: message.slice(0, 1000),
+        completedAt: exhausted ? new Date() : null,
+        runAfter: exhausted ? job.runAfter : new Date(Date.now() + delayMs),
+        ...(sanitizedPayload ? { payload: sanitizedPayload } : {}),
+      },
+    });
+    return exhausted ? 'Failed' : 'Pending';
+  }
+}
+
+export async function processSpecificJobId(
+  jobId: string,
+  options?: { workerId?: string; leaseMs?: number; now?: Date }
+): Promise<{
+  found: boolean;
+  status: 'Completed' | 'Pending' | 'Failed' | 'Skipped';
+}> {
+  const now = options?.now ?? new Date();
+  const leaseMs = options?.leaseMs ?? resolveWorkerLeaseMs();
+  const workerId = options?.workerId || resolveDefaultWorkerId();
+  const leaseExpiresAt = new Date(now.getTime() + leaseMs);
+
+  const claimSql = `
+    UPDATE background_jobs j
+    SET
+      status = 'Processing',
+      worker_id = $2,
+      locked_at = $1,
+      started_at = $1,
+      lease_expires_at = $3,
+      attempts = j.attempts + 1,
+      updated_at = $1
+    WHERE j.id = $4
+      AND j.status = 'Pending'
+    RETURNING
+      j.id,
+      j.job_type AS "jobType",
+      j.dedupe_key AS "dedupeKey",
+      j.payload,
+      j.attempts,
+      j.max_attempts AS "maxAttempts",
+      j.run_after AS "runAfter"
+  `;
+
+  const result = await getPrismaPool().query<{
+    id: string;
+    jobType: string;
+    dedupeKey: string | null;
+    payload: Record<string, unknown>;
+    attempts: number;
+    maxAttempts: number;
+    runAfter: Date;
+  }>(claimSql, [now, workerId, leaseExpiresAt, jobId]);
+
+  const row = result.rows[0];
+  if (!row) {
+    return { found: false, status: 'Skipped' };
+  }
+
+  const outcome = await executeClaimedJob({
+    id: row.id,
+    jobType: row.jobType,
+    dedupeKey: row.dedupeKey,
+    payload: (row.payload ?? {}) as Record<string, unknown>,
+    attempts: Number(row.attempts),
+    maxAttempts: Number(row.maxAttempts),
+    runAfter: new Date(row.runAfter),
+  });
+
+  return { found: true, status: outcome };
+}
+
 export async function processPendingJobs(
   limit = 20,
   options?: { workerId?: string; leaseMs?: number }
@@ -669,85 +882,9 @@ export async function processPendingJobs(
   let processed = 0;
 
   for (const job of claimedJobs) {
-    const startedMs = Date.now();
-    const currentAttempt = job.attempts;
-    const payload = job.payload ?? {};
-
-    try {
-      if (job.jobType === 'notification_email') {
-        await handleNotificationEmailJob(payload as unknown as NotificationEmailPayload);
-      } else if (job.jobType === 'session_reminders') {
-        await runSessionRemindersSweep();
-      } else if (job.jobType === 'fee_reminders') {
-        await runFeeReminderSweep();
-      } else {
-        throw new Error(`Unknown background job type: ${job.jobType}`);
-      }
-
-      const sanitizedPayload =
-        job.jobType === 'notification_email' && payload.redactSensitive === true
-          ? ({
-              ...payload,
-              bodyText: '[REDACTED AFTER DELIVERY]',
-            } as Prisma.InputJsonValue)
-          : undefined;
-
-      const durationMs = Math.max(0, Date.now() - startedMs);
-      await prisma.backgroundJob.update({
-        where: { id: job.id },
-        data: {
-          status: 'Completed',
-          completedAt: new Date(),
-          workerId: null,
-          lockedAt: null,
-          leaseExpiresAt: null,
-          durationMs,
-          lastError: null,
-          ...(sanitizedPayload ? { payload: sanitizedPayload } : {}),
-        },
-      });
+    const outcome = await executeClaimedJob(job);
+    if (outcome === 'Completed') {
       processed += 1;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Background job execution failed.';
-      const exhausted = currentAttempt >= job.maxAttempts;
-      const delayMs = Math.pow(2, currentAttempt) * 15_000;
-      const durationMs = Math.max(0, Date.now() - startedMs);
-
-      if (job.jobType === 'notification_email' && typeof payload.deliveryLogId === 'string') {
-        await prisma.deliveryLog
-          .updateMany({
-            where: { id: payload.deliveryLogId },
-            data: {
-              status: exhausted ? 'Failed' : 'Queued',
-              errorMessage: `${message.slice(0, 500)} (attempt ${currentAttempt}/${job.maxAttempts})`,
-              sentAt: new Date(),
-            },
-          })
-          .catch(() => undefined);
-      }
-
-      const sanitizedPayload =
-        exhausted && job.jobType === 'notification_email' && payload.redactSensitive === true
-          ? ({
-              ...payload,
-              bodyText: '[REDACTED AFTER FAILURE]',
-            } as Prisma.InputJsonValue)
-          : undefined;
-
-      await prisma.backgroundJob.update({
-        where: { id: job.id },
-        data: {
-          status: exhausted ? 'Failed' : 'Pending',
-          workerId: null,
-          lockedAt: null,
-          leaseExpiresAt: null,
-          durationMs,
-          lastError: message.slice(0, 1000),
-          completedAt: exhausted ? new Date() : null,
-          runAfter: exhausted ? job.runAfter : new Date(Date.now() + delayMs),
-          ...(sanitizedPayload ? { payload: sanitizedPayload } : {}),
-        },
-      });
     }
   }
 
@@ -796,8 +933,8 @@ export async function getWorkerTelemetry(): Promise<WorkerTelemetry> {
   }
 
   return {
-    workerId: DEFAULT_WORKER_ID,
-    leaseMs: DEFAULT_WORKER_LEASE_MS,
+    workerId: resolveDefaultWorkerId(),
+    leaseMs: resolveWorkerLeaseMs(),
     countsByStatus,
     staleProcessingCount,
     recentFailures: recentFailures.map((f) => ({

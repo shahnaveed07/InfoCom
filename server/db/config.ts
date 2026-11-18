@@ -37,7 +37,10 @@ export function buildPgPoolConfig(options: { admin?: boolean } = {}): PoolConfig
       password,
       database,
       max: isTest ? 5 : 10,
+      idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 15000,
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 10_000,
     };
   }
 
@@ -54,7 +57,10 @@ export function buildPgPoolConfig(options: { admin?: boolean } = {}): PoolConfig
   return {
     connectionString,
     max: isTest ? 5 : 10,
+    idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 15000,
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 10_000,
   };
 }
 
