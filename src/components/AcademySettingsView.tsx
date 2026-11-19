@@ -241,7 +241,7 @@ export function AcademySettingsView({
       });
       hydrateFromPayload(res.settings);
       onDashboardUpdate(res.dashboard);
-      setNotice('Academy settings, policies, and branding saved to PostgreSQL.');
+      setNotice('Academy settings, policies, and branding saved.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to save settings.');
     } finally {

@@ -29,6 +29,7 @@ import {
   issueAccountSetupTokenD1,
   listInstructorsWithMetricsD1,
   recordAuditLogD1,
+  revokeActiveOnboardingTokensD1,
 } from '../d1/ams-service.ts';
 import {
   type D1PreparedStatementLike,
@@ -539,6 +540,41 @@ export const workerAdminRoutes: WorkerRouteEntry[] = [
         onboardingToken: tok.rawToken,
         onboardingPath,
         onboardingExpiresAt: tok.expiresAtIso,
+        user: toPublicUserD1(target),
+      });
+    },
+  },
+  {
+    method: 'POST',
+    pattern: '/api/students/:studentId/revoke-reset-tokens',
+    auth: 'required',
+    roles: ['admin'],
+    handler: async (c) => {
+      const target = await d1First<DbUserRow>(
+        "SELECT * FROM users WHERE id = ? AND role = 'student' LIMIT 1",
+        [c.params.studentId],
+        c.db
+      );
+      if (!target) {
+        return c.json(404, { error: 'Student account not found.' });
+      }
+
+      const revokedCount = await revokeActiveOnboardingTokensD1(target.id, c.db);
+      await recordAuditLogD1(
+        {
+          actor: c.authUser!,
+          action: 'STUDENT_ONBOARDING_TOKENS_REVOKED',
+          entityType: 'user',
+          entityId: target.id,
+          ipAddress: c.ipAddress,
+          summary: `Revoked ${revokedCount} active onboarding/reset token(s) for student ${target.email}.`,
+        },
+        c.db
+      );
+
+      return c.json(200, {
+        ok: true,
+        revokedCount,
         user: toPublicUserD1(target),
       });
     },
@@ -1367,6 +1403,41 @@ export const workerAdminRoutes: WorkerRouteEntry[] = [
         onboardingToken: tok.rawToken,
         onboardingPath,
         onboardingExpiresAt: tok.expiresAtIso,
+        user: toPublicUserD1(target),
+      });
+    },
+  },
+  {
+    method: 'POST',
+    pattern: '/api/users/:id/revoke-reset-tokens',
+    auth: 'required',
+    roles: ['admin'],
+    handler: async (c) => {
+      const target = await d1First<DbUserRow>(
+        'SELECT * FROM users WHERE id = ? LIMIT 1',
+        [c.params.id],
+        c.db
+      );
+      if (!target) {
+        return c.json(404, { error: 'User account not found.' });
+      }
+
+      const revokedCount = await revokeActiveOnboardingTokensD1(target.id, c.db);
+      await recordAuditLogD1(
+        {
+          actor: c.authUser!,
+          action: 'ONBOARDING_TOKENS_REVOKED',
+          entityType: 'user',
+          entityId: target.id,
+          ipAddress: c.ipAddress,
+          summary: `Revoked ${revokedCount} active onboarding/reset token(s) for ${target.email}.`,
+        },
+        c.db
+      );
+
+      return c.json(200, {
+        ok: true,
+        revokedCount,
         user: toPublicUserD1(target),
       });
     },

@@ -227,6 +227,11 @@ export async function queueTransactionalEmail(
     },
   });
 
+  const shouldRedactAtEnqueue =
+    Boolean(params.redactSensitive) &&
+    (process.env.EMAIL_PROVIDER ?? 'disabled').trim().toLowerCase() === 'disabled' &&
+    !process.env.SMTP_HOST;
+
   const job = await enqueueJob(
     'notification_email',
     {
@@ -237,7 +242,9 @@ export async function queueTransactionalEmail(
       kind: params.kind ?? 'general',
       recipientEmail: recipient,
       subject: params.subject,
-      bodyText: params.bodyText,
+      bodyText: shouldRedactAtEnqueue
+        ? '[REDACTED — EMAIL_PROVIDER=disabled]'
+        : params.bodyText,
       bypassPreferences: Boolean(params.bypassPreferences),
       redactSensitive: Boolean(params.redactSensitive),
     },

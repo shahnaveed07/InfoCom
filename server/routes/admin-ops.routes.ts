@@ -27,6 +27,7 @@ import {
   issueVerifiedCertificate,
   recordAuditLog,
   recordInvoicePayment,
+  revokeActiveOnboardingTokens,
   runSessionReminderSweep,
   toPublicUser,
   verifyCertificateByCode,
@@ -364,6 +365,39 @@ adminOpsRouter.post(
     } catch (err) {
       console.error('POST /api/users/:id/reset-token error:', err);
       res.status(500).json({ error: 'Failed to issue password setup link.' });
+    }
+  }
+);
+
+adminOpsRouter.post(
+  '/users/:id/revoke-reset-tokens',
+  requireAuth,
+  requireRoles('admin'),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const target = await prisma.user.findUnique({ where: { id: req.params.id } });
+      if (!target) {
+        res.status(404).json({ error: 'User account not found.' });
+        return;
+      }
+
+      const revokedCount = await revokeActiveOnboardingTokens(prisma, target.id);
+      await recordAuditLog({
+        actor: req.authUser!,
+        action: 'ONBOARDING_TOKENS_REVOKED',
+        entityType: 'user',
+        entityId: target.id,
+        summary: `Revoked ${revokedCount} active onboarding/reset token(s) for ${target.email}.`,
+      });
+
+      res.json({
+        ok: true,
+        revokedCount,
+        user: toPublicUser(target),
+      });
+    } catch (err) {
+      console.error('POST /api/users/:id/revoke-reset-tokens error:', err);
+      res.status(500).json({ error: 'Failed to revoke password setup tokens.' });
     }
   }
 );

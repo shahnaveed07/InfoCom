@@ -7,7 +7,59 @@ on:
     branches: [main]
 
 jobs:
-  verify:
+  cloudflare-d1-verify:
+    name: Cloudflare Workers + D1 Production Target
+    runs-on: ubuntu-latest
+
+    env:
+      NODE_ENV: test
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22.14 (>= 22.12)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14'
+          cache: npm
+
+      - name: Install dependencies (clean lockfile)
+        run: npm ci
+
+      - name: Generate Prisma Client (for shared TypeScript project check)
+        run: npm run db:generate
+
+      - name: TypeScript typecheck (client, Node, and Worker)
+        run: npm run lint
+
+      - name: Run unit, PDF, and KDF benchmark tests
+        run: npm run test:unit
+
+      - name: Build production SPA static assets
+        run: npm run build
+
+      - name: Verify built SPA static assets
+        run: |
+          test -f dist/index.html
+          test -f dist/_redirects
+          test -f dist/_headers
+          ! grep -rnE '"/src/|/src/assets/' dist/index.html dist/assets/*.js
+
+      - name: Generate Cloudflare Worker types & dry-run Worker bundle
+        run: npm run cf:types && npm run cf:build
+
+      - name: Apply fresh local D1 migrations & run Cloudflare Worker D1 suite
+        run: npm run cf:d1:migrate:local && npm run test:cloudflare
+
+      - name: Install Playwright Chromium browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright browser E2E suite against Cloudflare Worker + D1
+        run: npm run test:e2e:worker
+
+  legacy-postgres-verify:
+    name: Legacy Local Node.js + PostgreSQL Verification
     runs-on: ubuntu-latest
 
     services:
@@ -35,19 +87,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 20
+      - name: Setup Node.js 22.14 (>= 22.12)
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: '22.14'
           cache: npm
 
-      - name: Install dependencies
+      - name: Install dependencies (clean lockfile)
         run: npm ci
 
       - name: Generate Prisma Client
         run: npm run db:generate
 
-      - name: Deploy PostgreSQL migrations
+      - name: Deploy legacy PostgreSQL migrations
         run: npm run db:migrate:deploy
 
       - name: Seed reference records
@@ -56,27 +108,14 @@ jobs:
       - name: TypeScript typecheck
         run: npm run lint
 
-      - name: Run unit & integration test suite
+      - name: Run legacy PostgreSQL integration & unit suite
         run: npm test
 
-      - name: Build production client and server bundles
+      - name: Build legacy Node Express bundle
         run: npm run build && npm run build:server
-
-      - name: Generate Cloudflare Worker types & dry-run bundle
-        run: npm run cf:types && npm run cf:build
-
-      - name: Apply local D1 migrations & run Cloudflare Worker D1 suite
-        run: npm run cf:d1:migrate:local && npm run test:cloudflare
-
-      - name: Verify built SPA assets
-        run: |
-          test -f dist/index.html
-          test -f dist/_redirects
-          test -f dist/_headers
-          ! grep -rnE '"/src/|/src/assets/' dist/index.html dist/assets/*.js
 
       - name: Install Playwright Chromium browser
         run: npx playwright install --with-deps chromium
 
-      - name: Run Playwright browser E2E suite
+      - name: Run legacy Express + PostgreSQL Playwright suite
         run: npm run test:e2e

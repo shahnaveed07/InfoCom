@@ -295,6 +295,17 @@ export async function issueAccountSetupToken(
   };
 }
 
+export async function revokeActiveOnboardingTokens(
+  db: PrismaDbClient,
+  userId: string
+): Promise<number> {
+  const result = await db.passwordResetToken.updateMany({
+    where: { userId, usedAt: null },
+    data: { usedAt: new Date() },
+  });
+  return result.count;
+}
+
 export async function recordAuditLog(params: {
   actor: UserPublic | { id?: string | null; email: string; role: string };
   action: string;

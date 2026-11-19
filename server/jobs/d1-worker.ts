@@ -478,6 +478,11 @@ export async function queueD1TransactionalEmail(
     db
   );
 
+  const shouldRedactAtEnqueue =
+    Boolean(params.redactSensitive) &&
+    !isWorkerEmailConfigured() &&
+    !emailSenderOverrideForTest;
+
   const job = await enqueueD1Job(
     'notification_email',
     {
@@ -488,7 +493,9 @@ export async function queueD1TransactionalEmail(
       kind: params.kind ?? 'general',
       recipientEmail: recipient,
       subject: params.subject,
-      bodyText: params.bodyText,
+      bodyText: shouldRedactAtEnqueue
+        ? '[REDACTED — EMAIL_PROVIDER=disabled]'
+        : params.bodyText,
       bypassPreferences: Boolean(params.bypassPreferences),
       redactSensitive: Boolean(params.redactSensitive),
     },
@@ -1023,7 +1030,14 @@ async function executeClaimedD1Job(
 
     const sanitizedPayload =
       job.jobType === 'notification_email' && payload.redactSensitive === true
-        ? JSON.stringify({ ...payload, bodyText: '[REDACTED AFTER DELIVERY]' })
+        ? JSON.stringify({
+            ...payload,
+            bodyText:
+              typeof payload.bodyText === 'string' &&
+              payload.bodyText.startsWith('[REDACTED —')
+                ? payload.bodyText
+                : '[REDACTED AFTER DELIVERY]',
+          })
         : JSON.stringify(payload);
 
     const now = nowIso();

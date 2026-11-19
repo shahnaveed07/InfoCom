@@ -467,6 +467,15 @@ export const api = {
       method: 'POST',
     }),
 
+  revokeUserResetTokens: (userId: string) =>
+    requestJson<{
+      ok: boolean;
+      revokedCount: number;
+      user: UserPublic;
+    }>(`/api/users/${userId}/revoke-reset-tokens`, {
+      method: 'POST',
+    }),
+
   updateUser: (
     userId: string,
     payload: {
@@ -1432,6 +1441,15 @@ export const api = {
       onboardingExpiresAt: string;
       user: UserPublic;
     }>(`/api/students/${encodeURIComponent(studentId)}/reset-password`, {
+      method: 'POST',
+    }),
+
+  revokeStudentResetTokens: (studentId: string) =>
+    requestJson<{
+      ok: boolean;
+      revokedCount: number;
+      user: UserPublic;
+    }>(`/api/students/${encodeURIComponent(studentId)}/revoke-reset-tokens`, {
       method: 'POST',
     }),
 

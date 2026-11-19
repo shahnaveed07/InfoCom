@@ -417,6 +417,10 @@ export function AuthView({ academy, onAuthenticated }: AuthViewProps) {
                 </>
               ) : (
                 <>
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-[11px] text-slate-600 leading-relaxed">
+                    When outbound email delivery is disabled on this deployment, self-service requests log safely without sending email. Ask an IGS Administrator to share a single-use setup/reset link directly.
+                  </div>
+
                   <form onSubmit={handleForgotPassword} className="space-y-3" noValidate>
                     <div>
                       <label

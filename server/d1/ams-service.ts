@@ -362,6 +362,19 @@ export async function issueAccountSetupTokenD1(
   return { rawToken, expiresAtIso };
 }
 
+export async function revokeActiveOnboardingTokensD1(
+  userId: string,
+  db: D1DatabaseLike = getActiveD1()
+): Promise<number> {
+  const now = nowIso();
+  const res = await d1Run(
+    'UPDATE password_reset_tokens SET used_at = ? WHERE user_id = ? AND used_at IS NULL',
+    [now, userId],
+    db
+  );
+  return Number(res.meta?.changes ?? 0);
+}
+
 export async function getUserDashboardByIdD1(
   userId: string,
   db: D1DatabaseLike = getActiveD1()

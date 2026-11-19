@@ -410,7 +410,7 @@ export function AdminOverview({ data, onNavigate }: AdminOverviewProps) {
                 Monthly Revenue: Billed vs Collected
               </h3>
               <p className="text-xs text-slate-500 mt-0.5">
-                Last 6 months from PostgreSQL invoices and payments
+                Last 6 months from recorded invoices and payments
               </p>
             </div>
             <div className="flex items-center gap-3 text-[11px] text-slate-600">
@@ -895,7 +895,7 @@ export function AdminOverview({ data, onNavigate }: AdminOverviewProps) {
                 Recent Academy Audit Trail
               </h2>
               <p className="text-xs text-slate-500">
-                Immutable security and administrative activity log persisted in PostgreSQL
+                Immutable security and administrative activity log
               </p>
             </div>
           </div>

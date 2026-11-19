@@ -76,7 +76,7 @@ export function DocumentsView({
       return;
     }
     if (selectedFile.size > 2 * 1024 * 1024) {
-      setFormError('File exceeds the 2 MB PostgreSQL document upload limit.');
+      setFormError('File exceeds the 2 MB document upload limit.');
       return;
     }
     setUploading(true);

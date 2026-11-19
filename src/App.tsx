@@ -482,6 +482,13 @@ export default function App() {
                         userName: res.user.name,
                       };
                     }}
+                    onRevokeResetTokens={async (userId) => {
+                      const res = await api.revokeUserResetTokens(userId);
+                      return {
+                        revokedCount: res.revokedCount,
+                        userName: res.user.name,
+                      };
+                    }}
                     onUpdateUser={async (userId, payload) => {
                       const res = await api.updateUser(userId, payload);
                       setDashboard(res.dashboard);

@@ -40,6 +40,7 @@ import {
   issueAccountSetupToken,
   listInstructorsWithMetrics,
   recordAuditLog,
+  revokeActiveOnboardingTokens,
   toPublicUser,
 } from '../ams-service.ts';
 import { hashPassword } from '../auth.ts';
@@ -442,6 +443,41 @@ adminMasterRouter.post('/students/:studentId/reset-password', ...adminGuard, asy
     res.status(500).json({ error: 'Failed to issue student password reset link.' });
   }
 });
+
+adminMasterRouter.post(
+  '/students/:studentId/revoke-reset-tokens',
+  requireAuth,
+  requireRoles('admin'),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const target = await prisma.user.findFirst({
+        where: { id: req.params.studentId, role: 'student' },
+      });
+      if (!target) {
+        res.status(404).json({ error: 'Student account not found.' });
+        return;
+      }
+
+      const revokedCount = await revokeActiveOnboardingTokens(prisma, target.id);
+      await recordAuditLog({
+        actor: req.authUser!,
+        action: 'STUDENT_ONBOARDING_TOKENS_REVOKED',
+        entityType: 'user',
+        entityId: target.id,
+        summary: `Revoked ${revokedCount} active onboarding/reset token(s) for student ${target.email}.`,
+      });
+
+      res.json({
+        ok: true,
+        revokedCount,
+        user: toPublicUser(target),
+      });
+    } catch (err) {
+      console.error('POST /api/students/:studentId/revoke-reset-tokens error:', err);
+      res.status(500).json({ error: 'Failed to revoke student password setup tokens.' });
+    }
+  }
+);
 
 // 3. Instructor Management (Directory, Profile, Create, Assign Courses/Batches, Permissions)
 adminMasterRouter.get('/instructors', ...adminGuard, async (_req: AuthenticatedRequest, res: Response) => {

@@ -284,14 +284,21 @@ async function main(): Promise<void> {
     );`,
   ];
 
+  const persistIdx = process.argv.indexOf('--persist-to');
+  const persistDir =
+    persistIdx !== -1 && process.argv[persistIdx + 1] ? process.argv[persistIdx + 1] : null;
+
   const tmpFile = path.join(os.tmpdir(), `igs-d1-seed-${Date.now()}.sql`);
   await fs.writeFile(tmpFile, statements.join('\n\n'), 'utf8');
   try {
-    const { stdout, stderr } = await execFileAsync(
-      'npx',
-      ['wrangler', 'd1', 'execute', 'igs-infocom-db', '--local', '--file', tmpFile],
-      { cwd: process.cwd(), timeout: 30_000 }
-    );
+    const wranglerArgs = ['wrangler', 'd1', 'execute', 'igs-infocom-db', '--local', '--file', tmpFile];
+    if (persistDir) {
+      wranglerArgs.push('--persist-to', persistDir);
+    }
+    const { stdout, stderr } = await execFileAsync('npx', wranglerArgs, {
+      cwd: process.cwd(),
+      timeout: 30_000,
+    });
     if (stdout) process.stdout.write(stdout);
     if (stderr) process.stderr.write(stderr);
     console.log('Seeded local D1 demo data cleanly.');

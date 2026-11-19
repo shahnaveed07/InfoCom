@@ -4,6 +4,7 @@ import {
   Archive,
   ArrowLeft,
   ArrowUpDown,
+  Ban,
   Check,
   CheckCircle2,
   Copy,
@@ -91,6 +92,7 @@ export function StudentsManagementView({
   const [cSaving, setCSaving] = useState(false);
   const [rowActionBusy, setRowActionBusy] = useState<string | null>(null);
   const [onboardingLink, setOnboardingLink] = useState<{
+    studentId?: string;
     studentName: string;
     studentCode: string;
     url: string;
@@ -279,6 +281,7 @@ export function StudentsManagementView({
       const displayName = res.user.name || row.user.name;
       const displayCode = res.user.studentCode ?? row.user.studentCode ?? '';
       setOnboardingLink({
+        studentId: row.user.id,
         studentName: displayName,
         studentCode: displayCode,
         url: `${window.location.origin}${res.onboardingPath}`,
@@ -288,6 +291,26 @@ export function StudentsManagementView({
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to issue password reset link.');
+    } finally {
+      setRowActionBusy(null);
+    }
+  }
+
+  async function handleRevokeStudentTokens(row: StudentDirectoryRow) {
+    setRowActionBusy(row.user.id);
+    setError('');
+    try {
+      const res = await api.revokeStudentResetTokens(row.user.id);
+      if (onboardingLink?.studentId === row.user.id) {
+        setOnboardingLink(null);
+      }
+      setNotice(
+        res.revokedCount > 0
+          ? `Revoked ${res.revokedCount} active onboarding/reset token(s) for ${row.user.name}.`
+          : `No active unused onboarding/reset tokens were pending for ${row.user.name}.`
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to revoke onboarding link.');
     } finally {
       setRowActionBusy(null);
     }
@@ -403,6 +426,15 @@ export function StudentsManagementView({
             >
               <KeyRound className="w-3.5 h-3.5" />
               <span>Reset Password</span>
+            </button>
+            <button
+              type="button"
+              disabled={rowActionBusy === student.user.id}
+              onClick={() => handleRevokeStudentTokens(student)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-amber-800 bg-amber-50 border border-amber-200 rounded-lg hover:bg-amber-100 cursor-pointer whitespace-nowrap disabled:opacity-60"
+            >
+              <Ban className="w-3.5 h-3.5" />
+              <span>Revoke Link</span>
             </button>
             {student.user.status !== 'archived' && (
               <button
@@ -1299,6 +1331,15 @@ export function StudentsManagementView({
                             className="px-2.5 py-1 text-xs font-medium text-blue-800 bg-white border border-blue-200 hover:bg-blue-50 rounded-md cursor-pointer disabled:opacity-60"
                           >
                             Reset PW
+                          </button>
+                          <button
+                            type="button"
+                            disabled={rowActionBusy === row.user.id}
+                            onClick={() => handleRevokeStudentTokens(row)}
+                            aria-label={`Revoke reset link for ${row.user.name}`}
+                            className="px-2.5 py-1 text-xs font-medium text-amber-800 bg-amber-50 border border-amber-200 hover:bg-amber-100 rounded-md cursor-pointer disabled:opacity-60"
+                          >
+                            Revoke
                           </button>
                           {row.user.status !== 'archived' && (
                             <button

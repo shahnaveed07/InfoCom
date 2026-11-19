@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import {
   AlertCircle,
+  Ban,
   Check,
   CheckCircle2,
   Copy,
@@ -17,6 +18,7 @@ import type {
 } from '../shared/types';
 
 interface OnboardingLinkInfo {
+  userId?: string;
   userName: string;
   email: string;
   url: string;
@@ -39,6 +41,10 @@ interface UsersManagementViewProps {
     onboardingExpiresAt: string;
     userName: string;
   }>;
+  onRevokeResetTokens: (userId: string) => Promise<{
+    revokedCount: number;
+    userName: string;
+  }>;
   onUpdateUser: (
     userId: string,
     payload: {
@@ -52,6 +58,7 @@ export function UsersManagementView({
   data,
   onCreateUser,
   onIssueResetToken,
+  onRevokeResetTokens,
   onUpdateUser,
 }: UsersManagementViewProps) {
   const [search, setSearch] = useState('');
@@ -71,6 +78,7 @@ export function UsersManagementView({
   const [onboardingLink, setOnboardingLink] = useState<OnboardingLinkInfo | null>(null);
   const [copiedLink, setCopiedLink] = useState(false);
   const [issuingResetFor, setIssuingResetFor] = useState<string | null>(null);
+  const [revokingResetFor, setRevokingResetFor] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const filtered = useMemo(() => {
@@ -154,6 +162,7 @@ export function UsersManagementView({
     try {
       const res = await onIssueResetToken(userId);
       setOnboardingLink({
+        userId,
         userName: res.userName || userName,
         email: userEmail,
         url: `${window.location.origin}${res.onboardingPath}`,
@@ -166,6 +175,28 @@ export function UsersManagementView({
       );
     } finally {
       setIssuingResetFor(null);
+    }
+  }
+
+  async function handleRevokeResetTokens(userId: string, userName: string) {
+    setStatusNotice('');
+    setRevokingResetFor(userId);
+    try {
+      const res = await onRevokeResetTokens(userId);
+      if (onboardingLink?.userId === userId || onboardingLink?.userName === userName) {
+        setOnboardingLink(null);
+      }
+      setStatusNotice(
+        res.revokedCount > 0
+          ? `Revoked ${res.revokedCount} active onboarding/reset token(s) for ${res.userName || userName}.`
+          : `No active unused onboarding/reset tokens were pending for ${res.userName || userName}.`
+      );
+    } catch (err) {
+      setStatusNotice(
+        err instanceof Error ? err.message : 'Unable to revoke onboarding tokens.'
+      );
+    } finally {
+      setRevokingResetFor(null);
     }
   }
 
@@ -348,13 +379,26 @@ export function UsersManagementView({
                       <div className="inline-flex items-center gap-2">
                         <button
                           type="button"
-                          disabled={!canIssueReset || issuingResetFor === u.id}
+                          disabled={!canIssueReset || issuingResetFor === u.id || revokingResetFor === u.id}
                           onClick={() => handleIssueResetToken(u.id, u.name, u.email)}
+                          aria-label={`Issue reset link for ${u.name}`}
                           className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 disabled:opacity-50 rounded-md cursor-pointer"
                         >
                           <KeyRound className="w-3 h-3" />
                           <span>
                             {issuingResetFor === u.id ? 'Issuing...' : 'Reset Link'}
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          disabled={issuingResetFor === u.id || revokingResetFor === u.id}
+                          onClick={() => handleRevokeResetTokens(u.id, u.name)}
+                          aria-label={`Revoke reset links for ${u.name}`}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-amber-800 bg-amber-50 hover:bg-amber-100 disabled:opacity-50 rounded-md cursor-pointer"
+                        >
+                          <Ban className="w-3 h-3" />
+                          <span>
+                            {revokingResetFor === u.id ? 'Revoking...' : 'Revoke Link'}
                           </span>
                         </button>
                         <select

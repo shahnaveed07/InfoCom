@@ -17,6 +17,7 @@ import {
   handleD1WorkerQueueBatch,
   handleD1WorkerScheduledSweep,
   queueD1TransactionalEmail,
+  runWithD1EmailConfig,
 } from './jobs/d1-worker.ts';
 import { hashPasswordWorker, SESSION_COOKIE_NAME } from './worker-auth.ts';
 
@@ -70,6 +71,50 @@ test('Cloudflare D1 + R2 + Static Assets end-to-end Worker verification suite (r
       '--local',
       '--persist-to',
       persistDir,
+    ],
+    { cwd: process.cwd(), timeout: 30_000 }
+  );
+
+  // Verify all 45 relational tables exist in fresh local D1 database
+  const { stdout: tableListStdout } = await execFileAsync(
+    'npx',
+    [
+      'wrangler',
+      'd1',
+      'execute',
+      'igs-infocom-db',
+      '--local',
+      '--persist-to',
+      persistDir,
+      '--command',
+      "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name != 'd1_migrations' ORDER BY name;",
+      '--json',
+    ],
+    { cwd: process.cwd(), timeout: 30_000 }
+  );
+  const parsedTables = JSON.parse(tableListStdout) as Array<{
+    results?: Array<{ name: string }>;
+  }>;
+  const tableNames = (parsedTables[0]?.results ?? []).map((r) => r.name);
+  assert.equal(
+    tableNames.length,
+    45,
+    `Expected all 45 D1 schema tables, found ${tableNames.length}: ${tableNames.join(', ')}`
+  );
+
+  // Verify reference seed migration is strictly idempotent on repeated execution
+  await execFileAsync(
+    'npx',
+    [
+      'wrangler',
+      'd1',
+      'execute',
+      'igs-infocom-db',
+      '--local',
+      '--persist-to',
+      persistDir,
+      '--file',
+      path.join(process.cwd(), 'migrations', '0002_seed_reference.sql'),
     ],
     { cwd: process.cwd(), timeout: 30_000 }
   );
@@ -554,6 +599,76 @@ test('Cloudflare D1 + R2 + Static Assets end-to-end Worker verification suite (r
     assert.equal(emailRes.status, 200);
     assert.equal(workerStatusRes.status, 200);
 
+    // 18. Explicit onboarding/reset token issuance, log redaction, and revocation
+    const issueResetRes = await worker.fetch('/api/users/u-mustchange/reset-token', {
+      method: 'POST',
+      headers: { Cookie: adminCookie },
+    });
+    assert.equal(issueResetRes.status, 200);
+    const issuedReset = (await issueResetRes.json()) as {
+      ok: boolean;
+      onboardingToken: string;
+    };
+    assert.equal(issuedReset.ok, true);
+    assert.ok(issuedReset.onboardingToken.length >= 24);
+
+    // Ensure raw token is never exposed in audit logs or background_jobs payload under EMAIL_PROVIDER=disabled
+    const auditAfterIssue = await worker.fetch('/api/audit-logs', {
+      headers: { Cookie: adminCookie },
+    });
+    assert.equal(auditAfterIssue.status, 200);
+    const auditBodyText = await auditAfterIssue.text();
+    assert.ok(!auditBodyText.includes(issuedReset.onboardingToken));
+
+    const { stdout: bgPayloadStdout } = await execFileAsync(
+      'npx',
+      [
+        'wrangler',
+        'd1',
+        'execute',
+        'igs-infocom-db',
+        '--local',
+        '--persist-to',
+        persistDir,
+        '--command',
+        "SELECT payload FROM background_jobs WHERE job_type = 'notification_email' ORDER BY created_at DESC LIMIT 5;",
+        '--json',
+      ],
+      { cwd: process.cwd(), timeout: 30_000 }
+    );
+    assert.ok(!bgPayloadStdout.includes(issuedReset.onboardingToken));
+    assert.ok(bgPayloadStdout.includes('EMAIL_PROVIDER=disabled'));
+
+    // Revoke active onboarding tokens explicitly and confirm redemption is rejected
+    const revokeRes = await worker.fetch('/api/users/u-mustchange/revoke-reset-tokens', {
+      method: 'POST',
+      headers: { Cookie: adminCookie },
+    });
+    assert.equal(revokeRes.status, 200);
+    const revokeJson = (await revokeRes.json()) as { ok: boolean; revokedCount: number };
+    assert.equal(revokeJson.ok, true);
+    assert.equal(revokeJson.revokedCount, 1);
+
+    const useRevokedRes = await worker.fetch('/api/auth/reset-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        token: issuedReset.onboardingToken,
+        newPassword: 'ShouldNeverApply!2026',
+      }),
+    });
+    assert.equal(useRevokedRes.status, 400);
+
+    // Student-specific revoke endpoint also succeeds cleanly
+    const stuRevokeRes = await worker.fetch(
+      `/api/students/${approved.studentId}/revoke-reset-tokens`,
+      {
+        method: 'POST',
+        headers: { Cookie: adminCookie },
+      }
+    );
+    assert.equal(stuRevokeRes.status, 200);
+
     // Instructor password test confirms login works too
     const instLogin = await worker.fetch('/api/auth/login', {
       method: 'POST',
@@ -691,72 +806,34 @@ test('D1 Queue consumer retry/failure exhaustion + Cron sweep behavior with disa
       Promise.all(stmts.map((s) => s.run())),
   };
 
-  // 1. Disabled email logs Skipped cleanly without errors
+  // 1. Disabled email redacts sensitive payloads at enqueue and logs Skipped cleanly without errors
   await runWithD1Database(mockDb, async () => {
-    const queued = await queueD1TransactionalEmail(
-      {
-        recipientEmail: 'student@igs.test',
-        subject: 'Welcome to IGS',
-        bodyText: 'Hello student',
-        maxAttempts: 2,
-      },
-      mockDb
-    );
-    assert.ok(queued);
-
-    let ackedCount = 0;
-    const outcome = await handleD1WorkerQueueBatch(
-      {
-        queue: 'igs-ams-jobs',
-        messages: [
-          {
-            id: 'msg-1',
-            attempts: 1,
-            body: {
-              jobId: queued.jobId,
-              jobType: 'notification_email',
-              enqueuedAt: new Date().toISOString(),
-            },
-            ack: () => {
-              ackedCount += 1;
-            },
-            retry: () => {
-              throw new Error('Should not retry disabled email provider');
-            },
-          },
-        ],
-      },
-      { DB: mockDb, EMAIL_PROVIDER: 'disabled' }
-    );
-    assert.equal(outcome.acked, 1);
-    assert.equal(ackedCount, 1);
-    assert.equal(deliveryLogs.get(queued.deliveryLogId)?.status, 'Skipped');
-  });
-
-  // 2. Failing HTTP email retries then exhausts cleanly into Failed status & redacts sensitive payload
-  const origFetch = globalThis.fetch;
-  globalThis.fetch = (async () => new Response('Upstream error', { status: 500 })) as typeof fetch;
-  try {
-    await runWithD1Database(mockDb, async () => {
+    await runWithD1EmailConfig({ EMAIL_PROVIDER: 'disabled' }, async () => {
       const queued = await queueD1TransactionalEmail(
         {
-          recipientEmail: 'reset@igs.test',
-          subject: 'Password Reset',
-          bodyText: 'secret-token-should-redact',
+          recipientEmail: 'student@igs.test',
+          subject: 'Welcome to IGS',
+          bodyText: 'https://igs.test/?setupToken=sensitive-disabled-token-12345',
           redactSensitive: true,
           maxAttempts: 2,
         },
         mockDb
       );
       assert.ok(queued);
+      assert.ok(
+        !String(bgJobs.get(queued.jobId)?.payload).includes('sensitive-disabled-token-12345')
+      );
+      assert.ok(
+        String(bgJobs.get(queued.jobId)?.payload).includes('[REDACTED — EMAIL_PROVIDER=disabled]')
+      );
 
-      // Attempt 1 -> Pending + retry()
-      const firstRun = await handleD1WorkerQueueBatch(
+      let ackedCount = 0;
+      const outcome = await handleD1WorkerQueueBatch(
         {
           queue: 'igs-ams-jobs',
           messages: [
             {
-              id: 'msg-r1',
+              id: 'msg-1',
               attempts: 1,
               body: {
                 jobId: queued.jobId,
@@ -764,53 +841,109 @@ test('D1 Queue consumer retry/failure exhaustion + Cron sweep behavior with disa
                 enqueuedAt: new Date().toISOString(),
               },
               ack: () => {
-                throw new Error('Should retry on first attempt');
+                ackedCount += 1;
               },
-              retry: () => {},
-            },
-          ],
-        },
-        {
-          DB: mockDb,
-          EMAIL_PROVIDER: 'http',
-          EMAIL_HTTP_URL: 'https://mail.example/send',
-          EMAIL_FROM: 'noreply@igs.test',
-        }
-      );
-      assert.equal(firstRun.retried, 1);
-      assert.equal(bgJobs.get(queued.jobId)?.status, 'Pending');
-
-      // Attempt 2 -> exhausted -> Failed + ack() + redacted payload
-      const secondRun = await handleD1WorkerQueueBatch(
-        {
-          queue: 'igs-ams-jobs',
-          messages: [
-            {
-              id: 'msg-r2',
-              attempts: 2,
-              body: {
-                jobId: queued.jobId,
-                jobType: 'notification_email',
-                enqueuedAt: new Date().toISOString(),
-              },
-              ack: () => {},
               retry: () => {
-                throw new Error('Should ack exhausted failure to prevent infinite queue loop');
+                throw new Error('Should not retry disabled email provider');
               },
             },
           ],
         },
+        { DB: mockDb, EMAIL_PROVIDER: 'disabled' }
+      );
+      assert.equal(outcome.acked, 1);
+      assert.equal(ackedCount, 1);
+      assert.equal(deliveryLogs.get(queued.deliveryLogId)?.status, 'Skipped');
+    });
+  });
+
+  // 2. Failing HTTP email retries then exhausts cleanly into Failed status & redacts sensitive payload
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response('Upstream error', { status: 500 })) as typeof fetch;
+  try {
+    await runWithD1Database(mockDb, async () => {
+      await runWithD1EmailConfig(
         {
-          DB: mockDb,
           EMAIL_PROVIDER: 'http',
           EMAIL_HTTP_URL: 'https://mail.example/send',
           EMAIL_FROM: 'noreply@igs.test',
+        },
+        async () => {
+          const queued = await queueD1TransactionalEmail(
+            {
+              recipientEmail: 'reset@igs.test',
+              subject: 'Password Reset',
+              bodyText: 'secret-token-should-redact',
+              redactSensitive: true,
+              maxAttempts: 2,
+            },
+            mockDb
+          );
+          assert.ok(queued);
+
+          // Attempt 1 -> Pending + retry()
+          const firstRun = await handleD1WorkerQueueBatch(
+            {
+              queue: 'igs-ams-jobs',
+              messages: [
+                {
+                  id: 'msg-r1',
+                  attempts: 1,
+                  body: {
+                    jobId: queued.jobId,
+                    jobType: 'notification_email',
+                    enqueuedAt: new Date().toISOString(),
+                  },
+                  ack: () => {
+                    throw new Error('Should retry on first attempt');
+                  },
+                  retry: () => {},
+                },
+              ],
+            },
+            {
+              DB: mockDb,
+              EMAIL_PROVIDER: 'http',
+              EMAIL_HTTP_URL: 'https://mail.example/send',
+              EMAIL_FROM: 'noreply@igs.test',
+            }
+          );
+          assert.equal(firstRun.retried, 1);
+          assert.equal(bgJobs.get(queued.jobId)?.status, 'Pending');
+
+          // Attempt 2 -> exhausted -> Failed + ack() + redacted payload
+          const secondRun = await handleD1WorkerQueueBatch(
+            {
+              queue: 'igs-ams-jobs',
+              messages: [
+                {
+                  id: 'msg-r2',
+                  attempts: 2,
+                  body: {
+                    jobId: queued.jobId,
+                    jobType: 'notification_email',
+                    enqueuedAt: new Date().toISOString(),
+                  },
+                  ack: () => {},
+                  retry: () => {
+                    throw new Error('Should ack exhausted failure to prevent infinite queue loop');
+                  },
+                },
+              ],
+            },
+            {
+              DB: mockDb,
+              EMAIL_PROVIDER: 'http',
+              EMAIL_HTTP_URL: 'https://mail.example/send',
+              EMAIL_FROM: 'noreply@igs.test',
+            }
+          );
+          assert.equal(secondRun.acked, 1);
+          assert.equal(bgJobs.get(queued.jobId)?.status, 'Failed');
+          assert.equal(deliveryLogs.get(queued.deliveryLogId)?.status, 'Failed');
+          assert.ok(String(bgJobs.get(queued.jobId)?.payload).includes('[REDACTED AFTER FAILURE]'));
         }
       );
-      assert.equal(secondRun.acked, 1);
-      assert.equal(bgJobs.get(queued.jobId)?.status, 'Failed');
-      assert.equal(deliveryLogs.get(queued.deliveryLogId)?.status, 'Failed');
-      assert.ok(String(bgJobs.get(queued.jobId)?.payload).includes('[REDACTED AFTER FAILURE]'));
     });
 
     // 3. Cron scheduled sweep housekeeping removes expired sessions & reset tokens
