@@ -3,7 +3,12 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import type { Prisma } from '@prisma/client';
 import { findUpcomingSessionsNeedingReminders, formatCents, toCents } from '../../src/shared/academic.ts';
-import { getPrismaPool, prisma } from '../db/prisma.ts';
+import {
+  getPrismaPool,
+  prisma,
+  sanitizePoolErrorSummary,
+  withTransientDbRetry,
+} from '../db/prisma.ts';
 import { sendTransactionalEmail } from '../email/mailer.ts';
 
 export type BackgroundJobType = 'notification_email' | 'session_reminders' | 'fee_reminders';
@@ -966,16 +971,23 @@ export async function runWorkerTick(options?: {
   }
   tickInFlight = true;
   try {
-    const processedCount = await processPendingJobs(options?.batchLimit ?? 25, {
-      workerId: options?.workerId,
-      leaseMs: options?.leaseMs,
-    });
+    const processedCount = await withTransientDbRetry(
+      () =>
+        processPendingJobs(options?.batchLimit ?? 25, {
+          workerId: options?.workerId,
+          leaseMs: options?.leaseMs,
+        }),
+      { maxRetries: 2, delayMs: 300 }
+    );
     let remindersCreated = 0;
     const nowMs = Date.now();
     const reminderIntervalMs = options?.reminderIntervalMs ?? 15 * 60 * 1000;
     if (nowMs - lastReminderSweepMs > reminderIntervalMs) {
+      remindersCreated = await withTransientDbRetry(() => runSessionRemindersSweep(), {
+        maxRetries: 2,
+        delayMs: 300,
+      });
       lastReminderSweepMs = nowMs;
-      remindersCreated = await runSessionRemindersSweep();
     }
     return { processedCount, remindersCreated };
   } finally {
@@ -990,7 +1002,14 @@ export function startBackgroundWorker(intervalMs = 30_000) {
     try {
       await runWorkerTick();
     } catch (err) {
-      console.error('[worker] background sweep error:', err);
+      const summary = sanitizePoolErrorSummary(err);
+      if (summary.transient) {
+        console.warn(
+          `[worker] Transient database connection reset during background sweep (${summary.code}); will retry on next cycle.`
+        );
+      } else {
+        console.error('[worker] background sweep error:', summary.message);
+      }
     }
   };
 

@@ -9,6 +9,7 @@ import {
   runWithDatabaseContext,
   runWithHyperdriveDatabase,
   sanitizePoolErrorSummary,
+  withTransientDbRetry,
 } from './prisma.ts';
 
 test('sanitizePoolErrorSummary classifies transient idle drops and strips connection credentials', () => {
@@ -25,6 +26,37 @@ test('sanitizePoolErrorSummary classifies transient idle drops and strips connec
   const masked = sanitizePoolErrorSummary(uriErr);
   assert.equal(masked.transient, false);
   assert.equal(masked.message.includes('SuperSecret'), false);
+});
+
+test('withTransientDbRetry retries transient connection resets and succeeds on fresh connection', async () => {
+  let attempts = 0;
+  const value = await withTransientDbRetry(
+    async () => {
+      attempts += 1;
+      if (attempts < 2) {
+        throw new Error('Connection terminated unexpectedly');
+      }
+      return 'reconnected-ok';
+    },
+    { maxRetries: 2, delayMs: 10 }
+  );
+  assert.equal(value, 'reconnected-ok');
+  assert.equal(attempts, 2);
+
+  // Non-transient query errors must fail fast without retrying
+  let nonTransientAttempts = 0;
+  await assert.rejects(
+    () =>
+      withTransientDbRetry(
+        async () => {
+          nonTransientAttempts += 1;
+          throw new Error('duplicate key value violates unique constraint');
+        },
+        { maxRetries: 2, delayMs: 10 }
+      ),
+    /duplicate key/
+  );
+  assert.equal(nonTransientAttempts, 1);
 });
 
 test('prisma module exports lazy proxy and detects uninitialized context without eager throw', () => {

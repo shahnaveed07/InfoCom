@@ -59,15 +59,40 @@ export function sanitizePoolErrorSummary(err: unknown): {
     rawCode === '57P01' ||
     rawCode === '57P02' ||
     rawCode === '57P03' ||
+    rawCode === 'P1017' ||
     rawCode === 'ECONNRESET' ||
     rawCode === 'EPIPE' ||
     /connection terminated unexpectedly/i.test(rawMessage) ||
+    /server has closed the connection/i.test(rawMessage) ||
+    /client has encountered a connection error/i.test(rawMessage) ||
     /terminating connection due to administrator command/i.test(rawMessage);
   return {
     code: rawCode || (transient ? 'IDLE_CONNECTION_RESET' : 'PG_POOL_ERROR'),
     message: rawMessage.replace(/postgres(?:ql)?:\/\/[^\s@]+@/gi, 'postgresql://***@').slice(0, 180),
     transient,
   };
+}
+
+export async function withTransientDbRetry<T>(
+  fn: () => Promise<T>,
+  options: { maxRetries?: number; delayMs?: number } = {}
+): Promise<T> {
+  const maxRetries = Math.max(0, options.maxRetries ?? 2);
+  const baseDelayMs = Math.max(10, options.delayMs ?? 250);
+  let attempt = 0;
+
+  while (true) {
+    try {
+      return await fn();
+    } catch (err) {
+      const summary = sanitizePoolErrorSummary(err);
+      if (!summary.transient || attempt >= maxRetries) {
+        throw err;
+      }
+      attempt += 1;
+      await new Promise((resolve) => setTimeout(resolve, baseDelayMs * attempt));
+    }
+  }
 }
 
 function handlePoolError(scope: string, err: unknown): void {
@@ -78,6 +103,36 @@ function handlePoolError(scope: string, err: unknown): void {
     return;
   }
   console.warn(`[pg:${scope}] Idle pool client error (${summary.code}): ${summary.message}`);
+}
+
+function createConfiguredPrismaClient(pool: Pool): PrismaClient {
+  const isDev = resolveAppEnvironment() === 'development';
+  const client = new PrismaClient({
+    adapter: new PrismaPg(pool),
+    log: isDev
+      ? [
+          { emit: 'event', level: 'error' },
+          { emit: 'event', level: 'warn' },
+        ]
+      : [{ emit: 'event', level: 'error' }],
+  });
+
+  client.$on('error', (event) => {
+    const summary = sanitizePoolErrorSummary(event.message);
+    if (summary.transient) {
+      console.warn(`[prisma] Transient connection reset (${summary.code}); pool will reconnect.`);
+      return;
+    }
+    console.error(`[prisma:error] ${summary.message}`);
+  });
+
+  if (isDev) {
+    client.$on('warn', (event) => {
+      console.warn(`[prisma:warn] ${event.message}`);
+    });
+  }
+
+  return client;
 }
 
 export function createRequestScopedDatabase(connectionString: string): {
@@ -93,7 +148,8 @@ export function createRequestScopedDatabase(connectionString: string): {
   const pool = new Pool({
     connectionString,
     max: 5,
-    idleTimeoutMillis: 30_000,
+    idleTimeoutMillis: 20_000,
+    allowExitOnIdle: true,
     connectionTimeoutMillis: 15_000,
     keepAlive: true,
     keepAliveInitialDelayMillis: 10_000,
@@ -101,11 +157,7 @@ export function createRequestScopedDatabase(connectionString: string): {
   pool.on('error', (err) => {
     handlePoolError('request', err);
   });
-  const adapter = new PrismaPg(pool);
-  const client = new PrismaClient({
-    adapter,
-    log: resolveAppEnvironment() === 'development' ? ['error', 'warn'] : ['error'],
-  });
+  const client = createConfiguredPrismaClient(pool);
   return {
     pool,
     prisma: client,
@@ -179,11 +231,7 @@ export function getPrismaClient(): PrismaClient {
     return active.prisma;
   }
   if (!global._prismaClient) {
-    const adapter = new PrismaPg(getPrismaPool());
-    global._prismaClient = new PrismaClient({
-      adapter,
-      log: resolveAppEnvironment() === 'development' ? ['error', 'warn'] : ['error'],
-    });
+    global._prismaClient = createConfiguredPrismaClient(getPrismaPool());
   }
   return global._prismaClient;
 }

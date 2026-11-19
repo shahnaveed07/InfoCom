@@ -31,15 +31,17 @@ export function buildPgPoolConfig(options: { admin?: boolean } = {}): PoolConfig
       ? process.env.SQL_ADMIN_PASSWORD || process.env.SQL_PASSWORD
       : process.env.SQL_PASSWORD;
 
+    const isUnixSocket = process.env.SQL_HOST.startsWith('/');
     return {
       host: process.env.SQL_HOST,
       user,
       password,
       database,
       max: isTest ? 5 : 10,
-      idleTimeoutMillis: 30_000,
+      idleTimeoutMillis: isUnixSocket ? 10_000 : 20_000,
+      allowExitOnIdle: true,
       connectionTimeoutMillis: 15000,
-      keepAlive: true,
+      keepAlive: !isUnixSocket,
       keepAliveInitialDelayMillis: 10_000,
     };
   }
@@ -57,7 +59,8 @@ export function buildPgPoolConfig(options: { admin?: boolean } = {}): PoolConfig
   return {
     connectionString,
     max: isTest ? 5 : 10,
-    idleTimeoutMillis: 30_000,
+    idleTimeoutMillis: 20_000,
+    allowExitOnIdle: true,
     connectionTimeoutMillis: 15000,
     keepAlive: true,
     keepAliveInitialDelayMillis: 10_000,
