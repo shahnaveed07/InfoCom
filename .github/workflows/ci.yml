@@ -33,7 +33,7 @@ jobs:
       - name: TypeScript typecheck (client, Node, and Worker)
         run: npm run lint
 
-      - name: Run unit, PDF, and KDF benchmark tests
+      - name: Run unit, WebAuthn crypto, retry safety, PDF, and KDF benchmark tests
         run: npm run test:unit
 
       - name: Build production SPA static assets
@@ -49,13 +49,19 @@ jobs:
       - name: Generate Cloudflare Worker types & dry-run Worker bundle
         run: npm run cf:types && npm run cf:build
 
-      - name: Apply fresh local D1 migrations & run Cloudflare Worker D1 suite
+      - name: Verify Worker bundle excludes password KDFs, Prisma, pg, PDFKit, Nodemailer, and WASM
+        run: |
+          test -f dist-worker/worker.js
+          ! ls dist-worker/*.wasm 2>/dev/null
+          ! grep -E 'crypto\.scrypt|hashPasswordWorker|verifyPasswordWorker|argon2|hash-wasm|@prisma/client|pdfkit|nodemailer' dist-worker/worker.js
+
+      - name: Apply fresh local D1 migrations & run Cloudflare Worker D1 + WebAuthn suite
         run: npm run cf:d1:migrate:local && npm run test:cloudflare
 
       - name: Install Playwright Chromium browser
         run: npx playwright install --with-deps chromium
 
-      - name: Run Playwright browser E2E suite against Cloudflare Worker + D1
+      - name: Run Playwright browser E2E suite (CDP WebAuthn) against Cloudflare Worker + D1
         run: npm run test:e2e:worker
 
   legacy-postgres-verify:

@@ -35,6 +35,9 @@ export interface WorkerRouteEnv extends WorkerD1EnvBindings {
   EMAIL_PROVIDER?: string;
   LOG_OPERATIONAL_METRICS?: string;
   SESSION_SECRET?: string;
+  AUTH_MODE?: string;
+  WEBAUTHN_RP_ID?: string;
+  WEBAUTHN_RP_NAME?: string;
 }
 
 export class PayloadError extends Error {
@@ -363,10 +366,12 @@ export async function resolveWorkerSession(
 export function isPasswordChangeExemptPath(pathname: string): boolean {
   return (
     pathname === '/api/auth/me' ||
+    pathname === '/api/auth/config' ||
     pathname === '/api/auth/logout' ||
     pathname === '/api/auth/change-password' ||
     pathname === '/api/auth/reset-password' ||
-    pathname === '/api/auth/forgot-password'
+    pathname === '/api/auth/forgot-password' ||
+    pathname.startsWith('/api/auth/webauthn/')
   );
 }
 

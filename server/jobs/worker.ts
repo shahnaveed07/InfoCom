@@ -278,10 +278,30 @@ async function isEmailChannelEnabledForUser(
 }
 
 async function handleNotificationEmailJob(payload: NotificationEmailPayload) {
-  const emailEnabled = await isEmailChannelEnabledForUser(
-    payload.userId,
-    payload.kind,
-    payload.bypassPreferences
+  // Idempotency guard: if this delivery log already reached a terminal state (for example
+  // before a transient DB disconnect or lease recovery), never send a duplicate email.
+  if (payload.deliveryLogId) {
+    const existingLog = await withTransientDbRetry(
+      () =>
+        prisma.deliveryLog.findUnique({
+          where: { id: payload.deliveryLogId },
+          select: { status: true },
+        }),
+      { maxRetries: 2, delayMs: 200 }
+    );
+    if (existingLog && (existingLog.status === 'Delivered' || existingLog.status === 'Skipped')) {
+      return;
+    }
+  }
+
+  const emailEnabled = await withTransientDbRetry(
+    () =>
+      isEmailChannelEnabledForUser(
+        payload.userId,
+        payload.kind,
+        payload.bypassPreferences
+      ),
+    { maxRetries: 2, delayMs: 200 }
   );
   let resultStatus: 'Delivered' | 'Skipped' | 'Failed' = 'Skipped';
   let messageId: string | null = null;
@@ -302,29 +322,37 @@ async function handleNotificationEmailJob(payload: NotificationEmailPayload) {
   }
 
   if (payload.deliveryLogId) {
-    await prisma.deliveryLog.updateMany({
-      where: { id: payload.deliveryLogId },
-      data: {
-        status: resultStatus,
-        providerMessageId: messageId,
-        errorMessage,
-        sentAt: new Date(),
-      },
-    });
+    await withTransientDbRetry(
+      () =>
+        prisma.deliveryLog.updateMany({
+          where: { id: payload.deliveryLogId },
+          data: {
+            status: resultStatus,
+            providerMessageId: messageId,
+            errorMessage,
+            sentAt: new Date(),
+          },
+        }),
+      { maxRetries: 2, delayMs: 200 }
+    );
   } else {
-    await prisma.deliveryLog.create({
-      data: {
-        id: `dlog-${crypto.randomUUID()}`,
-        notificationId: payload.notificationId ?? null,
-        userId: payload.userId ?? null,
-        applicationId: payload.applicationId ?? null,
-        channel: 'email',
-        recipient: payload.recipientEmail,
-        status: resultStatus,
-        providerMessageId: messageId,
-        errorMessage,
-      },
-    });
+    await withTransientDbRetry(
+      () =>
+        prisma.deliveryLog.create({
+          data: {
+            id: `dlog-${crypto.randomUUID()}`,
+            notificationId: payload.notificationId ?? null,
+            userId: payload.userId ?? null,
+            applicationId: payload.applicationId ?? null,
+            channel: 'email',
+            recipient: payload.recipientEmail,
+            status: resultStatus,
+            providerMessageId: messageId,
+            errorMessage,
+          },
+        }),
+      { maxRetries: 2, delayMs: 200 }
+    );
   }
 
   if (resultStatus === 'Failed') {
@@ -763,19 +791,23 @@ async function executeClaimedJob(
         : undefined;
 
     const durationMs = Math.max(0, Date.now() - startedMs);
-    await prisma.backgroundJob.update({
-      where: { id: job.id },
-      data: {
-        status: 'Completed',
-        completedAt: new Date(),
-        workerId: null,
-        lockedAt: null,
-        leaseExpiresAt: null,
-        durationMs,
-        lastError: null,
-        ...(sanitizedPayload ? { payload: sanitizedPayload } : {}),
-      },
-    });
+    await withTransientDbRetry(
+      () =>
+        prisma.backgroundJob.updateMany({
+          where: { id: job.id, status: 'Processing', attempts: currentAttempt },
+          data: {
+            status: 'Completed',
+            completedAt: new Date(),
+            workerId: null,
+            lockedAt: null,
+            leaseExpiresAt: null,
+            durationMs,
+            lastError: null,
+            ...(sanitizedPayload ? { payload: sanitizedPayload } : {}),
+          },
+        }),
+      { maxRetries: 2, delayMs: 200 }
+    );
     return 'Completed';
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Background job execution failed.';
@@ -784,16 +816,21 @@ async function executeClaimedJob(
     const durationMs = Math.max(0, Date.now() - startedMs);
 
     if (job.jobType === 'notification_email' && typeof payload.deliveryLogId === 'string') {
-      await prisma.deliveryLog
-        .updateMany({
-          where: { id: payload.deliveryLogId },
-          data: {
-            status: exhausted ? 'Failed' : 'Queued',
-            errorMessage: `${message.slice(0, 500)} (attempt ${currentAttempt}/${job.maxAttempts})`,
-            sentAt: new Date(),
-          },
-        })
-        .catch(() => undefined);
+      await withTransientDbRetry(
+        () =>
+          prisma.deliveryLog.updateMany({
+            where: {
+              id: payload.deliveryLogId as string,
+              status: { notIn: ['Delivered', 'Skipped'] },
+            },
+            data: {
+              status: exhausted ? 'Failed' : 'Queued',
+              errorMessage: `${message.slice(0, 500)} (attempt ${currentAttempt}/${job.maxAttempts})`,
+              sentAt: new Date(),
+            },
+          }),
+        { maxRetries: 2, delayMs: 200 }
+      ).catch(() => undefined);
     }
 
     const sanitizedPayload =
@@ -804,20 +841,24 @@ async function executeClaimedJob(
           } as Prisma.InputJsonValue)
         : undefined;
 
-    await prisma.backgroundJob.update({
-      where: { id: job.id },
-      data: {
-        status: exhausted ? 'Failed' : 'Pending',
-        workerId: null,
-        lockedAt: null,
-        leaseExpiresAt: null,
-        durationMs,
-        lastError: message.slice(0, 1000),
-        completedAt: exhausted ? new Date() : null,
-        runAfter: exhausted ? job.runAfter : new Date(Date.now() + delayMs),
-        ...(sanitizedPayload ? { payload: sanitizedPayload } : {}),
-      },
-    });
+    await withTransientDbRetry(
+      () =>
+        prisma.backgroundJob.updateMany({
+          where: { id: job.id, status: 'Processing', attempts: currentAttempt },
+          data: {
+            status: exhausted ? 'Failed' : 'Pending',
+            workerId: null,
+            lockedAt: null,
+            leaseExpiresAt: null,
+            durationMs,
+            lastError: message.slice(0, 1000),
+            completedAt: exhausted ? new Date() : null,
+            runAfter: exhausted ? job.runAfter : new Date(Date.now() + delayMs),
+            ...(sanitizedPayload ? { payload: sanitizedPayload } : {}),
+          },
+        }),
+      { maxRetries: 2, delayMs: 200 }
+    );
     return exhausted ? 'Failed' : 'Pending';
   }
 }
@@ -888,9 +929,15 @@ export async function processPendingJobs(
   limit = 20,
   options?: { workerId?: string; leaseMs?: number }
 ): Promise<number> {
-  await recoverStaleProcessingJobs({ fallbackStaleMs: options?.leaseMs });
+  await withTransientDbRetry(
+    () => recoverStaleProcessingJobs({ fallbackStaleMs: options?.leaseMs }),
+    { maxRetries: 2, delayMs: 250 }
+  );
 
-  const claimedJobs = await claimPendingJobs(limit, options);
+  const claimedJobs = await withTransientDbRetry(() => claimPendingJobs(limit, options), {
+    maxRetries: 2,
+    delayMs: 250,
+  });
   let processed = 0;
 
   for (const job of claimedJobs) {
@@ -971,14 +1018,10 @@ export async function runWorkerTick(options?: {
   }
   tickInFlight = true;
   try {
-    const processedCount = await withTransientDbRetry(
-      () =>
-        processPendingJobs(options?.batchLimit ?? 25, {
-          workerId: options?.workerId,
-          leaseMs: options?.leaseMs,
-        }),
-      { maxRetries: 2, delayMs: 300 }
-    );
+    const processedCount = await processPendingJobs(options?.batchLimit ?? 25, {
+      workerId: options?.workerId,
+      leaseMs: options?.leaseMs,
+    });
     let remindersCreated = 0;
     const nowMs = Date.now();
     const reminderIntervalMs = options?.reminderIntervalMs ?? 15 * 60 * 1000;

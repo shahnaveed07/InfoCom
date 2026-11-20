@@ -12,6 +12,7 @@
   },
   "vars": {
     "NODE_ENV": "production",
+    "AUTH_MODE": "webauthn",
     "APP_URL": "https://igs-infocom-ams-worker.<your-subdomain>.workers.dev",
     "STORAGE_PROVIDER": "r2",
     "EMAIL_PROVIDER": "disabled",

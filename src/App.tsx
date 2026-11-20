@@ -23,6 +23,7 @@ import { EnrollmentsView } from './components/EnrollmentsView';
 import { FinanceView } from './components/FinanceView';
 import { InstructorOverview } from './components/InstructorOverview';
 import { InstructorsManagementView } from './components/InstructorsManagementView';
+import { PasskeyManagementModal } from './components/PasskeyManagementModal';
 import { ProgressReportView } from './components/ProgressReportView';
 import { SchedulesView } from './components/SchedulesView';
 import { Sidebar, type NavSection } from './components/Sidebar';
@@ -38,13 +39,14 @@ import { PublicCoursesPage } from './components/public/PublicCoursesPage';
 import { PublicHomePage } from './components/public/PublicHomePage';
 import { PublicLayout } from './components/public/PublicLayout';
 import { PublicVerifyCertificatePage } from './components/public/PublicVerifyCertificatePage';
-import type { DashboardPayload, PublicAcademyInfo, UserPublic } from './shared/types';
+import type { AuthMode, DashboardPayload, PublicAcademyInfo, UserPublic } from './shared/types';
 import { api } from './utils/api';
 
 function HomeOrLegacyRedirect({ academy }: { academy: PublicAcademyInfo | null }) {
   const location = useLocation();
   const params = new URLSearchParams(location.search);
-  const setupOrReset = params.get('setupToken') || params.get('resetToken');
+  const setupOrReset =
+    params.get('enrollToken') || params.get('setupToken') || params.get('resetToken');
   if (setupOrReset) {
     return <Navigate to={`/login${location.search}`} replace />;
   }
@@ -58,6 +60,7 @@ function HomeOrLegacyRedirect({ academy }: { academy: PublicAcademyInfo | null }
 export default function App() {
   const navigate = useNavigate();
   const [authChecking, setAuthChecking] = useState(true);
+  const [authMode, setAuthMode] = useState<AuthMode>('password');
   const [user, setUser] = useState<UserPublic | null>(null);
   const [publicAcademy, setPublicAcademy] = useState<PublicAcademyInfo | null>(null);
   const [dashboard, setDashboard] = useState<DashboardPayload | null>(null);
@@ -65,6 +68,7 @@ export default function App() {
   const [activeSection, setActiveSection] = useState<NavSection>('overview');
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [passwordModalOpen, setPasswordModalOpen] = useState(false);
+  const [passkeyModalOpen, setPasskeyModalOpen] = useState(false);
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmNewPassword, setConfirmNewPassword] = useState('');
@@ -104,10 +108,16 @@ export default function App() {
     (async () => {
       try {
         const [meRes, academyRes] = await Promise.all([
-          api.getMe().catch(() => ({ user: null })),
+          api.getMe().catch(() => ({ user: null, authMode: undefined })),
           api.getPublicAcademy().catch(() => null),
         ]);
         if (!active) return;
+        if (meRes.authMode) {
+          setAuthMode(meRes.authMode);
+        } else {
+          const cfg = await api.getAuthConfig().catch(() => null);
+          if (active && cfg?.authMode) setAuthMode(cfg.authMode);
+        }
         if (academyRes) {
           setPublicAcademy(academyRes);
         }
@@ -134,7 +144,8 @@ export default function App() {
     };
   }, [loadWorkspace]);
 
-  async function handleAuthenticated(loggedInUser: UserPublic) {
+  async function handleAuthenticated(loggedInUser: UserPublic, detectedMode?: AuthMode) {
+    if (detectedMode) setAuthMode(detectedMode);
     setActiveSection(loggedInUser.role === 'student' ? 'student-home' : 'overview');
     setUser(loggedInUser);
     if (!loggedInUser.mustChangePassword) {
@@ -151,7 +162,11 @@ export default function App() {
     navigate('/login');
   }
 
-  function openChangePasswordModal() {
+  function openSecurityModal() {
+    if (authMode === 'webauthn') {
+      setPasskeyModalOpen(true);
+      return;
+    }
     setCurrentPassword('');
     setNewPassword('');
     setConfirmNewPassword('');
@@ -369,7 +384,8 @@ export default function App() {
           activeSection={activeSection}
           onSelectSection={setActiveSection}
           unreadCount={unreadCount}
-          onOpenChangePassword={openChangePasswordModal}
+          authMode={authMode}
+          onOpenChangePassword={openSecurityModal}
           onLogout={handleLogout}
           mobileOpen={mobileNavOpen}
           onCloseMobile={() => setMobileNavOpen(false)}
@@ -466,6 +482,7 @@ export default function App() {
                 {activeSection === 'users' && isAdmin && (
                   <UsersManagementView
                     data={dashboard}
+                    authMode={authMode}
                     onCreateUser={async (payload) => {
                       const res = await api.createUser(payload);
                       setDashboard(res.dashboard);
@@ -810,6 +827,12 @@ export default function App() {
             </div>
           </div>
         )}
+        {passkeyModalOpen && user && (
+          <PasskeyManagementModal
+            user={user}
+            onClose={() => setPasskeyModalOpen(false)}
+          />
+        )}
       </div>
     );
   }
@@ -887,7 +910,11 @@ export default function App() {
           ) : user && user.mustChangePassword ? (
             renderMustChangePasswordGate(user)
           ) : (
-            <AuthView academy={publicAcademy} onAuthenticated={handleAuthenticated} />
+            <AuthView
+              academy={publicAcademy}
+              authMode={authMode}
+              onAuthenticated={handleAuthenticated}
+            />
           )
         }
       />

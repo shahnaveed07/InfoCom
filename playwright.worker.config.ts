@@ -3,7 +3,7 @@ import path from 'node:path';
 import { chromium, defineConfig } from '@playwright/test';
 
 const CF_E2E_PORT = 3107;
-const CF_E2E_URL = `http://127.0.0.1:${CF_E2E_PORT}`;
+const CF_E2E_URL = `http://localhost:${CF_E2E_PORT}`;
 
 function resolveWorkerChromiumPath(): string | undefined {
   const defaultPath = chromium.executablePath();

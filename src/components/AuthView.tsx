@@ -8,21 +8,32 @@ import {
   CheckCircle2,
   Eye,
   EyeOff,
+  Fingerprint,
+  KeyRound,
   Lock,
   MapPin,
   ShieldCheck,
 } from 'lucide-react';
 import studioLabImage from '../assets/images/academy_lab_studio_1794576422024.jpg';
-import type { PublicAcademyInfo, UserPublic } from '../shared/types';
-import { api } from '../utils/api';
+import type { AuthMode, PublicAcademyInfo, UserPublic } from '../shared/types';
+import { ApiError, api } from '../utils/api';
+import {
+  createPasskeyCredential,
+  formatWebAuthnError,
+  getPasskeyAssertion,
+  isBrowserWebAuthnSupported,
+} from '../utils/webauthn';
 import { BrandCrest } from './public/BrandCrest';
 
 interface AuthViewProps {
   academy?: PublicAcademyInfo | null;
-  onAuthenticated: (user: UserPublic) => void;
+  authMode?: AuthMode;
+  onAuthenticated: (user: UserPublic, authMode?: AuthMode) => void;
 }
 
-export function AuthView({ academy, onAuthenticated }: AuthViewProps) {
+export function AuthView({ academy, authMode: initialAuthMode, onAuthenticated }: AuthViewProps) {
+  const [authMode, setAuthMode] = useState<AuthMode>(initialAuthMode ?? 'password');
+  const [configLoaded, setConfigLoaded] = useState(Boolean(initialAuthMode));
   const [mode, setMode] = useState<'login' | 'forgot'>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -32,7 +43,11 @@ export function AuthView({ academy, onAuthenticated }: AuthViewProps) {
   const [submitting, setSubmitting] = useState(false);
   const [imageFailed, setImageFailed] = useState(false);
 
-  // Forgot & Reset Password state
+  // Passkey enrollment / recovery state
+  const [deviceLabel, setDeviceLabel] = useState('');
+  const [passkeyBusy, setPasskeyBusy] = useState(false);
+
+  // Forgot & Reset Password (legacy mode) + shared single-use token state
   const [resetEmail, setResetEmail] = useState('');
   const [resetToken, setResetToken] = useState('');
   const [resetNewPassword, setResetNewPassword] = useState('');
@@ -40,22 +55,119 @@ export function AuthView({ academy, onAuthenticated }: AuthViewProps) {
   const [forgotSaving, setForgotSaving] = useState(false);
   const [resetSaving, setResetSaving] = useState(false);
 
+  const webauthnSupported = isBrowserWebAuthnSupported();
+
+  useEffect(() => {
+    if (initialAuthMode) {
+      setAuthMode(initialAuthMode);
+      setConfigLoaded(true);
+      return;
+    }
+    let active = true;
+    api
+      .getAuthConfig()
+      .then((cfg) => {
+        if (!active) return;
+        setAuthMode(cfg.authMode);
+        setConfigLoaded(true);
+      })
+      .catch(() => {
+        if (active) setConfigLoaded(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [initialAuthMode]);
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const token = params.get('setupToken') || params.get('resetToken');
+    const token =
+      params.get('enrollToken') || params.get('setupToken') || params.get('resetToken');
     if (token && token.trim().length >= 16) {
       setMode('forgot');
       setResetToken(token.trim());
       setNotice(
-        'Welcome to IGS — InfoCom Global Services. Set your account password below to activate portal sign-in.'
+        authMode === 'webauthn'
+          ? 'Welcome to IGS — InfoCom Global Services. Register a passkey on this device below to activate your account.'
+          : 'Welcome to IGS — InfoCom Global Services. Set your account password below to activate portal sign-in.'
       );
+      params.delete('enrollToken');
       params.delete('setupToken');
       params.delete('resetToken');
       const remaining = params.toString();
       const nextUrl = `${window.location.pathname}${remaining ? `?${remaining}` : ''}${window.location.hash}`;
       window.history.replaceState({}, '', nextUrl);
     }
-  }, []);
+  }, [authMode]);
+
+  async function handlePasskeySignIn(e: React.FormEvent) {
+    e.preventDefault();
+    setError('');
+    setNotice('');
+    if (!webauthnSupported) {
+      setError(
+        'This browser does not support WebAuthn passkeys. Open the portal in a modern Chrome, Safari, Edge, or Firefox browser.'
+      );
+      return;
+    }
+    setPasskeyBusy(true);
+    try {
+      const opts = await api.webauthnLoginOptions(
+        email.trim() ? { email: email.trim() } : {}
+      );
+      const assertion = await getPasskeyAssertion(opts.options);
+      const res = await api.webauthnLoginVerify({
+        challengeId: opts.challengeId,
+        ...assertion,
+      });
+      onAuthenticated(res.user, res.authMode ?? 'webauthn');
+    } catch (err) {
+      setError(formatWebAuthnError(err));
+    } finally {
+      setPasskeyBusy(false);
+    }
+  }
+
+  async function handlePasskeyEnroll(e: React.FormEvent) {
+    e.preventDefault();
+    setError('');
+    setNotice('');
+    if (!webauthnSupported) {
+      setError(
+        'This browser does not support WebAuthn passkeys. Open the portal in a modern HTTPS browser.'
+      );
+      return;
+    }
+    if (resetToken.trim().length < 16) {
+      setError('Paste the full single-use passkey enrollment token issued by an IGS Administrator.');
+      return;
+    }
+    const label = deviceLabel.trim() || 'Primary Device Passkey';
+    setPasskeyBusy(true);
+    try {
+      const opts = await api.webauthnRegisterOptions({
+        enrollmentToken: resetToken.trim(),
+        deviceLabel: label,
+      });
+      const attestation = await createPasskeyCredential(opts.options);
+      const res = await api.webauthnRegisterVerify({
+        challengeId: opts.challengeId,
+        credentialId: attestation.credentialId,
+        clientDataJSON: attestation.clientDataJSON,
+        attestationObject: attestation.attestationObject,
+        transports: attestation.transports,
+        deviceLabel: label,
+        enrollmentToken: resetToken.trim(),
+      });
+      setResetToken('');
+      setDeviceLabel('');
+      onAuthenticated(res.user, res.authMode ?? 'webauthn');
+    } catch (err) {
+      setError(formatWebAuthnError(err));
+    } finally {
+      setPasskeyBusy(false);
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -74,8 +186,13 @@ export function AuthView({ academy, onAuthenticated }: AuthViewProps) {
     setSubmitting(true);
     try {
       const result = await api.login(email.trim(), password);
-      onAuthenticated(result.user);
+      onAuthenticated(result.user, result.authMode ?? 'password');
     } catch (err) {
+      if (err instanceof ApiError && err.code === 'PASSWORD_AUTH_UNAVAILABLE_ON_WORKERS_FREE') {
+        setAuthMode('webauthn');
+        setNotice('This deployment uses Passkey Sign-In. Click below to sign in with your passkey.');
+        return;
+      }
       setError(err instanceof Error ? err.message : 'Unable to sign in.');
     } finally {
       setSubmitting(false);
@@ -143,6 +260,7 @@ export function AuthView({ academy, onAuthenticated }: AuthViewProps) {
   const campusAddress =
     academy?.address ||
     'Downtown Sopore, Opposite Hassan Motors Petrol Pump, Sopore, Jammu and Kashmir, India.';
+  const isPasskeyMode = authMode === 'webauthn';
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col lg:flex-row">
@@ -222,7 +340,7 @@ export function AuthView({ academy, onAuthenticated }: AuthViewProps) {
           <div className="mt-6 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-slate-400">
             <span className="inline-flex items-center gap-1.5">
               <ShieldCheck className="w-3.5 h-3.5 text-blue-400" />
-              Admin-provisioned accounts
+              {isPasskeyMode ? 'Phishing-resistant passkeys' : 'Admin-provisioned accounts'}
             </span>
             <span aria-hidden="true">·</span>
             <span>INR fee &amp; receipt ledger</span>
@@ -238,15 +356,29 @@ export function AuthView({ academy, onAuthenticated }: AuthViewProps) {
           <div className="flex items-center justify-between gap-4 border-b border-slate-200 pb-4">
             <div>
               <h2 className="font-display text-xl font-semibold text-slate-900">
-                {mode === 'login' ? 'Sign In to Portal' : 'Set or Reset Password'}
+                {isPasskeyMode
+                  ? mode === 'login'
+                    ? 'Sign In with Passkey'
+                    : 'Enroll or Recover Passkey'
+                  : mode === 'login'
+                    ? 'Sign In to Portal'
+                    : 'Set or Reset Password'}
               </h2>
               <p className="text-xs text-slate-500 mt-1">
-                {mode === 'login'
-                  ? 'Access admin, instructor, or student workspace'
-                  : 'Complete account onboarding or request a password reset'}
+                {isPasskeyMode
+                  ? mode === 'login'
+                    ? 'Use your device biometric, PIN, or security key'
+                    : 'Activate a new account or recover access with a single-use admin link'
+                  : mode === 'login'
+                    ? 'Access admin, instructor, or student workspace'
+                    : 'Complete account onboarding or request a password reset'}
               </p>
             </div>
-            <Lock className="w-5 h-5 text-slate-400 shrink-0" />
+            {isPasskeyMode ? (
+              <Fingerprint className="w-5 h-5 text-blue-700 shrink-0" />
+            ) : (
+              <Lock className="w-5 h-5 text-slate-400 shrink-0" />
+            )}
           </div>
 
           {/* 2-Tab Mode Bar (No Public Registration) */}
@@ -270,7 +402,7 @@ export function AuthView({ academy, onAuthenticated }: AuthViewProps) {
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              Sign In
+              {isPasskeyMode ? 'Passkey Sign In' : 'Sign In'}
             </button>
             <button
               type="button"
@@ -287,9 +419,21 @@ export function AuthView({ academy, onAuthenticated }: AuthViewProps) {
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              Reset / Setup Password
+              {isPasskeyMode ? 'Enroll / Recover' : 'Reset / Setup Password'}
             </button>
           </div>
+
+          {isPasskeyMode && !webauthnSupported && (
+            <div
+              role="alert"
+              className="mt-4 flex items-start gap-2.5 p-3 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-900"
+            >
+              <AlertCircle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+              <span>
+                Your current browser does not support WebAuthn passkeys. Open the IGS portal in a modern Chrome, Safari, Edge, or Firefox browser over HTTPS.
+              </span>
+            </div>
+          )}
 
           {error && (
             <div
@@ -311,7 +455,116 @@ export function AuthView({ academy, onAuthenticated }: AuthViewProps) {
             </div>
           )}
 
-          {mode === 'forgot' ? (
+          {!configLoaded ? (
+            <div className="mt-6 space-y-3">
+              <div className="h-9 bg-slate-100 rounded-lg" />
+              <div className="h-10 bg-slate-100 rounded-lg" />
+            </div>
+          ) : isPasskeyMode ? (
+            mode === 'forgot' ? (
+              <form onSubmit={handlePasskeyEnroll} className="mt-5 space-y-4" noValidate>
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-[11px] text-slate-600 leading-relaxed">
+                  Paste the single-use enrollment or recovery token issued by an IGS Administrator to register a passkey on this device. No external email service is required.
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="enroll-token"
+                    className="block text-xs font-medium text-slate-700 mb-1.5"
+                  >
+                    Single-Use Enrollment / Recovery Token
+                  </label>
+                  <input
+                    id="enroll-token"
+                    type="text"
+                    required
+                    value={resetToken}
+                    onChange={(e) => setResetToken(e.target.value)}
+                    placeholder="Paste token from your administrator link"
+                    className="w-full px-3 py-2 text-xs font-mono bg-white border border-slate-300 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                  />
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="enroll-device-label"
+                    className="block text-xs font-medium text-slate-700 mb-1.5"
+                  >
+                    Device Name (optional)
+                  </label>
+                  <input
+                    id="enroll-device-label"
+                    type="text"
+                    maxLength={80}
+                    value={deviceLabel}
+                    onChange={(e) => setDeviceLabel(e.target.value)}
+                    placeholder="e.g. Lab Workstation, Personal Laptop, Phone Passkey"
+                    className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={passkeyBusy || !webauthnSupported}
+                  className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium text-white bg-blue-800 hover:bg-blue-900 disabled:opacity-60 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+                >
+                  <KeyRound className="w-4 h-4" />
+                  <span>
+                    {passkeyBusy ? 'Waiting for Passkey...' : 'Register Passkey & Sign In'}
+                  </span>
+                </button>
+              </form>
+            ) : (
+              <form onSubmit={handlePasskeySignIn} className="mt-5 space-y-4" noValidate>
+                <div>
+                  <label
+                    htmlFor="passkey-email"
+                    className="block text-xs font-medium text-slate-700 mb-1.5"
+                  >
+                    Academy Email Address <span className="text-slate-400 font-normal">(optional)</span>
+                  </label>
+                  <input
+                    id="passkey-email"
+                    type="email"
+                    autoComplete="username webauthn"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="Leave blank for discoverable passkey, or enter email"
+                    className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-blue-600"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={passkeyBusy || !webauthnSupported}
+                  className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium text-white bg-blue-800 hover:bg-blue-900 disabled:opacity-60 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+                >
+                  <Fingerprint className="w-4 h-4" />
+                  <span>{passkeyBusy ? 'Verifying Passkey...' : 'Sign In with Passkey'}</span>
+                  <ArrowRight className="w-4 h-4" />
+                </button>
+
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-[11px] text-slate-600 leading-relaxed space-y-1">
+                  <p className="font-medium text-slate-800">First time or lost device?</p>
+                  <p>
+                    Ask an IGS Administrator for a single-use passkey enrollment or recovery link, then switch to the{' '}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMode('forgot');
+                        setError('');
+                        setNotice('');
+                      }}
+                      className="font-medium text-blue-700 hover:text-blue-900 underline cursor-pointer"
+                    >
+                      Enroll / Recover
+                    </button>{' '}
+                    tab.
+                  </p>
+                </div>
+              </form>
+            )
+          ) : mode === 'forgot' ? (
             <div className="mt-5 space-y-5">
               {resetToken.trim().length > 0 ? (
                 <>

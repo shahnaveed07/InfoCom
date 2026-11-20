@@ -1,4 +1,4 @@
-import { sha256Hex, hashPasswordWorker } from '../worker-auth.ts';
+import { sha256Hex } from '../worker-auth.ts';
 import { d1Batch, d1First, d1Stmt, type D1DatabaseLike } from './client.ts';
 
 export async function seedD1ProductionFoundation(db: D1DatabaseLike): Promise<void> {
@@ -63,10 +63,10 @@ export async function seedD1ProductionFoundation(db: D1DatabaseLike): Promise<vo
 
 export async function seedD1DemoDataset(
   db: D1DatabaseLike,
-  passwords: {
-    adminPassword: string;
-    instructorPassword: string;
-    studentPassword: string;
+  _passwords?: {
+    adminPassword?: string;
+    instructorPassword?: string;
+    studentPassword?: string;
   },
   options?: { bypassEnvGuardForTest?: boolean }
 ): Promise<void> {
@@ -82,11 +82,10 @@ export async function seedD1DemoDataset(
 
   await seedD1ProductionFoundation(db);
 
-  const [adminPwHash, instructorPwHash, studentPwHash] = await Promise.all([
-    hashPasswordWorker(passwords.adminPassword),
-    hashPasswordWorker(passwords.instructorPassword),
-    hashPasswordWorker(passwords.studentPassword),
-  ]);
+  // Cloudflare Workers Free uses first-party WebAuthn passkeys; no password hashes are generated.
+  const adminPwHash: string | null = null;
+  const instructorPwHash: string | null = null;
+  const studentPwHash: string | null = null;
 
   const demoCourses = [
     {

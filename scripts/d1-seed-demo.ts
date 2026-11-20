@@ -4,23 +4,12 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { hashPasswordWorker } from '../server/worker-auth.ts';
 
 const execFileAsync = promisify(execFile);
 
 function sqlString(value: string | null | undefined): string {
   if (value === null || value === undefined) return 'NULL';
   return `'${value.replace(/'/g, "''")}'`;
-}
-
-function resolveRequiredSeedPassword(envKey: string): string {
-  const value = process.env[envKey]?.trim() ?? '';
-  if (!value || value.length < 10) {
-    throw new Error(
-      `${envKey} must be provided via environment variable (minimum 10 characters). Never hardcode demo credentials.`
-    );
-  }
-  return value;
 }
 
 async function main(): Promise<void> {
@@ -34,15 +23,10 @@ async function main(): Promise<void> {
     );
   }
 
-  const adminPass = resolveRequiredSeedPassword('SEED_ADMIN_PASSWORD');
-  const instructorPass = resolveRequiredSeedPassword('SEED_INSTRUCTOR_PASSWORD');
-  const studentPass = resolveRequiredSeedPassword('SEED_STUDENT_PASSWORD');
-
-  const [adminHash, instructorHash, studentHash] = await Promise.all([
-    hashPasswordWorker(adminPass),
-    hashPasswordWorker(instructorPass),
-    hashPasswordWorker(studentPass),
-  ]);
+  // Cloudflare Workers Free uses first-party WebAuthn passkeys; demo users have NULL password_hash.
+  const adminHash: string | null = null;
+  const instructorHash: string | null = null;
+  const studentHash: string | null = null;
 
   const now = new Date().toISOString();
   const futureStart = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();

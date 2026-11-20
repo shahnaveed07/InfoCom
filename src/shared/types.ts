@@ -921,3 +921,28 @@ export interface NotificationPreferenceItem {
   kind: string;
   enabled: boolean;
 }
+
+export type AuthMode = 'password' | 'webauthn';
+
+export interface AuthConfigPayload {
+  authMode: AuthMode;
+  passwordAuthEnabled: boolean;
+  passkeySupported: boolean;
+  rpId?: string;
+  rpName?: string;
+}
+
+export interface WebAuthnCredentialMetadata {
+  id: string;
+  credentialId: string;
+  deviceLabel: string;
+  coseAlgorithm: number;
+  transports: string[];
+  aaguid: string | null;
+  backupEligible: boolean;
+  backupState: boolean;
+  createdAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+}
+

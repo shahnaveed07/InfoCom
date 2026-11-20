@@ -121,13 +121,22 @@ export function resetAuthRateLimiters(): void {
   changePasswordLimiter.reset();
 }
 
+authRouter.get('/auth/config', (_req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    authMode: 'password',
+    passwordAuthEnabled: true,
+    passkeySupported: false,
+  });
+});
+
 authRouter.get('/auth/me', async (req: Request, res: Response) => {
   try {
     const user = await resolveRequestUser(req);
-    res.json({ user });
+    res.json({ user, authMode: 'password' });
   } catch (err) {
     console.error('GET /api/auth/me error:', err);
-    res.json({ user: null });
+    res.json({ user: null, authMode: 'password' });
   }
 });
 

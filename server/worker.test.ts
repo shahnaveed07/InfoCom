@@ -49,15 +49,38 @@ test('wrangler deploy --dry-run builds server/worker.ts cleanly without Hyperdri
   assert.equal(
     outFiles.some((f) => f.endsWith('.wasm')),
     false,
-    `Worker bundle must not include Prisma WASM query engines: ${outFiles.join(', ')}`
+    `Worker bundle must not include WASM modules: ${outFiles.join(', ')}`
   );
   const workerBundle = await fs.readFile(path.join(process.cwd(), 'dist-worker', 'worker.js'), 'utf8');
-  assert.equal(workerBundle.includes('@prisma/client'), false);
-  assert.equal(workerBundle.includes('pdfkit'), false);
-  assert.equal(workerBundle.includes('nodemailer'), false);
+  for (const forbidden of [
+    '@prisma/client',
+    'pdfkit',
+    'nodemailer',
+    'argon2',
+    'hash-wasm',
+    'crypto.scrypt',
+    'hashPasswordWorker',
+    'verifyPasswordWorker',
+  ]) {
+    assert.equal(
+      workerBundle.includes(forbidden),
+      false,
+      `Worker production bundle must not contain forbidden symbol/package: ${forbidden}`
+    );
+  }
+  assert.equal(
+    /\bscrypt\s*\(/.test(workerBundle),
+    false,
+    'Worker production bundle must not invoke scrypt()'
+  );
+  assert.equal(
+    /\bpg-pool\b|from\s+["']pg["']/.test(workerBundle),
+    false,
+    'Worker production bundle must not include PostgreSQL client pg'
+  );
 });
 
-test('server/worker.ts boots in real workerd runtime, serves SPA assets, D1 readiness, CORS, and zero 501/404 stubs', async () => {
+test('server/worker.ts boots in real workerd runtime, serves SPA assets, D1 readiness, auth config, CORS, and zero 501/404 stubs', async () => {
   const persistDir = await fs.mkdtemp(path.join(os.tmpdir(), 'igs-worker-boot-'));
   const worker = await unstable_dev('server/worker.ts', {
     config: 'wrangler.jsonc',
@@ -77,7 +100,15 @@ test('server/worker.ts boots in real workerd runtime, serves SPA assets, D1 read
     assert.equal(healthJson.status, 'ok');
     assert.equal(healthJson.runtime, 'cloudflare-workers');
 
-    // 2. /api/health/ready before migrations -> 503 D1_SCHEMA_NOT_APPLIED
+    // 2. /api/auth/config -> 200 webauthn mode
+    const configRes = await worker.fetch('/api/auth/config');
+    assert.equal(configRes.status, 200);
+    const configJson = (await configRes.json()) as Record<string, unknown>;
+    assert.equal(configJson.authMode, 'webauthn');
+    assert.equal(configJson.passwordAuthEnabled, false);
+    assert.equal(configJson.passkeySupported, true);
+
+    // 3. /api/health/ready before migrations -> 503 D1_SCHEMA_NOT_APPLIED
     const readyRes = await worker.fetch('/api/health/ready');
     assert.equal(readyRes.status, 503);
     const readyJson = (await readyRes.json()) as Record<string, unknown>;
@@ -86,7 +117,7 @@ test('server/worker.ts boots in real workerd runtime, serves SPA assets, D1 read
     assert.equal(readyJson.mode, 'd1');
     assert.equal(readyJson.code, 'D1_SCHEMA_NOT_APPLIED');
 
-    // 3. Direct SPA navigation paths serve 200 text/html via ASSETS (no 404 STATIC_HOSTING_REQUIRED)
+    // 4. Direct SPA navigation paths serve 200 text/html via ASSETS (no 404 STATIC_HOSTING_REQUIRED)
     const spaCoursesRes = await worker.fetch('/courses');
     assert.equal(spaCoursesRes.status, 200);
     assert.ok((spaCoursesRes.headers.get('content-type') || '').includes('text/html'));
@@ -96,11 +127,11 @@ test('server/worker.ts boots in real workerd runtime, serves SPA assets, D1 read
     assert.equal(spaDetailRes.status, 200);
     assert.ok((spaDetailRes.headers.get('content-type') || '').includes('text/html'));
 
-    // 4. Protected portal routes return proper 401 when unauthenticated (never 501 WORKER_RUNTIME_UNSUPPORTED)
+    // 5. Protected portal routes return proper 401 when unauthenticated (never 501 WORKER_RUNTIME_UNSUPPORTED)
     const studentsRes = await worker.fetch('/api/students');
     assert.equal(studentsRes.status, 401);
 
-    // 5. CORS allowlist enforcement
+    // 6. CORS allowlist enforcement
     const allowedPreflight = await worker.fetch('/api/public/academy', {
       method: 'OPTIONS',
       headers: { Origin: 'http://localhost:3000' },
@@ -118,7 +149,7 @@ test('server/worker.ts boots in real workerd runtime, serves SPA assets, D1 read
     assert.equal(blockedPreflight.status, 204);
     assert.equal(blockedPreflight.headers.get('access-control-allow-origin'), null);
 
-    // 6. Unknown API route -> 404 API_ROUTE_NOT_FOUND
+    // 7. Unknown API route -> 404 API_ROUTE_NOT_FOUND
     const unknownApiRes = await worker.fetch('/api/non-existent-endpoint');
     assert.equal(unknownApiRes.status, 404);
     const unknownApiJson = (await unknownApiRes.json()) as Record<string, unknown>;
@@ -129,19 +160,19 @@ test('server/worker.ts boots in real workerd runtime, serves SPA assets, D1 read
   }
 });
 
-test('server/worker.ts enforces distributed Cloudflare Rate Limiting on /api/auth/login and /api/public/*', async () => {
+test('server/worker.ts enforces distributed Cloudflare Rate Limiting on WebAuthn and auth endpoints', async () => {
   const waitUntil = (p: Promise<unknown>) => {
     void p;
   };
   let calls = 0;
   const resAllowed = await workerEntry.fetch(
-    new Request('https://worker.example/api/auth/login', {
+    new Request('https://worker.example/api/auth/webauthn/login/options', {
       method: 'POST',
       headers: {
         'cf-connecting-ip': '198.51.100.12',
         'content-type': 'application/json',
       },
-      body: JSON.stringify({ email: 'not-valid', password: 'short' }),
+      body: JSON.stringify({ email: 'admin@igs.test' }),
     }),
     {
       AUTH_RATE_LIMITER: {
@@ -158,7 +189,7 @@ test('server/worker.ts enforces distributed Cloudflare Rate Limiting on /api/aut
   assert.equal(resAllowed.headers.get('x-ratelimit-backend'), 'cloudflare-binding');
 
   const resBlocked = await workerEntry.fetch(
-    new Request('https://worker.example/api/auth/login', {
+    new Request('https://worker.example/api/auth/webauthn/login/verify', {
       method: 'POST',
       headers: { 'cf-connecting-ip': '198.51.100.12' },
     }),

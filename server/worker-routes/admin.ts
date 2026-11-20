@@ -51,7 +51,6 @@ import {
 } from '../d1/repository.ts';
 import { createEnrollmentWithOptionalInvoiceD1 } from '../d1/workflows.ts';
 import { queueD1TransactionalEmail } from '../jobs/d1-worker.ts';
-import { hashPasswordWorker } from '../worker-auth.ts';
 import { resolveRequestOrigin, type WorkerRouteEntry } from '../worker-router.ts';
 
 export const workerAdminRoutes: WorkerRouteEntry[] = [
@@ -129,9 +128,9 @@ export const workerAdminRoutes: WorkerRouteEntry[] = [
       }
 
       const studentId = randomId('stu', 8);
-      const hasPassword = Boolean(input.password && input.password.trim().length > 0);
-      const pwHash = hasPassword ? await hashPasswordWorker(input.password!) : null;
-      const mustChangePassword = !hasPassword || Boolean(input.requirePasswordChange);
+      // Cloudflare Workers Free uses first-party WebAuthn passkeys; never run slow password KDFs in Worker.
+      const pwHash: string | null = null;
+      const mustChangePassword = false;
 
       const studentCode = await generateUniqueStudentCodeD1(c.db);
       let departmentName: string | null = null;
@@ -169,7 +168,7 @@ export const workerAdminRoutes: WorkerRouteEntry[] = [
             departmentName,
             input.phone || null,
             pwHash,
-            hasPassword ? now : null,
+            null,
             mustChangePassword ? 1 : 0,
             now,
             now,
@@ -230,35 +229,28 @@ export const workerAdminRoutes: WorkerRouteEntry[] = [
 
       await d1Batch(stmts, c.db);
 
-      let onboarding: {
-        rawToken: string;
-        onboardingPath: string;
-        expiresAt: string;
-      } | null = null;
-      if (!hasPassword) {
-        const tok = await issueAccountSetupTokenD1(
-          { userId: studentId, createdByUserId: c.authUser!.id, expiresInHours: 72 },
-          c.db
-        );
-        onboarding = {
-          rawToken: tok.rawToken,
-          onboardingPath: `/?setupToken=${encodeURIComponent(tok.rawToken)}`,
-          expiresAt: tok.expiresAtIso,
-        };
-        const origin = resolveRequestOrigin(c.request, c.env);
-        await queueD1TransactionalEmail(
-          {
-            userId: studentId,
-            kind: 'account_setup',
-            recipientEmail: normalizedEmail,
-            subject: 'Complete Your Student Portal Setup — IGS — InfoCom Global Services',
-            bodyText: `Hello ${input.name},\n\nYour IGS — InfoCom Global Services student account (${studentCode}) has been created. Set your password using the single-use link below (valid for 72 hours):\n${origin}${onboarding.onboardingPath}\n\n— IGS — InfoCom Global Services`,
-            bypassPreferences: true,
-            redactSensitive: true,
-          },
-          c.db
-        );
-      }
+      const tok = await issueAccountSetupTokenD1(
+        { userId: studentId, createdByUserId: c.authUser!.id, expiresInHours: 72 },
+        c.db
+      );
+      const onboarding = {
+        rawToken: tok.rawToken,
+        onboardingPath: `/?enrollToken=${encodeURIComponent(tok.rawToken)}`,
+        expiresAt: tok.expiresAtIso,
+      };
+      const origin = resolveRequestOrigin(c.request, c.env);
+      await queueD1TransactionalEmail(
+        {
+          userId: studentId,
+          kind: 'account_setup',
+          recipientEmail: normalizedEmail,
+          subject: 'Enroll Your Student Portal Passkey — IGS — InfoCom Global Services',
+          bodyText: `Hello ${input.name},\n\nYour IGS — InfoCom Global Services student account (${studentCode}) has been created. Register your passkey using the single-use enrollment link below (valid for 72 hours):\n${origin}${onboarding.onboardingPath}\n\n— IGS — InfoCom Global Services`,
+          bypassPreferences: true,
+          redactSensitive: true,
+        },
+        c.db
+      );
 
       if (input.initialCourseId) {
         const batch = input.initialCohortId
@@ -500,7 +492,7 @@ export const workerAdminRoutes: WorkerRouteEntry[] = [
         { userId: target.id, createdByUserId: c.authUser!.id, expiresInHours: 72 },
         c.db
       );
-      const onboardingPath = `/?setupToken=${encodeURIComponent(tok.rawToken)}`;
+      const onboardingPath = `/?enrollToken=${encodeURIComponent(tok.rawToken)}`;
       const now = nowIso();
 
       await d1Run(
@@ -516,8 +508,8 @@ export const workerAdminRoutes: WorkerRouteEntry[] = [
           userId: target.id,
           kind: 'password_reset',
           recipientEmail: target.email,
-          subject: 'Student Portal Password Reset — IGS — InfoCom Global Services',
-          bodyText: `Hello ${target.name},\n\nAn administrator issued a single-use password setup/reset link for your student portal (${target.student_code ?? target.email}), valid for 72 hours:\n${origin}${onboardingPath}\n\n— IGS — InfoCom Global Services`,
+          subject: 'Student Portal Passkey Enrollment Link — IGS — InfoCom Global Services',
+          bodyText: `Hello ${target.name},\n\nAn administrator issued a single-use passkey enrollment/recovery link for your student portal (${target.student_code ?? target.email}), valid for 72 hours:\n${origin}${onboardingPath}\n\n— IGS — InfoCom Global Services`,
           bypassPreferences: true,
           redactSensitive: true,
         },
@@ -527,10 +519,11 @@ export const workerAdminRoutes: WorkerRouteEntry[] = [
       await recordAuditLogD1(
         {
           actor: c.authUser!,
-          action: 'STUDENT_PASSWORD_RESET_ISSUED',
+          action: 'WEBAUTHN_ENROLLMENT_ISSUED',
           entityType: 'user',
           entityId: target.id,
-          summary: `Issued single-use 72h password setup/reset link for student ${target.email}.`,
+          ipAddress: c.ipAddress,
+          summary: `Issued single-use 72h passkey enrollment/recovery link for student ${target.email}.`,
         },
         c.db
       );
@@ -615,9 +608,8 @@ export const workerAdminRoutes: WorkerRouteEntry[] = [
       }
 
       const instructorId = randomId('ins', 8);
-      const hasPassword = Boolean(input.password && input.password.trim().length > 0);
-      const pwHash = hasPassword ? await hashPasswordWorker(input.password!) : null;
-      const mustChangePassword = !hasPassword || Boolean(input.requirePasswordChange);
+      const pwHash: string | null = null;
+      const mustChangePassword = false;
 
       const staffCode = await generateUniqueStaffCodeD1(c.db);
       let departmentName = 'Academic Faculty';
@@ -654,7 +646,7 @@ export const workerAdminRoutes: WorkerRouteEntry[] = [
             departmentName,
             input.phone || null,
             pwHash,
-            hasPassword ? now : null,
+            null,
             mustChangePassword ? 1 : 0,
             now,
             now,
@@ -727,35 +719,28 @@ export const workerAdminRoutes: WorkerRouteEntry[] = [
 
       await d1Batch(stmts, c.db);
 
-      let onboarding: {
-        rawToken: string;
-        onboardingPath: string;
-        expiresAt: string;
-      } | null = null;
-      if (!hasPassword) {
-        const tok = await issueAccountSetupTokenD1(
-          { userId: instructorId, createdByUserId: c.authUser!.id, expiresInHours: 72 },
-          c.db
-        );
-        onboarding = {
-          rawToken: tok.rawToken,
-          onboardingPath: `/?setupToken=${encodeURIComponent(tok.rawToken)}`,
-          expiresAt: tok.expiresAtIso,
-        };
-        const origin = resolveRequestOrigin(c.request, c.env);
-        await queueD1TransactionalEmail(
-          {
-            userId: instructorId,
-            kind: 'account_setup',
-            recipientEmail: normalizedEmail,
-            subject: 'Complete Your Instructor Portal Setup — IGS — InfoCom Global Services',
-            bodyText: `Hello ${input.name},\n\nYour IGS — InfoCom Global Services instructor account (${staffCode}) has been provisioned. Set your password using the single-use link below (valid for 72 hours):\n${origin}${onboarding.onboardingPath}\n\n— IGS — InfoCom Global Services`,
-            bypassPreferences: true,
-            redactSensitive: true,
-          },
-          c.db
-        );
-      }
+      const tok = await issueAccountSetupTokenD1(
+        { userId: instructorId, createdByUserId: c.authUser!.id, expiresInHours: 72 },
+        c.db
+      );
+      const onboarding = {
+        rawToken: tok.rawToken,
+        onboardingPath: `/?enrollToken=${encodeURIComponent(tok.rawToken)}`,
+        expiresAt: tok.expiresAtIso,
+      };
+      const origin = resolveRequestOrigin(c.request, c.env);
+      await queueD1TransactionalEmail(
+        {
+          userId: instructorId,
+          kind: 'account_setup',
+          recipientEmail: normalizedEmail,
+          subject: 'Enroll Your Instructor Portal Passkey — IGS — InfoCom Global Services',
+          bodyText: `Hello ${input.name},\n\nYour IGS — InfoCom Global Services instructor account (${staffCode}) has been provisioned. Register your passkey using the single-use link below (valid for 72 hours):\n${origin}${onboarding.onboardingPath}\n\n— IGS — InfoCom Global Services`,
+          bypassPreferences: true,
+          redactSensitive: true,
+        },
+        c.db
+      );
 
       await recordAuditLogD1(
         {
@@ -1191,9 +1176,8 @@ export const workerAdminRoutes: WorkerRouteEntry[] = [
       const prefix =
         input.role === 'admin' ? 'adm' : input.role === 'instructor' ? 'ins' : 'stu';
       const id = randomId(prefix, 8);
-      const hasPassword = Boolean(input.password && input.password.trim().length > 0);
-      const newUserHash = hasPassword ? await hashPasswordWorker(input.password!) : null;
-      const mustChangePassword = !hasPassword || Boolean(input.requirePasswordChange);
+      const newUserHash: string | null = null;
+      const mustChangePassword = false;
 
       const studentCode =
         input.role === 'student' ? await generateUniqueStudentCodeD1(c.db) : null;
@@ -1229,7 +1213,7 @@ export const workerAdminRoutes: WorkerRouteEntry[] = [
             dept,
             input.phone || null,
             newUserHash,
-            hasPassword ? now : null,
+            null,
             mustChangePassword ? 1 : 0,
             now,
             now,
@@ -1271,41 +1255,34 @@ export const workerAdminRoutes: WorkerRouteEntry[] = [
 
       await d1Batch(stmts, c.db);
 
-      let onboarding: {
-        rawToken: string;
-        onboardingPath: string;
-        expiresAt: string;
-      } | null = null;
-      if (!hasPassword) {
-        const tok = await issueAccountSetupTokenD1(
-          { userId: id, createdByUserId: c.authUser!.id, expiresInHours: 72 },
-          c.db
-        );
-        onboarding = {
-          rawToken: tok.rawToken,
-          onboardingPath: `/?setupToken=${encodeURIComponent(tok.rawToken)}`,
-          expiresAt: tok.expiresAtIso,
-        };
-        await d1Run(
-          `INSERT INTO delivery_logs (id, user_id, channel, recipient, status, sent_at)
-           VALUES (?, ?, 'in_app', ?, 'Delivered', ?)`,
-          [randomId('del', 8), id, normalizedEmail, now],
-          c.db
-        );
-        const origin = resolveRequestOrigin(c.request, c.env);
-        await queueD1TransactionalEmail(
-          {
-            userId: id,
-            kind: 'account_setup',
-            recipientEmail: normalizedEmail,
-            subject: 'Complete Your Account Setup — IGS — InfoCom Global Services',
-            bodyText: `Hello ${input.name},\n\nYour IGS — InfoCom Global Services ${input.role} account has been created. Complete your password setup using the link below (valid for 72 hours):\n${origin}${onboarding.onboardingPath}\n\n— IGS — InfoCom Global Services`,
-            bypassPreferences: true,
-            redactSensitive: true,
-          },
-          c.db
-        );
-      }
+      const tok = await issueAccountSetupTokenD1(
+        { userId: id, createdByUserId: c.authUser!.id, expiresInHours: 72 },
+        c.db
+      );
+      const onboarding = {
+        rawToken: tok.rawToken,
+        onboardingPath: `/?enrollToken=${encodeURIComponent(tok.rawToken)}`,
+        expiresAt: tok.expiresAtIso,
+      };
+      await d1Run(
+        `INSERT INTO delivery_logs (id, user_id, channel, recipient, status, sent_at)
+         VALUES (?, ?, 'in_app', ?, 'Delivered', ?)`,
+        [randomId('del', 8), id, normalizedEmail, now],
+        c.db
+      );
+      const origin = resolveRequestOrigin(c.request, c.env);
+      await queueD1TransactionalEmail(
+        {
+          userId: id,
+          kind: 'account_setup',
+          recipientEmail: normalizedEmail,
+          subject: 'Enroll Your Portal Passkey — IGS — InfoCom Global Services',
+          bodyText: `Hello ${input.name},\n\nYour IGS — InfoCom Global Services ${input.role} account has been created. Register your passkey using the single-use enrollment link below (valid for 72 hours):\n${origin}${onboarding.onboardingPath}\n\n— IGS — InfoCom Global Services`,
+          bypassPreferences: true,
+          redactSensitive: true,
+        },
+        c.db
+      );
 
       await recordAuditLogD1(
         {
@@ -1363,7 +1340,7 @@ export const workerAdminRoutes: WorkerRouteEntry[] = [
         { userId: target.id, createdByUserId: c.authUser!.id, expiresInHours: 72 },
         c.db
       );
-      const onboardingPath = `/?setupToken=${encodeURIComponent(tok.rawToken)}`;
+      const onboardingPath = `/?enrollToken=${encodeURIComponent(tok.rawToken)}`;
       const now = nowIso();
 
       await d1Run(
@@ -1379,8 +1356,8 @@ export const workerAdminRoutes: WorkerRouteEntry[] = [
           userId: target.id,
           kind: 'password_reset',
           recipientEmail: target.email,
-          subject: 'Portal Password Reset — IGS — InfoCom Global Services',
-          bodyText: `Hello ${target.name},\n\nAn administrator issued a single-use password setup/reset link for your account (${target.email}), valid for 72 hours:\n${origin}${onboardingPath}\n\n— IGS — InfoCom Global Services`,
+          subject: 'Passkey Enrollment & Recovery Link — IGS — InfoCom Global Services',
+          bodyText: `Hello ${target.name},\n\nAn administrator issued a single-use passkey enrollment/recovery link for your account (${target.email}), valid for 72 hours:\n${origin}${onboardingPath}\n\n— IGS — InfoCom Global Services`,
           bypassPreferences: true,
           redactSensitive: true,
         },
@@ -1390,10 +1367,11 @@ export const workerAdminRoutes: WorkerRouteEntry[] = [
       await recordAuditLogD1(
         {
           actor: c.authUser!,
-          action: 'ONBOARDING_TOKEN_ISSUED',
+          action: 'WEBAUTHN_ENROLLMENT_ISSUED',
           entityType: 'user',
           entityId: target.id,
-          summary: `Issued single-use 72h password setup/reset token for ${target.email}.`,
+          ipAddress: c.ipAddress,
+          summary: `Issued single-use 72h passkey enrollment/recovery link for ${target.email}.`,
         },
         c.db
       );

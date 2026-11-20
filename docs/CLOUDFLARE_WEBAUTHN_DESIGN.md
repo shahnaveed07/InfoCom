@@ -1,195 +1,86 @@
-# IGS — InfoCom Global Services: First-Party WebAuthn / Passkey Technical Design (Cloudflare Workers Free)
+# IGS — InfoCom Global Services: First-Party WebAuthn / Passkey Architecture (Cloudflare Workers Free)
 
-**Status:** **PROPOSED TECHNICAL DESIGN — AWAITING INSTITUTIONAL APPROVAL (NOT YET IMPLEMENTED)**  
-**Current Deployment Gate:** **`BLOCKED — CLOUDFLARE FREE AUTHENTICATION LIMITATION`**  
+**Implementation Status:** **`COMPLETED` (Implemented & Verified Locally in `workerd` + Chromium CDP)**  
+**Hosted Cloudflare Free 10 ms CPU Validation:** **`PENDING` (Must Be Executed on Live Staging `workers.dev` Before Production Cutover)**  
 **Target Runtime:** Cloudflare Workers Free (10 ms CPU per HTTP invocation) + Cloudflare D1 + Web Crypto API (`crypto.subtle`) — zero paid auth SaaS, zero external IdPs, zero weakened password hashing.
 
 ---
 
-## 1. Problem Statement & Security Non-Negotiables
+## 1. Why First-Party WebAuthn Replaces Password Hashing on Workers Free
 
-Password-based authentication using OWASP-compliant memory-hard KDFs exceeds the **10 ms CPU limit** enforced on hosted **Cloudflare Workers Free** isolates:
+OWASP-compliant memory-hard password KDFs exceed the **10 ms CPU limit** enforced on hosted **Cloudflare Workers Free** isolates:
 
-| Mechanism | Cost Parameters | Measured Local CPU | Hosted Workers Free 10 ms Ceiling |
+| Mechanism | Cost Parameters | Measured Local Timing | Workers Free 10 ms Compatibility |
 | --- | --- | --- | --- |
-| `scrypt` (`server/worker-auth.ts`) | `N=16384, r=8, p=1` (64-byte key) | **61.54 ms** hash / **61.60 ms** verify | **Exceeds (~6.1x over limit)** |
-| `Argon2id` WASM (`hash-wasm`) | `m=19456, t=2, p=1` | **103.83 ms** hash / **91.80 ms** verify | **Exceeds (~9.2–10.4x) + Wasm codegen blocked** |
-| **WebAuthn ECDSA P-256 (`ES256`)** | Hardware/OS asymmetric key + `crypto.subtle.verify` | **~0.5–2.0 ms** (expected; **must be hosted-benchmarked**) | **Designed to fit well under 10 ms** |
+| `scrypt` (legacy password KDF) | `N=16384, r=8, p=1` (64-byte key) | ~61.5 ms hash / ~61.6 ms verify | **Incompatible (~6x over limit)** — removed from Worker bundle |
+| `Argon2id` WASM (`hash-wasm`) | `m=19456, t=2, p=1` | ~91–104 ms + WASM codegen restrictions | **Incompatible (~9–10x over limit)** — excluded from Worker bundle |
+| **First-Party WebAuthn (`ES256` / `RS256`)** | Hardware/OS asymmetric key + native V8 `crypto.subtle` | **Sub-millisecond crypto verification locally** (hosted staging p99 CPU validation: `PENDING`) | **Designed & built for Workers Free (`AUTH_MODE=webauthn`)** |
 
-**Non-Negotiables Preserved:**
-- Never reduce `scrypt` below `N=16384, r=8, p=1`.
-- Never substitute SHA-256 or PBKDF2-low-iteration digests for passwords.
-- Never expose raw onboarding/recovery tokens in logs or database job payloads.
-- Do **not** alter the current login UI or disable password auth in code until this design (or the Workers Paid $5/month option) is explicitly approved.
-
----
-
-## 2. Architecture Overview
-
-First-party WebAuthn/Passkeys authenticate users via asymmetric cryptography bound to the relying party origin (`https://<worker>.workers.dev` initially, or a future custom domain):
-
-- **Client (Browser):** Uses standard `navigator.credentials.create()` (registration) and `navigator.credentials.get()` (sign-in) with platform authenticators (Windows Hello, Android biometric passkeys, Apple Touch ID / Face ID) or roaming FIDO2 security keys.
-- **Worker (`server/worker-routes/webauthn.ts` — proposed):**
-  - Issues cryptographically random 32-byte challenges via `crypto.getRandomValues()` and stores **only** the SHA-256 challenge hash / record in Cloudflare D1 with a strict 5-minute TTL.
-  - Verifies clientDataJSON, authenticatorData, RP ID hash, Origin, flags (`UP`, `UV`), signature counter, and cryptographic signature using native V8 **Web Crypto API (`crypto.subtle.importKey` + `crypto.subtle.verify`)** with zero WASM and minimal CPU overhead.
-  - Issues the **existing** opaque `HttpOnly; SameSite=Lax; Secure` session cookie backed by `auth_sessions` in D1 (`server/worker-auth.ts`), leaving all RBAC, IDOR, CSRF, and workspace logic unchanged.
+**Security Non-Negotiables Enforced:**
+- Password KDFs (`scrypt`, `argon2`, `hash-wasm`, `hashPasswordWorker`, `verifyPasswordWorker`) are **completely removed** from the Cloudflare Worker bundle (`dist-worker/worker.js` verified by `server/worker.test.ts` and CI).
+- All legacy password routes on Cloudflare Workers (`POST /api/auth/login`, `/change-password`, `/forgot-password`, `/reset-password`) return HTTP `403` with `code: 'PASSWORD_AUTH_UNAVAILABLE_ON_WORKERS_FREE'` and `authMode: 'webauthn'`.
+- Existing user rows and legacy `users.password_hash` values are preserved untouched so zero records are lost and legacy local Node.js + PostgreSQL (`server/routes/auth.routes.ts`) continues running full Argon2id/scrypt password auth unchanged.
 
 ---
 
-## 3. Proposed Cloudflare D1 Schema (`migrations/0003_webauthn_passkeys.sql`)
+## 2. Implemented Runtime Architecture
 
-```sql
-CREATE TABLE IF NOT EXISTS webauthn_credentials (
-  id TEXT PRIMARY KEY,                         -- internal UUID (wac-...)
-  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  credential_id TEXT NOT NULL UNIQUE,          -- base64url encoded raw credential ID
-  public_key_spki TEXT NOT NULL,               -- base64 encoded SPKI public key (ES256 P-256 / RS256)
-  cose_alg INTEGER NOT NULL,                   -- -7 (ES256, preferred) or -257 (RS256)
-  sign_count INTEGER NOT NULL DEFAULT 0,       -- monotonic signature counter (clone detection)
-  transports TEXT NOT NULL DEFAULT '[]',       -- JSON array e.g. ["internal","hybrid"]
-  device_label TEXT NOT NULL DEFAULT 'Passkey',
-  aaguid TEXT,
-  backup_eligible INTEGER NOT NULL DEFAULT 0,  -- BE flag
-  backup_state INTEGER NOT NULL DEFAULT 0,     -- BS flag
-  last_used_at TEXT,
-  revoked_at TEXT,
-  revoked_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
-  revoke_reason TEXT,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-);
+- **Pure Web Crypto Core (`server/webauthn/core.ts`):**
+  - Zero third-party WebAuthn dependencies and zero WASM modules.
+  - Strict RFC 8949 CBOR decoder (`decodeCbor`) with depth/length bounds.
+  - Full `authenticatorData` parser extracting `rpIdHash`, flags (`UP`, `UV`, `BE`, `BS`, `AT`), `signCount`, `aaguid`, `credentialId`, and COSE public key.
+  - Pure TypeScript COSE -> ASN.1 DER SPKI encoder supporting `ES256 (-7)` (ECDSA P-256) and `RS256 (-257)` (RSASSA-PKCS1-v1_5 SHA-256), plus ASN.1 DER ECDSA -> IEEE P1363 raw signature conversion for `crypto.subtle.verify`.
+  - Strict `clientDataJSON` verification (`type`, constant-time `challenge`, exact `origin`, `crossOrigin !== true`), constant-time `rpIdHash` verification, mandatory `UP` + `UV` checks, and W3C synced-passkey-safe counter evaluation (`0 -> 0` accepted; non-zero regression rejected as `CLONE_SUSPECTED`).
+- **Worker API Routes (`server/worker-routes/webauthn.ts`):**
+  - `GET /api/auth/config` — Public runtime auth mode discovery (`authMode`, `passwordAuthEnabled`, `passkeySupported`, `rpId`, `rpName`).
+  - `POST /api/auth/webauthn/register/options` & `POST /api/auth/webauthn/register/verify` — Single-use admin enrollment link OR authenticated multi-passkey registration; enforces `excludeCredentials`, cross-user guard (`CROSS_USER_ENROLLMENT_FORBIDDEN`), atomic challenge consumption, atomic enrollment token consumption, and session issuance.
+  - `POST /api/auth/webauthn/login/options` & `POST /api/auth/webauthn/login/verify` — Discoverable or email-hinted sign-in, rate-limited by `AUTH_RATE_LIMITER`, atomic single-use challenge consumption, clone regression detection (`WEBAUTHN_CLONE_SUSPECTED`), and opaque `HttpOnly; SameSite=Lax; Secure` `auth_sessions` cookie issuance.
+  - `POST /api/auth/webauthn/reauth/options` & `POST /api/auth/webauthn/reauth/verify` — Step-up passkey verification issuing a 2-minute single-use `reauthProof` required before self-revocation.
+  - `GET /api/auth/webauthn/credentials`, `PATCH /api/auth/webauthn/credentials/:id`, `POST /api/auth/webauthn/credentials/:id/revoke` — Self-service passkey listing, renaming, and step-up-protected revocation.
+  - `GET /api/users/:id/webauthn` & `POST /api/users/:id/webauthn/:credId/revoke` — Admin metadata inspection (never private keys) and revocation that also immediately invalidates all active `auth_sessions` for that user.
 
-CREATE INDEX IF NOT EXISTS idx_webauthn_creds_user_active
-  ON webauthn_credentials(user_id, revoked_at);
+---
 
-CREATE TABLE IF NOT EXISTS webauthn_challenges (
-  id TEXT PRIMARY KEY,                         -- wch-...
-  challenge_hash TEXT NOT NULL UNIQUE,         -- SHA-256 hex of base64url challenge
-  ceremony_type TEXT NOT NULL,                 -- 'registration' | 'authentication' | 'bootstrap' | 'recovery'
-  user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
-  enrollment_token_id TEXT REFERENCES password_reset_tokens(id) ON DELETE CASCADE,
-  rp_id TEXT NOT NULL,
-  expected_origin TEXT NOT NULL,
-  expires_at TEXT NOT NULL,                    -- created_at + 5 minutes
-  consumed_at TEXT,                            -- NULL while active; atomically stamped on first use
-  ip_address TEXT,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-);
+## 3. Cloudflare D1 Additive Schema (`migrations/0003_webauthn_passkeys.sql`)
 
-CREATE INDEX IF NOT EXISTS idx_webauthn_challenges_exp
-  ON webauthn_challenges(expires_at, consumed_at);
+Adds 2 tables alongside the 45 core tables (**47 total relational tables**):
+1. `webauthn_credentials`: `id`, `user_id`, `credential_id` (UNIQUE), `public_key_spki`, `cose_algorithm`, `sign_count`, `transports`, `device_label`, `aaguid`, `backup_eligible`, `backup_state`, `created_at`, `last_used_at`, `revoked_at`, `revoked_by_user_id`.
+2. `webauthn_challenges`: `id`, `user_id`, `ceremony` (`'register' | 'login' | 'reauth'`), `challenge_hash`, `expected_rp_id`, `expected_origin`, `enrollment_token_hash`, `expires_at`, `consumed_at`, `created_at`.
+
+All expired/consumed `webauthn_challenges` rows are purged automatically by the 15-minute Cloudflare Cron sweep (`server/jobs/d1-worker.ts`).
+
+---
+
+## 4. Lifecycle Operations (Zero Outbound Email Required)
+
+### 4.1 First-Admin Passkey Bootstrap CLI (`scripts/d1-bootstrap-passkey-admin.ts`)
+```bash
+npm run cf:admin:bootstrap -- \
+  --remote \
+  --database igs-infocom-db \
+  --email director@infocomglobal.edu \
+  --name "IGS Director" \
+  --app-url https://igs-infocom-ams-worker.<your-subdomain>.workers.dev
 ```
+- Refuses to overwrite existing administrators (exits non-zero unless `--allow-existing-enrollment` is explicitly passed for supervised recovery).
+- Inserts the admin with `password_hash = NULL`, persists **only** the SHA-256 hash of a 32-byte single-use token (default 15-minute TTL), and prints the one-time `/login?enrollToken=...` URL to stdout only.
+
+### 4.2 Migrating Existing Users & Account Recovery
+- Existing users imported from PostgreSQL retain their `id`, `email`, `role`, `student_code`, `staff_code`, enrollments, invoices, certificates, and untouched `password_hash`.
+- Admins issue 72-hour single-use `/?enrollToken=...` links from **User Accounts** or **Students**, can explicitly revoke unused links at any time (`POST /api/users/:id/revoke-reset-tokens`), and can inspect/revoke user passkeys (immediately revoking all active sessions).
+- Raw enrollment tokens are never written to `audit_logs` or `background_jobs` under `EMAIL_PROVIDER="disabled"`.
 
 ---
 
-## 4. Registration & Authentication Ceremonies
+## 5. Origin, RP ID & Future Custom Domain Transition
 
-### 4.1 Passkey Registration Ceremony (Authenticated User or Approved Enrollment Token)
-1. **Begin (`POST /api/auth/webauthn/register/options`)**:
-   - Authorized via either:
-     - Active authenticated session (adding a backup passkey), OR
-     - Valid, unexpired, unused, unrevoked single-use enrollment token (`password_reset_tokens` / `enrollment_tokens`, hashed via SHA-256).
-   - Generates 32-byte random `challenge` (base64url).
-   - Inserts `webauthn_challenges` row with `ceremony_type`, `user_id`, `rp_id`, `expected_origin`, `expires_at = now + 5m`.
-   - Returns `PublicKeyCredentialCreationOptions`:
-     - `rp: { id: rpId, name: 'IGS — InfoCom Global Services' }`
-     - `user: { id: base64url(user.id), name: user.email, displayName: user.name }`
-     - `pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }]`
-     - `authenticatorSelection: { residentKey: 'preferred', userVerification: 'required' }`
-     - `excludeCredentials`: all non-revoked credentials currently belonging to `user.id`
-     - `attestation: 'none'` (privacy-preserving, lowest parsing CPU).
-2. **Finish (`POST /api/auth/webauthn/register/verify`)**:
-   - Parses `clientDataJSON` -> verifies `type === 'webauthn.create'`, exact `origin === expected_origin`, and `challenge` matches an unconsumed, unexpired `webauthn_challenges` record.
-   - **Atomic Replay Guard:** Executes conditional update:
-     ```sql
-     UPDATE webauthn_challenges
-     SET consumed_at = ?
-     WHERE id = ? AND consumed_at IS NULL AND expires_at > ?
-     ```
-     and aborts (`400`) if `meta.changes !== 1`.
-   - Parses CBOR `attestationObject.authData`:
-     - Verifies `SHA-256(rpId) === authData.rpIdHash` (constant-time comparison).
-     - Verifies flags: `UP` (User Present, bit 0) **and** `UV` (User Verified, bit 2) are set.
-     - Extracts `credentialId`, `signCount`, `BE`/`BS` flags, and COSE public key (`kty=2, crv=1, alg=-7` for ECDSA P-256, or `kty=3, alg=-257` for RSA).
-     - Encodes the public key into standard SPKI DER (pure TypeScript helper, ~30 lines, zero WASM) and validates import via `crypto.subtle.importKey('spki', ...)` before storing in `webauthn_credentials`.
-   - If using an enrollment/bootstrap/recovery token, marks that token `used_at = now` atomically inside the same `db.batch()`, clears `must_change_password`, logs `WEBAUTHN_CREDENTIAL_REGISTERED` in `audit_logs`, and creates a fresh `auth_sessions` cookie.
-
-### 4.2 Passkey Authentication Ceremony (Sign-In)
-1. **Begin (`POST /api/auth/webauthn/login/options`)**:
-   - Accepts optional `{ email }` (for non-discoverable security keys) or empty body (discoverable/resident passkey autofill).
-   - Rate-limited via Cloudflare `AUTH_RATE_LIMITER`.
-   - If `email` is provided and matches an active user, returns `allowCredentials` containing only their active credential IDs (never leaking account existence on unknown emails — return generic challenge options if unknown to prevent enumeration).
-   - Persists single-use 5-minute challenge in `webauthn_challenges`.
-2. **Finish (`POST /api/auth/webauthn/login/verify`)**:
-   - Atomically consumes the challenge (`consumed_at = now WHERE consumed_at IS NULL AND expires_at > now`).
-   - Verifies `clientDataJSON.type === 'webauthn.get'` and exact `clientDataJSON.origin === expected_origin`.
-   - Looks up `webauthn_credentials` by `credential_id` joined to `users` (`revoked_at IS NULL` and `users.status = 'active'`).
-   - Verifies `authData.rpIdHash === SHA-256(rpId)` and `UP` + `UV` flags.
-   - Verifies signature via Web Crypto:
-     - `signedData = concat(authenticatorData, SHA-256(clientDataJSONBytes))`
-     - Converts ASN.1 DER ECDSA signature to raw `r || s` (64 bytes) for Web Crypto `ECDSA / P-256 / SHA-256`.
-     - Calls `crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, cryptoKey, rawSig, signedData)`.
-   - **Clone Detection:** If stored `sign_count > 0` or incoming `signCount > 0`, verifies `incomingSignCount > storedSignCount`. On regression (`incoming <= stored` when non-zero), rejects login (`403`), logs `WEBAUTHN_CLONE_SUSPECTED`, and flags credential for admin review.
-   - Updates `sign_count` and `last_used_at`, issues opaque `auth_sessions` cookie, and logs `AUTH_LOGIN_WEBAUTHN_SUCCESS`.
+- `expectedOrigin` and `rpId` are derived from `APP_URL` / `WEBAUTHN_RP_ID` (on local `wrangler dev`, loopback `localhost` is supported automatically).
+- Because WebAuthn credentials are cryptographically bound to `rpId`, passkeys registered on `*.workers.dev` cannot be reused if the institute later moves to a custom domain. During any future domain cutover, admins should issue fresh single-use passkey enrollment links on the permanent domain.
 
 ---
 
-## 5. Origin, RP ID & Custom Domain Considerations
+## 6. Mandatory Hosted Cloudflare Free Verification (`PENDING`)
 
-- **Strict Validation:** `expected_origin` MUST exactly match the configured canonical `APP_URL` (e.g., `https://igs-infocom-ams-worker.<subdomain>.workers.dev`). `rp_id` MUST equal `new URL(APP_URL).hostname`.
-- **Important `workers.dev` Migration Caveat:** WebAuthn credentials are cryptographically bound to `rpId`. Passkeys registered on `<worker>.workers.dev` **cannot** be reused later on a custom domain (e.g., `portal.infocomglobal.edu`).
-  - **Mitigation:** When a custom domain is eventually adopted, run a planned dual-origin transition window where admins issue fresh single-use passkey enrollment links on the new domain (or allow Related Origin Requests if supported by browsers, while preferring clean re-enrollment on the permanent domain).
+> **Important:** Local `workerd` (`npm run test:cloudflare`) and Chromium CDP E2E (`npm run test:e2e:worker`) verify cryptographic correctness, security negative cases, and end-to-end UX, **but local Miniflare does not enforce Cloudflare Workers Free's 10 ms hosted CPU cap**.
 
----
-
-## 6. Lifecycle Operations: Bootstrap, Migration, Revocation & Recovery (Zero Email Required)
-
-### 6.1 Bootstrapping the First Production Administrator
-1. Operator applies D1 migrations (`0001`, `0002`, and future `0003_webauthn_passkeys.sql`).
-2. Operator runs a local CLI script (`scripts/d1-bootstrap-passkey-admin.ts` — proposed) that inserts the inaugural `admin` user row (with `password_hash = NULL`) and a single-use **15-minute** hashed bootstrap enrollment token into remote D1 via `wrangler d1 execute --remote`, printing the one-time setup URL to the operator's terminal only (never stored in logs or `background_jobs`).
-3. Admin opens the URL in their browser on the live HTTPS origin and completes the WebAuthn registration ceremony, which marks the bootstrap token consumed immediately and establishes their session.
-
-### 6.2 Supervised Migration of Existing Users (Including Legacy `$argon2*` Accounts)
-- **Zero User Records Discarded:** All rows in `users` (including accounts imported from PostgreSQL with `$argon2id` or `scrypt` hashes) remain intact with identical `id`, `email`, `role`, `student_code`, `staff_code`, enrollments, invoices, and certificates.
-- **Migration Flow:**
-  1. Administrators open **Users & Access** or **Students** in the portal and generate a single-use 72-hour passkey enrollment link for each user (or batch-supervised in lab/campus sessions).
-  2. Users open their link, register their device passkey (or campus FIDO2 key), and immediately gain sub-10ms Workers Free sign-in.
-  3. Existing `password_hash` values are not needed for WebAuthn login and can be cleared or retained strictly for legacy local Node deployments without weakening security.
-
-### 6.3 Credential Revocation, Replacement & Multi-Device Support
-- **Self-Service:** Authenticated users can register at least 2 passkeys (e.g., laptop + phone) and revoke lost credentials (`POST /api/auth/webauthn/credentials/:id/revoke`), provided they retain at least one active passkey or request admin recovery.
-- **Admin Controls:** Administrators can view registered passkey metadata (label, created date, last used date — never private keys), revoke compromised credentials (`POST /api/users/:id/webauthn/:credId/revoke` -> also revokes all `auth_sessions` for that user), and issue or explicitly revoke single-use recovery enrollment links (`POST /api/users/:id/revoke-reset-tokens`).
-
-### 6.4 Account Recovery Without Outbound Email
-- Because `EMAIL_PROVIDER="disabled"` on Cloudflare Free:
-  1. Lost-device user verifies identity in person or via institutional phone/office protocol with an IGS Administrator.
-  2. Administrator revokes the lost passkey(s) + active sessions and generates a fresh single-use 72-hour recovery enrollment URL.
-  3. Administrator can explicitly revoke the unused link at any time (`POST /api/users/:id/revoke-reset-tokens`) if misdirected.
-  4. All issuance, revocation, and redemption events are recorded in `audit_logs` with zero raw tokens.
-
----
-
-## 7. Rate Limiting, Audit Logging & Cron Cleanup
-
-- **Rate Limiting:** All `/api/auth/webauthn/*` endpoints run behind Cloudflare's distributed `AUTH_RATE_LIMITER` (`10 req / 60s` per IP+bucket).
-- **Audit Events:** `WEBAUTHN_REG_STARTED`, `WEBAUTHN_CREDENTIAL_REGISTERED`, `AUTH_LOGIN_WEBAUTHN_SUCCESS`, `AUTH_LOGIN_WEBAUTHN_FAILED`, `WEBAUTHN_CLONE_SUSPECTED`, `WEBAUTHN_CREDENTIAL_REVOKED`, `WEBAUTHN_RECOVERY_ISSUED`, `WEBAUTHN_RECOVERY_REVOKED`.
-- **Cron Purge:** Existing 15-minute Cron trigger (`server/jobs/d1-worker.ts`) purges expired/consumed rows from `webauthn_challenges` (`DELETE FROM webauthn_challenges WHERE expires_at < ? OR (consumed_at IS NOT NULL AND consumed_at < ?)`).
-
----
-
-## 8. Mandatory Hosted Cloudflare Free Benchmarking Requirement
-
-> **CRITICAL WARNING:** Local `wrangler dev` / `unstable_dev` (`workerd` / Miniflare) **does NOT enforce** Cloudflare Workers Free's 10 ms hosted CPU termination limit. Passing locally does **not** prove hosted Workers Free CPU compliance.
-
-Before removing the `BLOCKED — CLOUDFLARE FREE AUTHENTICATION LIMITATION` gate after implementation, operators **must**:
-1. Deploy a staging Worker on an actual **Cloudflare Workers Free** account.
-2. Execute at least 50 registration verifications and 100 authentication verifications (`ES256` and `RS256`) against live D1 + `AUTH_RATE_LIMITER`.
-3. Inspect Cloudflare Worker Analytics / `wrangler tail` CPU time metrics (`cpuTimeMs` p50, p95, p99) and confirm **0 Error 1102 CPU limit exceptions** with p99 CPU comfortably below `10 ms` (target `< 5 ms`).
-
----
-
-## 9. Decision & Approval Boundary
-
-No code changes replacing password authentication have been made yet. Stakeholders must explicitly approve one of two compliant paths:
-
-1. **Option A — Upgrade Workers to Paid ($5/month):** Keeps existing password authentication (`scrypt N=16384, r=8, p=1`) unchanged under a 30-second default CPU limit; zero UX change for students/staff on shared campus lab computers.
-2. **Option B — Approve First-Party WebAuthn/Passkeys on Workers Free:** Authorizes implementing `migrations/0003_webauthn_passkeys.sql`, `server/worker-routes/webauthn.ts`, passkey UI in `AuthView.tsx` / account security settings, and hosted Workers Free CPU benchmarking. Note: campus shared-PC labs without platform authenticators will require either synced smartphone passkeys (QR hybrid transport) or USB FIDO2 keys.
+Before production cutover on Cloudflare Workers Free, run `npm run cf:verify:cpu -- --url https://igs-infocom-ams-worker.<your-subdomain>.workers.dev` and inspect `wrangler tail` + Cloudflare Workers Analytics CPU time (p99 < 10 ms, zero Error 1102 exceptions) during live registration, sign-in, and PDF downloads.

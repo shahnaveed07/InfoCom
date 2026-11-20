@@ -342,7 +342,7 @@ export async function approveAdmissionWorkflowD1(
     );
     issuedOnboarding = {
       rawToken: tok.rawToken,
-      onboardingPath: `/?setupToken=${encodeURIComponent(tok.rawToken)}`,
+      onboardingPath: `/?enrollToken=${encodeURIComponent(tok.rawToken)}`,
       expiresAt: tok.expiresAtIso,
     };
   } else {

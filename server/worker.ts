@@ -43,12 +43,14 @@ import { workerAuthRoutes } from './worker-routes/auth.ts';
 import { workerFinanceRoutes } from './worker-routes/finance.ts';
 import { workerOpsReportsRoutes } from './worker-routes/ops-reports.ts';
 import { workerPublicRoutes } from './worker-routes/public.ts';
+import { workerWebAuthnRoutes } from './worker-routes/webauthn.ts';
 
 export type CloudflareWorkerEnv = WorkerRouteEnv;
 
 const WORKER_ROUTES: WorkerRouteEntry[] = [
   ...workerPublicRoutes,
   ...workerAuthRoutes,
+  ...workerWebAuthnRoutes,
   ...workerAdmissionsRoutes,
   ...workerFinanceRoutes,
   ...workerAcademicRoutes,
@@ -62,6 +64,12 @@ const AUTH_RATE_LIMITED_PATHS = new Set([
   '/api/auth/forgot-password',
   '/api/auth/reset-password',
   '/api/auth/change-password',
+  '/api/auth/webauthn/register/options',
+  '/api/auth/webauthn/register/verify',
+  '/api/auth/webauthn/login/options',
+  '/api/auth/webauthn/login/verify',
+  '/api/auth/webauthn/reauth/options',
+  '/api/auth/webauthn/reauth/verify',
 ]);
 
 async function serveSpaAsset(

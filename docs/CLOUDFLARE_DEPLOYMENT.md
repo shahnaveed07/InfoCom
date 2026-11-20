@@ -1,24 +1,22 @@
 # IGS — InfoCom Global Services: Cloudflare Workers Deployment Guide
 
-**Current Release Gate:** **`BLOCKED — CLOUDFLARE FREE AUTHENTICATION LIMITATION`**
+**Code & Local Validation Status:** **`COMPLETED` (First-Party WebAuthn Passkeys + 47-Table D1 + R2 + Assets + Queues + Cron)**  
+**Hosted Staging 10 ms CPU Validation Gate:** **`PENDING` (Required Before Production Cutover)**
 
-IGS runs natively as a **single-origin Cloudflare Worker** (`server/worker.ts`) serving both the Vite React SPA static assets (`./dist` via `env.ASSETS`) and all `/api/*` endpoints over **Cloudflare D1**, **R2**, **Queues**, **Cron Triggers**, and **Rate Limiting**.
-
-> **Mandatory Pre-Deployment Gate:** Do **not** deploy to production on Cloudflare Workers Free for live password sign-in until an authentication path is approved and verified:
-> - Measured strong `scrypt` (`N=16384, r=8, p=1`) takes **~61.6 ms CPU**, exceeding Workers Free's **10 ms CPU ceiling**.
-> - **Path 1 (Workers Paid — $5/month):** Uses this exact codebase and `wrangler.jsonc` immediately under a 30-second CPU ceiling.
-> - **Path 2 (Workers Free + Passkeys):** Requires approving, implementing, and live-benchmarking the first-party WebAuthn design in `docs/CLOUDFLARE_WEBAUTHN_DESIGN.md`.
+IGS runs natively as a **single-origin Cloudflare Worker** (`server/worker.ts`) serving both the Vite React SPA static assets (`./dist` via `env.ASSETS`) and all `/api/*` endpoints over **Cloudflare D1**, **R2**, **Queues**, **Cron Triggers**, **Rate Limiting**, and **First-Party WebAuthn Passkeys (`AUTH_MODE="webauthn"`)**.
 
 ---
 
-## 1. One-Time Cloudflare Resource Provisioning (Operator Action Only)
+## 1. One-Time Cloudflare Resource Provisioning (Manual Operator Steps)
+
+> Do **not** commit real Cloudflare D1 database IDs, account IDs, or personal `workers.dev` subdomains into shared repository templates until configuring your deployment environment.
 
 ```bash
 # 1. Create Cloudflare D1 Database
 npx wrangler d1 create igs-infocom-db
-# Update "database_id" in wrangler.jsonc with the output UUID
+# Replace "REPLACE_WITH_D1_DATABASE_ID" in wrangler.jsonc with your D1 UUID
 
-# 2. Create Private R2 Bucket (do NOT enable public bucket access)
+# 2. Create Private R2 Bucket (keep public access DISABLED)
 npx wrangler r2 bucket create igs-private-documents
 
 # 3. Create Background Job Queue & Dead-Letter Queue
@@ -28,16 +26,14 @@ npx wrangler queues create igs-ams-jobs-dlq
 
 ---
 
-## 2. Configure Origin & Optional Secrets
+## 2. Configure Origin & Environment Variables (`wrangler.jsonc`)
 
-1. In `wrangler.jsonc`, replace:
-   - `REPLACE_WITH_D1_DATABASE_ID` with your D1 `database_id`
-   - `APP_URL` & `CORS_ALLOWED_ORIGINS` with your assigned `https://igs-infocom-ams-worker.<your-subdomain>.workers.dev` URL
-2. Default `"EMAIL_PROVIDER": "disabled"` requires **no** SMTP or paid email API keys:
-   - `delivery_logs` records `Skipped` (never `Delivered`) for email channel attempts.
-   - Sensitive setup/reset token bodies are redacted before insertion into `background_jobs`.
-   - In-app notifications and admin-issued (and explicitly revocable) single-use setup links operate without outbound email.
-3. Optional future HTTP email secrets (never committed to git):
+1. Set your real Cloudflare `workers.dev` origin in `wrangler.jsonc`:
+   - `"AUTH_MODE": "webauthn"` (already set)
+   - `"APP_URL": "https://igs-infocom-ams-worker.<your-subdomain>.workers.dev"`
+   - `"CORS_ALLOWED_ORIGINS": "https://igs-infocom-ams-worker.<your-subdomain>.workers.dev"`
+   - `"EMAIL_PROVIDER": "disabled"` (zero external SMTP or paid email APIs required)
+2. Optional future HTTP email secrets (never committed to git):
    ```bash
    npx wrangler secret put RESEND_API_KEY
    npx wrangler secret put EMAIL_FROM
@@ -45,10 +41,9 @@ npx wrangler queues create igs-ams-jobs-dlq
 
 ---
 
-## 3. Build, Migrate, and Deploy (Manual Operator Steps After Gate Approval)
+## 3. Pre-Deploy Local Verification (Node.js >= 22.12)
 
 ```bash
-# 1. Clean install & validate Cloudflare D1 target locally (Node.js >= 22.12)
 npm ci
 npm run db:generate
 npm run lint
@@ -59,21 +54,45 @@ npm run cf:build
 npm run cf:d1:migrate:local
 npm run test:cloudflare
 npm run test:e2e:worker
-
-# 2. Apply schema and idempotent reference seed to remote Cloudflare D1
-npm run cf:d1:migrate:remote
-
-# 3. Deploy single-origin Worker + Static Assets
-npx wrangler deploy
-
-# 4. Verify live readiness endpoint & hosted CPU timings (wrangler tail / Cloudflare Analytics)
-curl -fsS https://igs-infocom-ams-worker.<your-subdomain>.workers.dev/api/health/ready
 ```
 
 ---
 
-## 4. Initial Production Administrator Bootstrap
+## 4. Deploy to Staging & Bootstrap First Administrator
+
+```bash
+# 1. Apply migrations 0001, 0002, and 0003 (47 tables) to remote D1
+npm run cf:d1:migrate:remote
+
+# 2. Deploy Worker + Static Assets
+npx wrangler deploy
+
+# 3. Bootstrap the inaugural Administrator (refuses to overwrite existing admins)
+npm run cf:admin:bootstrap -- \
+  --remote \
+  --database igs-infocom-db \
+  --email director@infocomglobal.edu \
+  --name "IGS Director" \
+  --app-url https://igs-infocom-ams-worker.<your-subdomain>.workers.dev
+```
+
+Open the printed one-time `/login?enrollToken=...` URL immediately (15-minute TTL) in your browser to register your primary administrator passkey, then open **Security & Passkeys** in the sidebar to register a second backup passkey.
 
 Do **not** run demo seeding (`scripts/d1-seed-demo.ts`) in production.
-- **If deploying on Workers Paid (password auth):** Generate an `scrypt$16384$8$1$...` hash locally using `hashPasswordWorker()`, insert a single active `admin` row in remote D1 with `must_change_password = 1`, sign in immediately, and rotate the password.
-- **If deploying on Workers Free after WebAuthn approval:** Follow the CLI bootstrap passkey enrollment ceremony specified in `docs/CLOUDFLARE_WEBAUTHN_DESIGN.md` §6.1.
+
+---
+
+## 5. Mandatory Hosted Cloudflare Free 10 ms CPU Verification (Before Production Cutover)
+
+```bash
+# 1. Run staging endpoint latency probe & print cutover checklist
+npm run cf:verify:cpu -- --url https://igs-infocom-ams-worker.<your-subdomain>.workers.dev
+
+# 2. Stream live Worker telemetry during passkey enrollment, login, and PDF downloads
+npx wrangler tail igs-infocom-ams-worker --format=pretty
+```
+
+Confirm in Cloudflare Dashboard Workers Analytics & `wrangler tail`:
+- **Zero** `exceededCpu` / Error 1102 exceptions across `POST /api/auth/webauthn/register/verify`, `POST /api/auth/webauthn/login/verify`, `GET /api/certificates/:id/download`, and `GET /api/reports/financial-collections?format=pdf`.
+- Workers CPU Time p99 stays strictly below **10 ms**.
+- Cron trigger (`*/15 * * * *`) and Queue consumer (`igs-ams-jobs`) execute cleanly.

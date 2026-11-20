@@ -78,6 +78,7 @@ export interface D1ScheduledSweepSummary {
   feeRemindersQueued: number;
   expiredSessionsDeleted: number;
   expiredResetTokensDeleted: number;
+  expiredWebAuthnChallengesDeleted: number;
 }
 
 export interface D1NotificationEmailPayload {
@@ -531,6 +532,19 @@ async function handleNotificationEmailJobD1(
   payload: D1NotificationEmailPayload,
   db: D1DatabaseLike
 ): Promise<void> {
+  // Idempotency guard: if this delivery log already reached a terminal state (e.g. before a
+  // lease recovery or retry), never send a duplicate transactional email.
+  if (payload.deliveryLogId) {
+    const existingLog = await d1First<{ status: string }>(
+      'SELECT status FROM delivery_logs WHERE id = ? LIMIT 1',
+      [payload.deliveryLogId],
+      db
+    );
+    if (existingLog && (existingLog.status === 'Delivered' || existingLog.status === 'Skipped')) {
+      return;
+    }
+  }
+
   const emailEnabled = await isEmailChannelEnabledForUserD1(
     payload.userId,
     payload.kind,
@@ -1053,8 +1067,8 @@ async function executeClaimedD1Job(
            last_error = NULL,
            payload = ?,
            updated_at = ?
-       WHERE id = ?`,
-      [now, durationMs, sanitizedPayload, now, job.id],
+       WHERE id = ? AND status = 'Processing' AND attempts = ?`,
+      [now, durationMs, sanitizedPayload, now, job.id, currentAttempt],
       db
     );
     return 'Completed';
@@ -1095,7 +1109,7 @@ async function executeClaimedD1Job(
            run_after = ?,
            payload = ?,
            updated_at = ?
-       WHERE id = ?`,
+       WHERE id = ? AND status = 'Processing' AND attempts = ?`,
       [
         exhausted ? 'Failed' : 'Pending',
         durationMs,
@@ -1105,6 +1119,7 @@ async function executeClaimedD1Job(
         nextPayload,
         now,
         job.id,
+        currentAttempt,
       ],
       db
     );
@@ -1199,12 +1214,17 @@ export async function processPendingD1Jobs(
 export async function runD1HousekeepingCleanup(
   now = new Date(),
   db: D1DatabaseLike = getActiveD1()
-): Promise<{ expiredSessionsDeleted: number; expiredResetTokensDeleted: number }> {
+): Promise<{
+  expiredSessionsDeleted: number;
+  expiredResetTokensDeleted: number;
+  expiredWebAuthnChallengesDeleted: number;
+}> {
   const nowStr = now.toISOString();
   const sessionCutoff = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
   const resetCutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
+  const challengeCutoff = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
 
-  const [sessRes, tokenRes] = await Promise.all([
+  const [sessRes, tokenRes, challengeRes] = await Promise.all([
     d1Run(
       'DELETE FROM auth_sessions WHERE expires_at < ? OR (revoked_at IS NOT NULL AND revoked_at < ?)',
       [nowStr, sessionCutoff],
@@ -1215,11 +1235,17 @@ export async function runD1HousekeepingCleanup(
       [resetCutoff, resetCutoff],
       db
     ),
+    d1Run(
+      'DELETE FROM webauthn_challenges WHERE expires_at < ? OR (consumed_at IS NOT NULL AND consumed_at < ?)',
+      [nowStr, challengeCutoff],
+      db
+    ).catch(() => ({ success: true, meta: { changes: 0 } })),
   ]);
 
   return {
     expiredSessionsDeleted: Number(sessRes.meta?.changes ?? 0),
     expiredResetTokensDeleted: Number(tokenRes.meta?.changes ?? 0),
+    expiredWebAuthnChallengesDeleted: Number(challengeRes.meta?.changes ?? 0),
   };
 }
 
@@ -1359,6 +1385,7 @@ export async function handleD1WorkerScheduledSweep(
           feeRemindersQueued: feeResult.queuedCount,
           expiredSessionsDeleted: housekeeping.expiredSessionsDeleted,
           expiredResetTokensDeleted: housekeeping.expiredResetTokensDeleted,
+          expiredWebAuthnChallengesDeleted: housekeeping.expiredWebAuthnChallengesDeleted,
         };
       })
     )

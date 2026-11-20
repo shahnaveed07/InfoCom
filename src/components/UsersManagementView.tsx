@@ -5,6 +5,7 @@ import {
   Check,
   CheckCircle2,
   Copy,
+  Fingerprint,
   KeyRound,
   Plus,
   Search,
@@ -12,10 +13,13 @@ import {
   X,
 } from 'lucide-react';
 import type {
+  AuthMode,
   DashboardPayload,
   UserAccountStatus,
   UserRole,
+  WebAuthnCredentialMetadata,
 } from '../shared/types';
+import { api } from '../utils/api';
 
 interface OnboardingLinkInfo {
   userId?: string;
@@ -27,6 +31,7 @@ interface OnboardingLinkInfo {
 
 interface UsersManagementViewProps {
   data: DashboardPayload;
+  authMode?: AuthMode;
   onCreateUser: (payload: {
     name: string;
     email: string;
@@ -56,11 +61,13 @@ interface UsersManagementViewProps {
 
 export function UsersManagementView({
   data,
+  authMode = 'password',
   onCreateUser,
   onIssueResetToken,
   onRevokeResetTokens,
   onUpdateUser,
 }: UsersManagementViewProps) {
+  const isPasskeyMode = authMode === 'webauthn';
   const [search, setSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState<'all' | UserRole>('all');
   const [modalOpen, setModalOpen] = useState(false);
@@ -80,6 +87,46 @@ export function UsersManagementView({
   const [issuingResetFor, setIssuingResetFor] = useState<string | null>(null);
   const [revokingResetFor, setRevokingResetFor] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  // Admin passkey inspection & revocation modal
+  const [passkeyTarget, setPasskeyTarget] = useState<{ id: string; name: string; email: string } | null>(null);
+  const [passkeyList, setPasskeyList] = useState<WebAuthnCredentialMetadata[]>([]);
+  const [passkeyLoading, setPasskeyLoading] = useState(false);
+  const [passkeyError, setPasskeyError] = useState('');
+  const [revokingCredId, setRevokingCredId] = useState<string | null>(null);
+
+  async function openUserPasskeysModal(u: { id: string; name: string; email: string }) {
+    setPasskeyTarget(u);
+    setPasskeyLoading(true);
+    setPasskeyError('');
+    try {
+      const res = await api.listUserPasskeys(u.id);
+      setPasskeyList(res.credentials);
+    } catch (err) {
+      setPasskeyError(err instanceof Error ? err.message : 'Unable to load user passkeys.');
+      setPasskeyList([]);
+    } finally {
+      setPasskeyLoading(false);
+    }
+  }
+
+  async function handleAdminRevokePasskey(credId: string, label: string) {
+    if (!passkeyTarget) return;
+    setRevokingCredId(credId);
+    setPasskeyError('');
+    try {
+      await api.revokeUserPasskey(passkeyTarget.id, credId);
+      const res = await api.listUserPasskeys(passkeyTarget.id);
+      setPasskeyList(res.credentials);
+      setStatusNotice(
+        `Revoked passkey "${label}" and active sessions for ${passkeyTarget.name}.`
+      );
+    } catch (err) {
+      setPasskeyError(err instanceof Error ? err.message : 'Unable to revoke passkey.');
+    } finally {
+      setRevokingCredId(null);
+    }
+  }
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -111,7 +158,7 @@ export function UsersManagementView({
       setFormError('Valid name and email address are required.');
       return;
     }
-    if (passwordMode === 'password' && password.length < 8) {
+    if (!isPasskeyMode && passwordMode === 'password' && password.length < 8) {
       setFormError('Temporary password must be at least 8 characters long.');
       return;
     }
@@ -125,9 +172,9 @@ export function UsersManagementView({
         role,
         department: department.trim(),
         phone: phone.trim(),
-        ...(passwordMode === 'password'
+        ...(!isPasskeyMode && passwordMode === 'password'
           ? { password, requirePasswordChange }
-          : { requirePasswordChange: true }),
+          : { requirePasswordChange: !isPasskeyMode }),
       });
       setModalOpen(false);
       setName('');
@@ -168,7 +215,11 @@ export function UsersManagementView({
         url: `${window.location.origin}${res.onboardingPath}`,
         expiresAt: res.onboardingExpiresAt,
       });
-      setStatusNotice(`Issued single-use 72-hour password setup link for ${userName}.`);
+      setStatusNotice(
+        isPasskeyMode
+          ? `Issued single-use 72-hour passkey enrollment/recovery link for ${userName}.`
+          : `Issued single-use 72-hour password setup link for ${userName}.`
+      );
     } catch (err) {
       setStatusNotice(
         err instanceof Error ? err.message : 'Unable to issue password setup link.'
@@ -309,7 +360,9 @@ export function UsersManagementView({
             </button>
           </div>
           <p className="text-[11px] text-blue-800">
-            Share this link securely with the user to set their own password (expires in 72 hours).
+            {isPasskeyMode
+              ? 'Share this single-use link securely with the user to register a passkey on their device (expires in 72 hours).'
+              : 'Share this link securely with the user to set their own password (expires in 72 hours).'}
           </p>
         </div>
       )}
@@ -381,12 +434,20 @@ export function UsersManagementView({
                           type="button"
                           disabled={!canIssueReset || issuingResetFor === u.id || revokingResetFor === u.id}
                           onClick={() => handleIssueResetToken(u.id, u.name, u.email)}
-                          aria-label={`Issue reset link for ${u.name}`}
+                          aria-label={
+                            isPasskeyMode
+                              ? `Issue passkey enrollment link for ${u.name}`
+                              : `Issue reset link for ${u.name}`
+                          }
                           className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 disabled:opacity-50 rounded-md cursor-pointer"
                         >
                           <KeyRound className="w-3 h-3" />
                           <span>
-                            {issuingResetFor === u.id ? 'Issuing...' : 'Reset Link'}
+                            {issuingResetFor === u.id
+                              ? 'Issuing...'
+                              : isPasskeyMode
+                                ? 'Enroll Link'
+                                : 'Reset Link'}
                           </span>
                         </button>
                         <button
@@ -401,6 +462,19 @@ export function UsersManagementView({
                             {revokingResetFor === u.id ? 'Revoking...' : 'Revoke Link'}
                           </span>
                         </button>
+                        {isPasskeyMode && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              openUserPasskeysModal({ id: u.id, name: u.name, email: u.email })
+                            }
+                            aria-label={`Manage passkeys for ${u.name}`}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-md cursor-pointer"
+                          >
+                            <Fingerprint className="w-3 h-3" />
+                            <span>Passkeys</span>
+                          </button>
+                        )}
                         <select
                           aria-label={`Status for ${u.name}`}
                           value={u.status}
@@ -531,62 +605,75 @@ export function UsersManagementView({
               </div>
 
               <div className="border-t border-slate-200 pt-3 space-y-2.5">
-                <div className="text-xs font-medium text-slate-700">
-                  Account Password Onboarding
-                </div>
-                <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 rounded-lg">
-                  <button
-                    type="button"
-                    onClick={() => setPasswordMode('invite')}
-                    className={`py-1.5 px-2 text-xs font-medium rounded-md cursor-pointer ${
-                      passwordMode === 'invite'
-                        ? 'bg-white text-slate-900 shadow-xs'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    Setup Link (Recommended)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setPasswordMode('password')}
-                    className={`py-1.5 px-2 text-xs font-medium rounded-md cursor-pointer ${
-                      passwordMode === 'password'
-                        ? 'bg-white text-slate-900 shadow-xs'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    Temporary Password
-                  </button>
-                </div>
-
-                {passwordMode === 'invite' ? (
-                  <p className="text-[11px] text-slate-500 leading-relaxed">
-                    Generates a single-use 72-hour onboarding URL so the user sets their own private password without sharing credentials.
-                  </p>
-                ) : (
-                  <div className="space-y-2">
-                    <div>
-                      <label className="block text-xs font-medium text-slate-700 mb-1">
-                        Temporary Password (min 8 chars)
-                      </label>
-                      <input
-                        type="password"
-                        required
-                        minLength={8}
-                        value={password}
-                        onChange={(e) => setPassword(e.target.value)}
-                        className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg text-slate-900"
-                      />
+                {isPasskeyMode ? (
+                  <>
+                    <div className="text-xs font-medium text-slate-700">
+                      Passkey Account Onboarding
                     </div>
-                    <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={requirePasswordChange}
-                        onChange={(e) => setRequirePasswordChange(e.target.checked)}
-                      />
-                      <span>Require password change on first login</span>
-                    </label>
-                  </div>
+                    <p className="text-[11px] text-slate-500 leading-relaxed">
+                      Generates a single-use 72-hour passkey enrollment link so the user registers their own device biometric or security key with zero shared passwords.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-xs font-medium text-slate-700">
+                      Account Password Onboarding
+                    </div>
+                    <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 rounded-lg">
+                      <button
+                        type="button"
+                        onClick={() => setPasswordMode('invite')}
+                        className={`py-1.5 px-2 text-xs font-medium rounded-md cursor-pointer ${
+                          passwordMode === 'invite'
+                            ? 'bg-white text-slate-900 shadow-xs'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        Setup Link (Recommended)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPasswordMode('password')}
+                        className={`py-1.5 px-2 text-xs font-medium rounded-md cursor-pointer ${
+                          passwordMode === 'password'
+                            ? 'bg-white text-slate-900 shadow-xs'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        Temporary Password
+                      </button>
+                    </div>
+
+                    {passwordMode === 'invite' ? (
+                      <p className="text-[11px] text-slate-500 leading-relaxed">
+                        Generates a single-use 72-hour onboarding URL so the user sets their own private password without sharing credentials.
+                      </p>
+                    ) : (
+                      <div className="space-y-2">
+                        <div>
+                          <label className="block text-xs font-medium text-slate-700 mb-1">
+                            Temporary Password (min 8 chars)
+                          </label>
+                          <input
+                            type="password"
+                            required
+                            minLength={8}
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                            className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg text-slate-900"
+                          />
+                        </div>
+                        <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={requirePasswordChange}
+                            onChange={(e) => setRequirePasswordChange(e.target.checked)}
+                          />
+                          <span>Require password change on first login</span>
+                        </label>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
 
@@ -607,6 +694,115 @@ export function UsersManagementView({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+      {passkeyTarget && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="admin-passkeys-modal-title"
+        >
+          <div className="w-full max-w-lg bg-white border border-slate-200 rounded-xl p-6 shadow-lg">
+            <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+              <div className="flex items-center gap-2">
+                <Fingerprint className="w-4 h-4 text-blue-700" />
+                <div>
+                  <h3
+                    id="admin-passkeys-modal-title"
+                    className="font-display text-base font-semibold text-slate-900"
+                  >
+                    Registered Passkeys · {passkeyTarget.name}
+                  </h3>
+                  <p className="text-[11px] text-slate-500">{passkeyTarget.email}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPasskeyTarget(null)}
+                aria-label="Close user passkeys modal"
+                className="p-1.5 rounded-md text-slate-400 hover:text-slate-800 hover:bg-slate-100 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {passkeyError && (
+              <div
+                role="alert"
+                className="mt-4 flex items-start gap-2 p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-800"
+              >
+                <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                <span>{passkeyError}</span>
+              </div>
+            )}
+
+            <div className="mt-4">
+              {passkeyLoading ? (
+                <p className="text-xs text-slate-500 py-4">Loading registered passkeys...</p>
+              ) : passkeyList.length === 0 ? (
+                <p className="text-xs text-slate-500 py-4">
+                  No passkeys registered for this account. Use &ldquo;Enroll Link&rdquo; to issue a single-use enrollment link.
+                </p>
+              ) : (
+                <ul className="divide-y divide-slate-200 border border-slate-200 rounded-lg overflow-hidden">
+                  {passkeyList.map((cred) => {
+                    const isRevoked = Boolean(cred.revokedAt);
+                    return (
+                      <li
+                        key={cred.id}
+                        className="p-3 flex items-center justify-between gap-3 bg-white"
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-semibold text-slate-900 truncate">
+                              {cred.deviceLabel}
+                            </span>
+                            <span className="text-[10px] font-mono text-slate-500">
+                              {cred.coseAlgorithm === -7 ? 'ES256' : 'RS256'}
+                            </span>
+                            {isRevoked && (
+                              <span className="text-[10px] text-red-700 font-medium">
+                                Revoked
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[11px] text-slate-500 mt-0.5">
+                            Added {new Date(cred.createdAt).toLocaleDateString()}
+                            {' · '}
+                            {cred.lastUsedAt
+                              ? `Last used ${new Date(cred.lastUsedAt).toLocaleString()}`
+                              : 'Never used'}
+                          </div>
+                        </div>
+                        {!isRevoked && (
+                          <button
+                            type="button"
+                            disabled={revokingCredId === cred.id}
+                            onClick={() => handleAdminRevokePasskey(cred.id, cred.deviceLabel)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium text-red-700 bg-red-50 hover:bg-red-100 disabled:opacity-50 rounded-md cursor-pointer shrink-0"
+                          >
+                            <Ban className="w-3 h-3" />
+                            <span>{revokingCredId === cred.id ? 'Revoking...' : 'Revoke'}</span>
+                          </button>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+
+            <div className="mt-4 pt-3 border-t border-slate-200 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setPasskeyTarget(null)}
+                className="px-4 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}

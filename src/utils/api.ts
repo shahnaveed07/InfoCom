@@ -11,6 +11,8 @@ import type {
   AssessmentType,
   AttendanceAuditEntry,
   AttendanceStatus,
+  AuthConfigPayload,
+  AuthMode,
   Classroom,
   CohortStatus,
   DashboardPayload,
@@ -33,7 +35,12 @@ import type {
   UserAccountStatus,
   UserPublic,
   UserRole,
+  WebAuthnCredentialMetadata,
 } from '../shared/types';
+import type {
+  SerializedCreationOptions,
+  SerializedRequestOptions,
+} from './webauthn';
 
 export interface VerifiedCertificateInfo {
   certificateCode: string;
@@ -404,13 +411,134 @@ export const api = {
       isDemoEnvironment?: boolean;
     }>(`/api/public/courses/${encodeURIComponent(slugOrId)}`, { signal }),
 
-  getMe: () => requestJson<{ user: UserPublic | null }>('/api/auth/me'),
+  getAuthConfig: (signal?: AbortSignal) =>
+    requestJson<AuthConfigPayload>('/api/auth/config', { signal }),
+
+  getMe: () =>
+    requestJson<{ user: UserPublic | null; authMode?: AuthMode }>('/api/auth/me'),
 
   login: (email: string, password: string) =>
-    requestJson<{ user: UserPublic }>('/api/auth/login', {
+    requestJson<{ user: UserPublic; authMode?: AuthMode }>('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     }),
+
+  webauthnRegisterOptions: (payload?: { enrollmentToken?: string; deviceLabel?: string }) =>
+    requestJson<{
+      challengeId: string;
+      expiresAt: string;
+      targetUser: { name: string; email: string; role: UserRole };
+      options: SerializedCreationOptions;
+    }>('/api/auth/webauthn/register/options', {
+      method: 'POST',
+      body: JSON.stringify(payload ?? {}),
+    }),
+
+  webauthnRegisterVerify: (payload: {
+    challengeId: string;
+    credentialId: string;
+    clientDataJSON: string;
+    attestationObject: string;
+    transports?: string[];
+    deviceLabel?: string;
+    enrollmentToken?: string;
+  }) =>
+    requestJson<{
+      ok: boolean;
+      user: UserPublic;
+      authMode?: AuthMode;
+      credential: WebAuthnCredentialMetadata;
+    }>('/api/auth/webauthn/register/verify', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  webauthnLoginOptions: (payload?: { email?: string }) =>
+    requestJson<{
+      challengeId: string;
+      expiresAt: string;
+      options: SerializedRequestOptions;
+    }>('/api/auth/webauthn/login/options', {
+      method: 'POST',
+      body: JSON.stringify(payload ?? {}),
+    }),
+
+  webauthnLoginVerify: (payload: {
+    challengeId: string;
+    credentialId: string;
+    clientDataJSON: string;
+    authenticatorData: string;
+    signature: string;
+  }) =>
+    requestJson<{ user: UserPublic; authMode?: AuthMode }>('/api/auth/webauthn/login/verify', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  webauthnReauthOptions: () =>
+    requestJson<{
+      challengeId: string;
+      expiresAt: string;
+      options: SerializedRequestOptions;
+    }>('/api/auth/webauthn/reauth/options', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+
+  webauthnReauthVerify: (payload: {
+    challengeId: string;
+    credentialId: string;
+    clientDataJSON: string;
+    authenticatorData: string;
+    signature: string;
+  }) =>
+    requestJson<{ ok: boolean; reauthProof: string; expiresAt: string }>(
+      '/api/auth/webauthn/reauth/verify',
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }
+    ),
+
+  listMyPasskeys: () =>
+    requestJson<{ credentials: WebAuthnCredentialMetadata[]; activeCount: number }>(
+      '/api/auth/webauthn/credentials'
+    ),
+
+  renameMyPasskey: (id: string, deviceLabel: string) =>
+    requestJson<{ ok: boolean; credential: WebAuthnCredentialMetadata }>(
+      `/api/auth/webauthn/credentials/${encodeURIComponent(id)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ deviceLabel }),
+      }
+    ),
+
+  revokeMyPasskey: (id: string, payload: { reauthProof: string; reason?: string }) =>
+    requestJson<{ ok: boolean; revokedId: string; remainingActiveCount: number }>(
+      `/api/auth/webauthn/credentials/${encodeURIComponent(id)}/revoke`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }
+    ),
+
+  listUserPasskeys: (userId: string) =>
+    requestJson<{
+      userId: string;
+      userEmail: string;
+      credentials: WebAuthnCredentialMetadata[];
+      activeCount: number;
+    }>(`/api/users/${encodeURIComponent(userId)}/webauthn`),
+
+  revokeUserPasskey: (userId: string, credId: string) =>
+    requestJson<{ ok: boolean; revokedId: string; sessionsRevoked: boolean }>(
+      `/api/users/${encodeURIComponent(userId)}/webauthn/${encodeURIComponent(credId)}/revoke`,
+      {
+        method: 'POST',
+        body: JSON.stringify({}),
+      }
+    ),
 
   logout: () =>
     requestJson<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),

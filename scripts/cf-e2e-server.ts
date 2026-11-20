@@ -6,10 +6,7 @@ import path from 'node:path';
 const portArg = process.argv.find((a) => a.startsWith('--port='));
 const port = portArg ? Number(portArg.split('=')[1]) : 3107;
 const persistDir = fs.mkdtempSync(path.join(os.tmpdir(), 'igs-cf-worker-e2e-'));
-
-const adminPassword = process.env.CF_E2E_ADMIN_PASSWORD || 'IgsCfE2e!Admin#2026';
-const instructorPassword = process.env.CF_E2E_INSTRUCTOR_PASSWORD || 'IgsCfE2e!Faculty#2026';
-const studentPassword = process.env.CF_E2E_STUDENT_PASSWORD || 'IgsCfE2e!Student#2026';
+const tokenStateFile = path.join(os.tmpdir(), `igs-cf-e2e-enroll-${port}.json`);
 
 const distIndexPath = path.resolve(process.cwd(), 'dist', 'index.html');
 if (!fs.existsSync(distIndexPath)) {
@@ -38,13 +35,38 @@ execFileSync('npx', ['tsx', 'scripts/d1-seed-demo.ts', '--persist-to', persistDi
     ...process.env,
     NODE_ENV: 'development',
     ALLOW_DEMO_SEED: 'true',
-    SEED_ADMIN_PASSWORD: adminPassword,
-    SEED_INSTRUCTOR_PASSWORD: instructorPassword,
-    SEED_STUDENT_PASSWORD: studentPassword,
   },
 });
 
-const origin = `http://127.0.0.1:${port}`;
+const origin = `http://localhost:${port}`;
+
+// Issue a single-use passkey enrollment token for the seeded demo admin via the official bootstrap CLI
+const bootstrapOut = execFileSync(
+  'npx',
+  [
+    'tsx',
+    'scripts/d1-bootstrap-passkey-admin.ts',
+    '--local',
+    '--persist-to',
+    persistDir,
+    '--allow-existing-enrollment',
+    '--email',
+    'admin.demo@igssopore.local',
+    '--name',
+    'IGS Principal Administrator',
+    '--app-url',
+    origin,
+    '--json',
+  ],
+  { cwd: process.cwd(), encoding: 'utf-8' }
+);
+const bootstrapPayload = JSON.parse(bootstrapOut.trim()) as {
+  enrollmentToken: string;
+  enrollPath: string;
+  email: string;
+};
+fs.writeFileSync(tokenStateFile, JSON.stringify(bootstrapPayload), { mode: 0o600 });
+
 const child = spawn(
   'npx',
   [
@@ -58,6 +80,10 @@ const child = spawn(
     persistDir,
     '--var',
     'NODE_ENV:development',
+    '--var',
+    'AUTH_MODE:webauthn',
+    '--var',
+    'WEBAUTHN_RP_ID:localhost',
     '--var',
     `APP_URL:${origin}`,
     '--var',
@@ -86,6 +112,11 @@ function cleanup() {
   } catch {
     // ignore
   }
+  try {
+    fs.rmSync(tokenStateFile, { force: true });
+  } catch {
+    // ignore
+  }
 }
 
 process.on('SIGINT', () => {
@@ -100,6 +131,11 @@ process.on('SIGTERM', () => {
 child.on('exit', (code) => {
   try {
     fs.rmSync(persistDir, { recursive: true, force: true });
+  } catch {
+    // ignore
+  }
+  try {
+    fs.rmSync(tokenStateFile, { force: true });
   } catch {
     // ignore
   }

@@ -22,7 +22,7 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import type { AcademyProfile, UserPublic } from '../shared/types';
+import type { AcademyProfile, AuthMode, UserPublic } from '../shared/types';
 import { BrandCrest } from './public/BrandCrest';
 
 export type NavSection =
@@ -52,6 +52,7 @@ interface SidebarProps {
   activeSection: NavSection;
   onSelectSection: (section: NavSection) => void;
   unreadCount: number;
+  authMode?: AuthMode;
   onOpenChangePassword: () => void;
   onLogout: () => void;
   mobileOpen: boolean;
@@ -71,6 +72,7 @@ export function Sidebar({
   activeSection,
   onSelectSection,
   unreadCount,
+  authMode = 'password',
   onOpenChangePassword,
   onLogout,
   mobileOpen,
@@ -228,8 +230,17 @@ export function Sidebar({
             }}
             className="w-full inline-flex items-center justify-center gap-2 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-100 hover:text-slate-900 transition-colors cursor-pointer whitespace-nowrap"
           >
-            <KeyRound className="w-3.5 h-3.5" />
-            <span>Change Password</span>
+            {authMode === 'webauthn' ? (
+              <>
+                <ShieldCheck className="w-3.5 h-3.5 text-blue-700" />
+                <span>Security &amp; Passkeys</span>
+              </>
+            ) : (
+              <>
+                <KeyRound className="w-3.5 h-3.5" />
+                <span>Change Password</span>
+              </>
+            )}
           </button>
           <button
             type="button"

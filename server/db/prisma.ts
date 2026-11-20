@@ -54,7 +54,13 @@ export function sanitizePoolErrorSummary(err: unknown): {
       ? (err as { code: string }).code
       : '';
   const rawMessage =
-    err instanceof Error ? err.message : typeof err === 'string' ? err : 'unknown pool error';
+    err instanceof Error
+      ? err.message
+      : typeof err === 'string'
+        ? err
+        : typeof (err as { message?: unknown })?.message === 'string'
+          ? (err as { message: string }).message
+          : 'unknown pool error';
   const transient =
     rawCode === '57P01' ||
     rawCode === '57P02' ||
